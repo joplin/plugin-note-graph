@@ -1,0 +1,16 @@
+{
+	"manifest_version": 1,
+	"id": "com.yugalkaushik.plugin-note-graph",
+	"app_min_version": "3.5",
+	"version": "1.0.0",
+	"name": "Note Graph Plugin",
+	"description": "",
+	"author": "yugalkaushik",
+	"homepage_url": "",
+	"repository_url": "https://github.com/joplin/plugin-note-graph",
+	"keywords": [],
+	"categories": [],
+	"screenshots": [],
+	"icons": {},
+	"promo_tile": {}
+}
