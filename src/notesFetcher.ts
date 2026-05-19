@@ -28,12 +28,27 @@ function extractLinks(body: string): string[] {
     return matches;
 }
 
-async function fetchTagsForNote(noteId: string): Promise<Tag[]> {
-    const response = await joplin.data.get(['notes', noteId, 'tags']);
-    return response.items || [];
+async function buildNoteTagsMap(): Promise<Map<string, Tag[]>> {
+    const noteTagsMap = new Map<string, Tag[]>();
+    
+    const tagsResponse = await joplin.data.get(['tags']);
+    const allTags = tagsResponse.items || [];
+    
+    for (const tag of allTags) {
+        const notesResponse = await joplin.data.get(['tags', tag.id, 'notes']);
+        for (const note of notesResponse.items || []) {
+            if (!noteTagsMap.has(note.id)) {
+                noteTagsMap.set(note.id, []);
+            }
+            noteTagsMap.get(note.id)!.push(tag);
+        }
+    }
+    
+    return noteTagsMap;
 }
 
 export async function fetchAllNotes(): Promise<Note[]> {
+    const noteTagsMap = await buildNoteTagsMap();
     const notes: Note[] = [];
     const fields = ['id', 'title', 'body', 'parent_id', 'created_time', 'updated_time'];
     let page = 1;
@@ -47,7 +62,7 @@ export async function fetchAllNotes(): Promise<Note[]> {
         });
 
         for (const note of response.items) {
-            const tags = await fetchTagsForNote(note.id);
+            const tags = noteTagsMap.get(note.id) || [];
             const links = extractLinks(note.body);
             notes.push({
                 ...note,
@@ -69,15 +84,15 @@ export async function getAllTags(): Promise<Tag[]> {
 }
 
 export async function getNotesWithTag(tagId: string): Promise<Note[]> {
+    const noteTagsMap = await buildNoteTagsMap();
     const response = await joplin.data.get(['tags', tagId, 'notes']);
     const tagNotes: Note[] = [];
 
     for (const note of response.items || []) {
-        const tags = await fetchTagsForNote(note.id);
         const links = extractLinks(note.body);
         tagNotes.push({
             ...note,
-            tags,
+            tags: noteTagsMap.get(note.id) || [],
             links,
         });
     }
