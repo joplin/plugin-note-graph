@@ -1,0 +1,37 @@
+:root,
+body {
+	background-color: var(--joplin-background-color);
+	color: var(--joplin-color);
+	margin: 0;
+	padding: 0;
+}
+
+.graph-panel {
+	background-color: var(--joplin-background-color);
+	color: var(--joplin-color);
+	display: flex;
+	flex-direction: column;
+	min-height: 100%;
+	position: relative;
+}
+
+.graph-panel_close {
+	background-color: transparent;
+	border: none;
+	color: var(--joplin-color);
+	cursor: pointer;
+	font-size: 12px;
+	line-height: 1;
+	padding: 6px 8px;
+	position: absolute;
+	right: 4px;
+	top: 4px;
+}
+
+#graph-root {
+	background-color: var(--joplin-background-color);
+	color: var(--joplin-color-faded);
+	font-family: inherit;
+	min-height: 100%;
+	padding: 0;
+}
