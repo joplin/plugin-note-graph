@@ -1,7 +1,6 @@
 import joplin from 'api';
 import { MenuItemLocation } from 'api/types';
-
-import { initializeAiNoteGraphPanel, showAiNoteGraphPanel } from './ui/WebviewPanel';
+import { initializeAiNoteGraphPanel, showAiNoteGraphPanel } from './ui/webview';
 
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
@@ -21,12 +20,12 @@ const registerMenuItems = async (): Promise<void> => {
 	await joplin.views.menuItems.create(
 		SHOW_NOTE_GRAPH_MENU_ITEM,
 		SHOW_NOTE_GRAPH_COMMAND,
-		MenuItemLocation.Tools,
+		MenuItemLocation.Tools
 	);
 };
 
 joplin.plugins.register({
-	onStart: async function() {
+	onStart: async function () {
 		await initializeAiNoteGraphPanel();
 		await registerCommands();
 		await registerMenuItems();

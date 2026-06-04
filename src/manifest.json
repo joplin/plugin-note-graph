@@ -8,7 +8,14 @@
 	"author": "yugalkaushik",
 	"homepage_url": "",
 	"repository_url": "https://github.com/joplin/plugin-note-graph",
-	"keywords": ["graph", "network", "ai", "machine learning", "text embeddings", "knowledge graph"],
+	"keywords": [
+		"graph",
+		"network",
+		"ai",
+		"machine learning",
+		"text embeddings",
+		"knowledge graph"
+	],
 	"categories": [],
 	"screenshots": [],
 	"icons": {},

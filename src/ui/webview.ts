@@ -1,17 +1,10 @@
 import joplin from 'api';
 import { ViewHandle } from 'api/types';
+import { renderPanelHtml } from './App';
 
 const PANEL_ID = 'aiNoteGraphPanel';
-const PANEL_HTML = `
-<div class="graph-panel">
-	<button id="graph-close" class="graph-panel_close" type="button" aria-label="Close Note Graph">x</button>
-	<div id="graph-root"></div>
-</div>
-`;
-const PANEL_SCRIPTS = [
-	'./ui/styles/panel.css',
-	'./ui/panel.js',
-];
+const PANEL_HTML = renderPanelHtml();
+const PANEL_SCRIPTS = ['./ui/styles/panel.css', './ui/setup.js'];
 
 let panelHandle: ViewHandle;
 
