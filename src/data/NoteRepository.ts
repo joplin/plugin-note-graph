@@ -3,7 +3,7 @@ import { Note } from './Types';
 
 export class NoteRepository {
 	public async getAllNotes(): Promise<Note[]> {
-		let notes: Note[] = [];
+		const notes: Note[] = [];
 		let page = 1;
 		let hasMore = true;
 		while (hasMore) {
@@ -12,7 +12,7 @@ export class NoteRepository {
 				limit: 100,
 				page: page,
 			});
-			notes = notes.concat(response.items);
+			notes.push(...response.items);
 			hasMore = response.has_more;
 			page++;
 		}

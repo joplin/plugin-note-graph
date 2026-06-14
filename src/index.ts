@@ -34,7 +34,12 @@ joplin.plugins.register({
 		// eslint-disable-next-line no-console
 		console.info('Note Graph plugin started.');
 
-		const noteRepository = new NoteRepository();
-		const allNotes = await noteRepository.getAllNotes();
+		try {
+ 			const noteRepository = new NoteRepository();
+ 			await noteRepository.getAllNotes();
+ 		} catch (error) {
+ 			// eslint-disable-next-line no-console
+ 			console.error('Failed to fetch notes on startup', error);
+ 		}
 	},
 });
