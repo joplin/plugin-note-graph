@@ -5,4 +5,6 @@ export interface Note {
 	body: string;
 	created_time: number;
 	updated_time: number;
+	links?: string[];
+	tags?: string[];
 }
