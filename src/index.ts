@@ -1,6 +1,7 @@
 import joplin from 'api';
 import { MenuItemLocation } from 'api/types';
 import { initializeAiNoteGraphPanel, showAiNoteGraphPanel } from './ui/webview';
+import { NoteRepository } from './data/NoteRepository';
 
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
@@ -32,5 +33,13 @@ joplin.plugins.register({
 
 		// eslint-disable-next-line no-console
 		console.info('Note Graph plugin started.');
+
+		try {
+ 			const noteRepository = new NoteRepository();
+ 			await noteRepository.getAllNotes();
+ 		} catch (error) {
+ 			// eslint-disable-next-line no-console
+ 			console.error('Failed to fetch notes on startup', error);
+ 		}
 	},
 });
