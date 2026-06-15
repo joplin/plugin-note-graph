@@ -47,6 +47,12 @@ describe('LinkExtractor', () => {
 		expect(links).toEqual(['abcdef0123456789abcdef0123456789']);
 	});
 
+	it('ignores html links with non-hex characters', () => {
+		const body = '<a href=":/abcdef0123456789abcdef012345678g">click</a>';
+		const links = extractor.extractLinks(body);
+		expect(links).toEqual([]);
+	});
+
 	it('returns empty when no links', () => {
 		expect(extractor.extractLinks('No links here')).toEqual([]);
 	});
