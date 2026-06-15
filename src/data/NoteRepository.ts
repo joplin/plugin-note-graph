@@ -10,10 +10,10 @@ export class NoteRepository {
 			const response = await joplin.data.get(['notes'], {
 				fields: ['id', 'parent_id', 'title', 'body', 'created_time', 'updated_time'],
 				limit: 100,
-				page: page,
+				page,
 			});
-			notes.push(...response.items);
-			hasMore = response.has_more;
+			notes.push(...(response.items ?? []));
+			hasMore = response.has_more === true;
 			page++;
 		}
 		console.info(`Fetched ${notes.length} notes.`);

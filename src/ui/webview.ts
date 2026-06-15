@@ -11,12 +11,15 @@ let panelHandle: ViewHandle;
 const createPanel = async (): Promise<ViewHandle> => {
 	const handle = await joplin.views.panels.create(PANEL_ID);
 	await joplin.views.panels.setHtml(handle, PANEL_HTML);
-	await joplin.views.panels.onMessage(handle, async (message: { type?: string }) => {
-		if (message?.type === 'close-note-graph') {
-			await joplin.views.panels.hide(handle);
-			return { done: true };
+	await joplin.views.panels.onMessage(
+		handle,
+		async (message: { type?: string }) => {
+			if (message?.type === 'close-note-graph') {
+				await joplin.views.panels.hide(handle);
+				return { done: true };
+			}
 		}
-	});
+	);
 
 	for (const scriptPath of PANEL_SCRIPTS) {
 		await joplin.views.panels.addScript(handle, scriptPath);
@@ -34,7 +37,9 @@ const getPanel = (): ViewHandle => {
 };
 
 export const initializeAiNoteGraphPanel = async (): Promise<void> => {
-	if (panelHandle) return;
+	if (panelHandle) {
+		return;
+	}
 	panelHandle = await createPanel();
 };
 
