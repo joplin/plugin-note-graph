@@ -34,8 +34,8 @@ export const extractResourceUrls = (text: string): { itemId: string; hash: strin
 	}
 
 	const htmlRegexes = [
-		/<img[\s\S]*?src=["']:\/([a-zA-Z0-9]{32})["'][\s\S]*?>/gi,
-		/<a[\s\S]*?href=["']:\/([a-zA-Z0-9]{32})["'][\s\S]*?>/gi,
+		/<img[\s\S]*?src=["']:\/([A-Fa-f0-9]{32})["'][\s\S]*?>/gi,
+		/<a[\s\S]*?href=["']:\/([A-Fa-f0-9]{32})["'][\s\S]*?>/gi,
 	];
 
 	for (const htmlRegex of htmlRegexes) {
