@@ -1,34 +1,31 @@
 html,
-body,
-#app {
-	height: 100%;
+body {
 	margin: 0;
 	padding: 0;
+	overflow: hidden;
 }
 
-:root,
 body {
 	background-color: var(--joplin-background-color);
 	color: var(--joplin-color);
-	margin: 0;
-	padding: 0;
 }
 
 .panel-root {
 	display: flex;
 	flex-direction: column;
-	min-height: 100%;
+	height: 100vh;
 	width: 100%;
 }
 
 .panel-header {
-	border-bottom: 1px solid var(--joplin-color-faded, rgb(86, 85, 85));
+	border-bottom: 1px solid var(--joplin-color-faded, #565959);
 	align-items: center;
 	display: flex;
 	justify-content: space-between;
-	padding: 10px 12px 9px;
+	padding: 8px 12px;
 	width: 100%;
 	box-sizing: border-box;
+	flex-shrink: 0;
 }
 
 .panel-header__title {
@@ -54,6 +51,24 @@ body {
 	vertical-align: middle;
 	display: inline-block;
 }
+
 .graph-panel_close svg path {
 	fill: currentColor;
+}
+
+#graph-container {
+	flex: 1 1 auto;
+	width: 100%;
+	position: relative;
+	overflow: hidden;
+}
+
+#graph-status {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	color: var(--joplin-color-faded, #888);
+	font-size: 13px;
+	z-index: 1;
 }
