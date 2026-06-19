@@ -22,9 +22,7 @@ const createPanel = async (): Promise<ViewHandle> => {
 			}
 			if (message?.type === 'request-data') {
 				if (currentGraphData) {
-					const data = currentGraphData;
-					currentGraphData = null;
-					return { type: 'graph-data', ...data };
+					return { type: 'graph-data', ...currentGraphData };
 				}
 				return { type: 'no-data' };
 			}

@@ -213,6 +213,16 @@ function init() {
 		observer.observe(container);
 		observer.observe(document.body);
 
+		var lastBg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
+		var themeObserver = new MutationObserver(function () {
+			var currentBg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
+			if (currentBg !== lastBg) {
+				lastBg = currentBg;
+				cy.style().fromJson(buildStylesheet()).update();
+			}
+		});
+		themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+
 		showStatus('Graph engine ready: waiting for data...');
 		pollForData();
 
