@@ -3,55 +3,6 @@ import fcose from 'cytoscape-fcose';
 
 cytoscape.use(fcose);
 
-var STYLESHEET = [
-	{
-		selector: 'node',
-		style: {
-			'background-color': '#5b9bd5',
-			label: 'data(label)',
-			color: '#222',
-			'font-size': '9px',
-			'text-valign': 'top',
-			'text-halign': 'center',
-			'text-margin-y': -4,
-			'text-wrap': 'ellipsis',
-			'text-max-width': '100px',
-			width: 28,
-			height: 28,
-			'border-width': 2,
-			'border-color': '#3a7bc8',
-		},
-	},
-	{
-		selector: 'node:selected',
-		style: {
-			'background-color': '#ffa500',
-			'border-color': '#333',
-			'border-width': 3,
-		},
-	},
-	{
-		selector: 'edge',
-		style: {
-			width: function (ele) {
-				return ele.data('type') === 'tag' ? 1 : 2;
-			},
-			'line-color': function (ele) {
-				return ele.data('type') === 'tag' ? '#b0b0b0' : '#555555';
-			},
-			'curve-style': 'bezier',
-			'line-style': function (ele) {
-				return ele.data('type') === 'tag' ? 'dotted' : 'solid';
-			},
-			'target-arrow-shape': function (ele) {
-				return ele.data('type') === 'tag' ? 'none' : 'triangle';
-			},
-			'target-arrow-color': '#555555',
-			'arrow-scale': 0.8,
-		},
-	},
-];
-
 var FCOSE_OPTIONS = {
 	name: 'fcose',
 	quality: 'default',
@@ -91,6 +42,70 @@ function hideStatus() {
 	if (statusEl) {
 		statusEl.style.display = 'none';
 	}
+}
+
+function isDarkTheme() {
+	var bg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
+	if (!bg) return false;
+
+	var r = parseInt(bg.slice(1, 3), 16);
+	var g = parseInt(bg.slice(3, 5), 16);
+	var b = parseInt(bg.slice(5, 7), 16);
+	var lum = 0.299 * r + 0.587 * g + 0.114 * b;
+	return lum < 128;
+}
+
+function buildStylesheet() {
+	var dark = isDarkTheme();
+
+	return [
+		{
+			selector: 'node',
+			style: {
+				'background-color': dark ? '#5b9bd5' : '#5b9bd5',
+				label: 'data(label)',
+				color: dark ? '#ddd' : '#222',
+				'font-size': '9px',
+				'text-valign': 'top',
+				'text-halign': 'center',
+				'text-margin-y': -4,
+				'text-wrap': 'ellipsis',
+				'text-max-width': '100px',
+				width: 28,
+				height: 28,
+				'border-width': 0,
+			},
+		},
+		{
+			selector: 'node:selected',
+			style: {
+				'background-color': '#ffa500',
+				'border-width': 0,
+			},
+		},
+		{
+			selector: 'edge',
+			style: {
+				width: function (ele) {
+					return ele.data('type') === 'tag' ? 1 : 2;
+				},
+				'line-color': function (ele) {
+					return ele.data('type') === 'tag'
+						? dark ? '#666' : '#b0b0b0'
+						: dark ? '#999' : '#555';
+				},
+				'curve-style': 'bezier',
+				'line-style': function (ele) {
+					return ele.data('type') === 'tag' ? 'dotted' : 'solid';
+				},
+				'target-arrow-shape': function (ele) {
+					return ele.data('type') === 'tag' ? 'none' : 'triangle';
+				},
+				'target-arrow-color': dark ? '#999' : '#555',
+				'arrow-scale': 0.8,
+			},
+		},
+	];
 }
 
 function onNodeTap(evt) {
@@ -175,7 +190,7 @@ function init() {
 	try {
 		cy = cytoscape({
 			container: container,
-			style: STYLESHEET,
+			style: buildStylesheet(),
 			elements: [],
 			wheelSensitivity: 0.3,
 		});
