@@ -137,20 +137,17 @@ function renderGraph(message) {
 		return;
 	}
 
-	var nodeCount = message.nodes.length;
-	var edgeCount = (message.edges || []).length;
-
-	if (edgeCount === 0) {
-		showStatus(nodeCount + ' notes loaded, 0 connections found');
-		return;
-	}
-
 	hideStatus();
 
 	cy.add(message.nodes);
-	cy.add(message.edges);
+	cy.add(message.edges || []);
 
 	cy.layout(FCOSE_OPTIONS).run();
+
+	var edgeCount = (message.edges || []).length;
+	if (edgeCount === 0) {
+		showStatus(message.nodes.length + ' notes loaded, 0 connections found');
+	}
 }
 
 function pollForData() {
@@ -252,8 +249,8 @@ function init() {
 				cy.style().fromJson(buildStylesheet()).update();
 			}
 		});
-		themeObserver.observe(document.documentElement, { attributes: true, subtree: true, childList: true });
-		themeObserver.observe(document.body, { attributes: true, subtree: true, childList: true });
+		themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
+		themeObserver.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] });
 
 		showStatus('Graph engine ready: waiting for data...');
 		pollForData();
