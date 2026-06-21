@@ -30,6 +30,7 @@ var FCOSE_OPTIONS = {
 var cy;
 var statusEl;
 var pollTimer;
+var tooltipEl;
 
 function showStatus(text) {
 	if (statusEl) {
@@ -62,7 +63,7 @@ function buildStylesheet() {
 		{
 			selector: 'node',
 			style: {
-				'background-color': dark ? '#5b9bd5' : '#5b9bd5',
+				'background-color': '#5b9bd5',
 				label: 'data(label)',
 				color: dark ? '#ddd' : '#222',
 				'font-size': '9px',
@@ -129,6 +130,8 @@ function onNodeDblClick(evt) {
 }
 
 function renderGraph(message) {
+	cy.elements().remove();
+
 	if (!message || !message.nodes || !message.nodes.length) {
 		showStatus('No graph data received');
 		return;
@@ -144,7 +147,6 @@ function renderGraph(message) {
 
 	hideStatus();
 
-	cy.elements().remove();
 	cy.add(message.nodes);
 	cy.add(message.edges);
 
@@ -187,6 +189,16 @@ function init() {
 		statusEl.style.display = '';
 	}
 
+	tooltipEl = document.createElement('div');
+	tooltipEl.style.cssText = 'display:none;position:fixed;'
+		+ 'background:rgba(91,155,213,0.92);'
+		+ 'color:#fff;'
+		+ 'padding:5px 10px;border-radius:6px;font-size:11px;'
+		+ 'pointer-events:none;z-index:1000;white-space:nowrap;'
+		+ 'box-shadow:0 2px 8px rgba(91,155,213,0.3);'
+		+ 'font-family:-apple-system,BlinkMacSystemFont,sans-serif;';
+	document.body.appendChild(tooltipEl);
+
 	try {
 		cy = cytoscape({
 			container: container,
@@ -197,6 +209,25 @@ function init() {
 
 		cy.on('tap', 'node', onNodeTap);
 		cy.on('dblclick', 'node', onNodeDblClick);
+
+		cy.on('mouseover', 'edge[type="tag"]', function (evt) {
+			var edge = evt.target;
+			var tagName = edge.data('tagName');
+			if (!tagName || !tooltipEl) return;
+			tooltipEl.textContent = tagName;
+			tooltipEl.style.display = 'block';
+		});
+
+		cy.on('mousemove', 'edge[type="tag"]', function (evt) {
+			if (!tooltipEl) return;
+			tooltipEl.style.left = (evt.originalEvent.clientX + 12) + 'px';
+			tooltipEl.style.top = (evt.originalEvent.clientY + 12) + 'px';
+		});
+
+		cy.on('mouseout', 'edge[type="tag"]', function () {
+			if (!tooltipEl) return;
+			tooltipEl.style.display = 'none';
+		});
 
 		cy.on('tap', function (evt) {
 			if (evt.target === cy) {
@@ -221,13 +252,18 @@ function init() {
 				cy.style().fromJson(buildStylesheet()).update();
 			}
 		});
-		themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+		themeObserver.observe(document.documentElement, { attributes: true, subtree: true, childList: true });
+		themeObserver.observe(document.body, { attributes: true, subtree: true, childList: true });
 
 		showStatus('Graph engine ready: waiting for data...');
 		pollForData();
 
 		if (typeof webviewApi !== 'undefined') {
 			webviewApi.onMessage(function (message) {
+				if (message && message.type === 'graph-data') {
+					clearInterval(pollTimer);
+					renderGraph(message);
+				}
 				if (message && message.type === 'fit-to-screen') {
 					cy.fit(undefined, 30);
 				}

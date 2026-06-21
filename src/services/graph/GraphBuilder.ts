@@ -31,10 +31,7 @@ export class GraphBuilder {
 			nodes.push({
 				data: {
 					id: note.id,
-					label:
-						label.length > 64
-							? label.substring(0, 61) + '...'
-							: label,
+					label: label.length > 64 ? label.substring(0, 61) + '...' : label,
 					noteId: note.id,
 					degree,
 				},
@@ -46,12 +43,12 @@ export class GraphBuilder {
 			(e) => nodeIdSet.has(e.source) && nodeIdSet.has(e.target)
 		);
 
-		const visibleEdgeIds = new Set<string>();
+		const connectedIds = new Set<string>();
 		for (const edge of visibleEdges) {
-			visibleEdgeIds.add(edge.source);
-			visibleEdgeIds.add(edge.target);
+			connectedIds.add(edge.source);
+			connectedIds.add(edge.target);
 		}
-		const isolatedCount = nodes.length - visibleEdgeIds.size;
+		const isolatedCount = nodes.length - connectedIds.size;
 
 		console.info(
 			`Graph built: ${nodes.length} nodes, ${visibleEdges.length} edges ` +

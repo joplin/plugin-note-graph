@@ -11,6 +11,7 @@ export interface GraphEdge {
 	source: string;
 	target: string;
 	type: EdgeType;
+	tagName?: string;
 }
 
 export interface GraphData {

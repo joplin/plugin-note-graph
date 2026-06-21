@@ -65,5 +65,11 @@ export const showAiNoteGraphPanel = async (): Promise<void> => {
 };
 
 export const postGraphData = async (graphData: GraphData): Promise<void> => {
+	const hadData = currentGraphData !== null;
 	currentGraphData = graphData;
+
+	if (hadData) {
+		const handle = getPanel();
+		joplin.views.panels.postMessage(handle, { type: 'graph-data', ...graphData });
+	}
 };
