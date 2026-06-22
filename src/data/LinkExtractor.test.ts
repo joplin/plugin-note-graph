@@ -47,6 +47,18 @@ describe('LinkExtractor', () => {
 		expect(links).toEqual(['abcdef0123456789abcdef0123456789']);
 	});
 
+	it('extracts link from html anchor tag with hash', () => {
+		const body = '<a href=":/abcdef0123456789abcdef0123456789#section">click</a>';
+		const links = extractor.extractLinks(body);
+		expect(links).toEqual(['abcdef0123456789abcdef0123456789']);
+	});
+
+	it('extracts link from html with joplin:// prefix', () => {
+		const body = '<a href="joplin://abcdef0123456789abcdef0123456789">click</a>';
+		const links = extractor.extractLinks(body);
+		expect(links).toEqual(['abcdef0123456789abcdef0123456789']);
+	});
+
 	it('ignores html links with non-hex characters', () => {
 		const body = '<a href=":/abcdef0123456789abcdef012345678g">click</a>';
 		const links = extractor.extractLinks(body);
@@ -70,6 +82,41 @@ describe('LinkExtractor', () => {
 	it('deduplicates repeated links', () => {
 		const body =
 			'[a](:/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) [b](:/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)';
+		const links = extractor.extractLinks(body);
+		expect(links).toEqual(['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
+	});
+
+	it('ignores links inside fenced code blocks', () => {
+		const body =
+			'```\n[note](:/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\n```\n[real](:/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)';
+		const links = extractor.extractLinks(body);
+		expect(links).toEqual(['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb']);
+	});
+
+	it('ignores links inside inline code', () => {
+		const body =
+			'`[note](:/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)` [real](:/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)';
+		const links = extractor.extractLinks(body);
+		expect(links).toEqual(['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb']);
+	});
+
+	it('handles escaped brackets in link text', () => {
+		const body = '[text with \\] escaped \\[ bracket](:/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)';
+		const links = extractor.extractLinks(body);
+		expect(links).toEqual(['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
+	});
+
+	it('handles nested brackets in link text', () => {
+		const body = '[outer [inner](:/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)](:/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)';
+		const links = extractor.extractLinks(body);
+		expect(links).toEqual([
+			'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+			'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+		]);
+	});
+
+	it('handles parentheses inside link text', () => {
+		const body = '[link with (parens)](:/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)';
 		const links = extractor.extractLinks(body);
 		expect(links).toEqual(['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
 	});

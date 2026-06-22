@@ -9,9 +9,13 @@ import { GraphBuilder } from './services/graph/GraphBuilder';
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
 
+/**
+ * Loads all notes from the Joplin API and enriches them with links and tags.
+ * @returns enriched notes ready for graph building.
+ */
 export const loadNotes = async (): Promise<Note[]> => {
 	const noteRepository = new NoteRepository();
-	const notes = await noteRepository.getAllNotes();
+	const { notes } = await noteRepository.getAllNotes();
 	const preprocessor = new NotePreprocessor();
 	const enrichedNotes = await preprocessor.process(notes);
 	console.info(`Enriched ${enrichedNotes.length} notes.`);

@@ -9,6 +9,11 @@ export class GraphBuilder {
 		this.edgeFactory = edgeFactory;
 	}
 
+	/**
+	 * Builds a graph from enriched notes, creating nodes and edges from links and shared tags.
+	 * @param notes - notes with `links` and `tags` already populated.
+	 * @returns graph data ready for rendering (nodes and edges).
+	 */
 	public build(notes: Note[]): GraphData {
 		const degreeMap = new Map<string, number>();
 		for (const note of notes) {

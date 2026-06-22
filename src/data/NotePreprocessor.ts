@@ -11,8 +11,13 @@ export class NotePreprocessor {
 		this.tagRepository = tagRepository;
 	}
 
+	/**
+	 * Enriches notes with their extracted links and tags.
+	 * @param notes - raw notes fetched from the Joplin API.
+	 * @returns the same notes with `links` and `tags` populated.
+	 */
 	public async process(notes: Note[]): Promise<Note[]> {
-		const noteTagsMap = await this.tagRepository.getNoteTagsMap();
+		const { map: noteTagsMap } = await this.tagRepository.getNoteTagsMap();
 
 		return notes.map((note) => ({
 			...note,

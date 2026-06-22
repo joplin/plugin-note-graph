@@ -2,6 +2,11 @@ import { Note } from '../../data/Types';
 import { GraphEdge } from '../graph/types';
 
 export class EdgeFactory {
+	/**
+	 * Creates graph edges from explicit note links and shared tags.
+	 * @param notes - notes with `links` and `tags` already populated.
+	 * @returns deduplicated edges of type `link` and `tag`.
+	 */
 	public createEdges(notes: Note[]): GraphEdge[] {
 		const noteIdSet = new Set(notes.map((n) => n.id));
 		const edges: GraphEdge[] = [];

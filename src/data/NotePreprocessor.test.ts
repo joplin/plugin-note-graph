@@ -28,7 +28,10 @@ describe('NotePreprocessor', () => {
 		mockLinkExtractorInstance.extractLinks.mockReturnValue(['abc']);
 
 		mockTagRepositoryInstance.getNoteTagsMap.mockResolvedValue({
-			note1: ['tag1'],
+			map: {
+				note1: ['tag1'],
+			},
+			truncated: false,
 		});
 
 		const notes = [
@@ -60,7 +63,7 @@ describe('NotePreprocessor', () => {
 	it('handles notes with no links and no tags', async () => {
 		mockLinkExtractorInstance.extractLinks.mockReturnValue([]);
 
-		mockTagRepositoryInstance.getNoteTagsMap.mockResolvedValue({});
+		mockTagRepositoryInstance.getNoteTagsMap.mockResolvedValue({ map: {}, truncated: false });
 
 		const notes = [
 			{
@@ -85,7 +88,7 @@ describe('NotePreprocessor', () => {
 	it('handles undefined body', async () => {
 		mockLinkExtractorInstance.extractLinks.mockReturnValue([]);
 
-		mockTagRepositoryInstance.getNoteTagsMap.mockResolvedValue({});
+		mockTagRepositoryInstance.getNoteTagsMap.mockResolvedValue({ map: {}, truncated: false });
 
 		const notes = [
 			{
