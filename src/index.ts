@@ -1,9 +1,10 @@
 import joplin from 'api';
 import { MenuItemLocation } from 'api/types';
-import { initializeAiNoteGraphPanel, showAiNoteGraphPanel } from './ui/webview';
+import { initializeAiNoteGraphPanel, showAiNoteGraphPanel, postGraphData } from './ui/webview';
 import { NoteRepository } from './data/NoteRepository';
 import { NotePreprocessor } from './data/NotePreprocessor';
 import { Note } from './data/Types';
+import { GraphBuilder } from './services/graph/GraphBuilder';
 
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
@@ -24,6 +25,9 @@ const noteGraphCommand = {
 		try {
 			const enrichedNotes = await loadNotes();
 			console.info(`Loaded ${enrichedNotes.length} notes.`);
+			const builder = new GraphBuilder();
+			const graphData = builder.build(enrichedNotes);
+			await postGraphData(graphData);
 			await showAiNoteGraphPanel();
 		} catch (error) {
 			console.error('Failed to load note graph:', error);
