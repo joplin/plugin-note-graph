@@ -1,4 +1,5 @@
-export type EdgeType = 'link' | 'tag';
+/** The three edge kinds this graph represents. */
+export type EdgeType = 'link' | 'tag' | 'semantic';
 
 export interface GraphNode {
 	id: string;
@@ -11,6 +12,7 @@ export interface GraphEdge {
 	source: string;
 	target: string;
 	type: EdgeType;
+	/** Comma-separated tag names when type === 'tag'. */
 	tagName?: string;
 }
 
