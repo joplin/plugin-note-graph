@@ -1,0 +1,74 @@
+html,
+body {
+	margin: 0;
+	padding: 0;
+	overflow: hidden;
+}
+
+body {
+	background-color: var(--joplin-background-color);
+	color: var(--joplin-color);
+}
+
+.panel-root {
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+	width: 100%;
+}
+
+.panel-header {
+	border-bottom: 1px solid var(--joplin-color-faded, #565959);
+	align-items: center;
+	display: flex;
+	justify-content: space-between;
+	padding: 8px 12px;
+	width: 100%;
+	box-sizing: border-box;
+	flex-shrink: 0;
+}
+
+.panel-header__title {
+	margin: 0;
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.graph-panel_close {
+	background-color: transparent;
+	border: none;
+	color: var(--joplin-color);
+	cursor: pointer;
+	font-size: 12px;
+	line-height: 1;
+	padding: 4px 6px;
+	margin-left: auto;
+}
+
+.graph-panel_close svg {
+	width: 14px;
+	height: 14px;
+	vertical-align: middle;
+	display: inline-block;
+}
+
+.graph-panel_close svg path {
+	fill: currentColor;
+}
+
+#graph-container {
+	flex: 1 1 auto;
+	width: 100%;
+	position: relative;
+	overflow: hidden;
+}
+
+#graph-status {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	color: var(--joplin-color-faded, #888);
+	font-size: 13px;
+	z-index: 1;
+}
