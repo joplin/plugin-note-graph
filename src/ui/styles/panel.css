@@ -438,3 +438,42 @@ body {
 	color: var(--joplin-color);
 	background: rgba(128, 128, 128, 0.14);
 }
+
+/* Export menu */
+
+.export-menu {
+	display: none;
+	position: fixed;
+	background: var(--joplin-background-color);
+	border: 1px solid rgba(128, 128, 128, 0.15);
+	border-radius: 8px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+	z-index: 1000;
+	overflow: hidden;
+	font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+	padding: 4px;
+}
+
+.export-menu__item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 6px 10px;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--joplin-color);
+	font-size: 12px;
+	font-family: inherit;
+	cursor: pointer;
+	transition: background 0.12s;
+}
+
+.export-menu__item:hover {
+	background: rgba(128, 128, 128, 0.10);
+}
+
+.export-menu__item svg {
+	flex-shrink: 0;
+}

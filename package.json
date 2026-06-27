@@ -38,6 +38,7 @@
   },
   "dependencies": {
     "cytoscape": "^3.34.0",
-    "cytoscape-fcose": "^2.2.0"
+    "cytoscape-fcose": "^2.2.0",
+    "cytoscape-svg": "^0.4.0"
   }
 }

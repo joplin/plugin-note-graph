@@ -1,7 +1,9 @@
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
+import cytoscapeSvg from 'cytoscape-svg';
 
 cytoscape.use(fcose);
+cytoscape.use(cytoscapeSvg);
 
 var FCOSE_OPTIONS = {
 	name: 'fcose',
@@ -222,6 +224,59 @@ function updateStats(notes, explicit, semantic, tags) {
 	if (elTags) elTags.textContent = tags;
 }
 
+function createExportMenu(btn) {
+	var menu = document.createElement('div');
+	menu.className = 'export-menu';
+	menu.innerHTML = '<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="svg"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 6l2-2h12l2 2v12l-2 2H6l-2-2z"/><circle cx="7.5" cy="10" r="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M21 15l-4.5-4.5L14 13l-4-4L3 16"/></svg>SVG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
+	document.body.appendChild(menu);
+
+	btn.addEventListener('click', function (e) {
+		e.stopPropagation();
+		var open = menu.style.display === 'block';
+		menu.style.display = open ? 'none' : 'block';
+		if (!open) {
+			var rect = btn.getBoundingClientRect();
+			menu.style.left = rect.left + 'px';
+			menu.style.top = (rect.bottom + 4) + 'px';
+		}
+	});
+
+	menu.addEventListener('click', function (e) {
+		e.stopPropagation();
+		var item = e.target.closest('.export-menu__item');
+		if (!item) return;
+		var format = item.getAttribute('data-format');
+		menu.style.display = 'none';
+		var bg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim() || '#1e1e1e';
+		if (format === 'png') {
+			downloadFile(cy.png({ full: true, bg: bg }), 'note-graph.png');
+		} else if (format === 'svg') {
+			// cytoscape-svg extension provides cy.svg() returning an SVG string
+			var svg = cy.svg({ full: true, bg: bg });
+			var blob = new Blob([svg], { type: 'image/svg+xml' });
+			downloadFile(URL.createObjectURL(blob), 'note-graph.svg');
+		} else if (format === 'json') {
+			var blob = new Blob([JSON.stringify(cy.json().elements, null, 2)], { type: 'application/json' });
+			downloadFile(URL.createObjectURL(blob), 'note-graph.json');
+		}
+	});
+
+	document.addEventListener('click', function () {
+		menu.style.display = 'none';
+	});
+
+	return menu;
+}
+
+function downloadFile(data, filename) {
+	var link = document.createElement('a');
+	link.download = filename;
+	link.href = data;
+	document.body.appendChild(link);
+	link.click();
+	document.body.removeChild(link);
+}
+
 /** Poll every second for graph data via webviewApi until the first graph-data response arrives. */
 function pollForData() {
 	if (typeof webviewApi === 'undefined') {
@@ -380,6 +435,11 @@ function init() {
 			fitBtn.addEventListener('click', function () {
 				cy.fit(undefined, 30);
 			});
+		}
+
+		var exportBtn = document.getElementById('graph-export');
+		if (exportBtn) {
+			createExportMenu(exportBtn);
 		}
 
 		var edgeToggles = document.querySelectorAll('.legend-panel__pill[data-edge]');
