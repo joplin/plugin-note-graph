@@ -1,3 +1,5 @@
 dist/
 node_modules/
 publish/
+*.code-workspace
+.vscode/
