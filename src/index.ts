@@ -17,7 +17,10 @@ const registerSettings = async (): Promise<void> => {
 		description: 'Uses Joplin\'s built-in AI to discover connections between your notes. Enable AI in Settings → AI.',
 	});
 };
-
+/**
+ * Loads all notes from the Joplin API and enriches them with links and tags.
+ * @returns enriched notes ready for graph building.
+ */
 export const loadNotes = async (): Promise<Note[]> => {
 	const noteRepository = new NoteRepository();
 	const { notes } = await noteRepository.getAllNotes();
