@@ -23,6 +23,9 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		if (!joplinAi || typeof joplinAi.getEmbeddings !== 'function') {
 			throw new Error('joplin.ai.getEmbeddings is not available. Enable AI in Settings → AI.');
 		}
+		if (typeof joplinAi.getIndexStatus !== 'function') {
+			throw new Error('joplin.ai.getIndexStatus is not available. Enable AI in Settings → AI.');
+		}
 
 		const status = await joplinAi.getIndexStatus();
 		if (!status || !status.ready) {
@@ -52,8 +55,8 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 				}
 				allChunks.length = 0;
 				cursor = undefined;
-				this.fetchedModelId = page.modelId;
-				this._modelName = page.modelId;
+				this.fetchedModelId = page.modelId ?? null;
+				this._modelName = page.modelId ?? this._modelName;
 				continue;
 			}
 

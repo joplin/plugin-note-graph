@@ -13,6 +13,7 @@ export class EmbeddingOrchestrator {
 
 	public setProvider(provider: EmbeddingProvider): void {
 		this.provider = provider;
+		this.cancelled = false;
 	}
 
 	public setOnProgress(callback: (progress: BatchProgress) => void): void {
