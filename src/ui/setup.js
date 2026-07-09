@@ -7,10 +7,14 @@
 		});
 	};
 
+	const bindAll = () => {
+		bindClose();
+	};
+
 	if (document.readyState === 'loading') {
-		document.addEventListener('DOMContentLoaded', bindClose);
+		document.addEventListener('DOMContentLoaded', bindAll);
 		return;
 	}
 
-	bindClose();
+	bindAll();
 })();

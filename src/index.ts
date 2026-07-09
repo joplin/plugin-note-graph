@@ -8,11 +8,16 @@ import { GraphBuilder } from './services/graph/GraphBuilder';
 
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
+const SETTINGS_SECTION = 'noteGraphSection';
 
-/**
- * Loads all notes from the Joplin API and enriches them with links and tags.
- * @returns enriched notes ready for graph building.
- */
+const registerSettings = async (): Promise<void> => {
+	await joplin.settings.registerSection(SETTINGS_SECTION, {
+		label: 'Note Graph',
+		iconName: 'fas fa-project-diagram',
+		description: 'Uses Joplin\'s built-in AI to discover connections between your notes. Enable AI in Settings → AI.',
+	});
+};
+
 export const loadNotes = async (): Promise<Note[]> => {
 	const noteRepository = new NoteRepository();
 	const { notes } = await noteRepository.getAllNotes();
@@ -54,6 +59,7 @@ const registerMenuItems = async (): Promise<void> => {
 joplin.plugins.register({
 	onStart: async function () {
 		console.info('Note Graph plugin started.');
+		await registerSettings();
 		await initializeAiNoteGraphPanel();
 		await registerCommands();
 		await registerMenuItems();

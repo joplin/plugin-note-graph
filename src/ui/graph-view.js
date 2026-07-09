@@ -1,7 +1,9 @@
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
+import svg from 'cytoscape-svg';
 
 cytoscape.use(fcose);
+cytoscape.use(svg);
 
 var FCOSE_OPTIONS = {
 	name: 'fcose',
@@ -202,12 +204,7 @@ function renderGraph(message) {
 
 	cy.layout(FCOSE_OPTIONS).run();
 
-	var edgeCount = (message.edges || []).length;
-	if (edgeCount === 0) {
-		showStatus(message.nodes.length + ' notes, 0 connections');
-	} else {
-		hideStatus();
-	}
+	hideStatus();
 }
 
 /** Write counts into the stats bar elements (stat-notes, stat-explicit, stat-semantic, stat-tags). */
@@ -225,7 +222,7 @@ function updateStats(notes, explicit, semantic, tags) {
 function createExportMenu(btn) {
 	var menu = document.createElement('div');
 	menu.className = 'export-menu';
-	menu.innerHTML = '<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
+	menu.innerHTML = '<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="svg"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>SVG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
 	document.body.appendChild(menu);
 
 	btn.addEventListener('click', function (e) {
@@ -248,6 +245,10 @@ function createExportMenu(btn) {
 		var bg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim() || '#1e1e1e';
 		if (format === 'png') {
 			downloadFile(cy.png({ full: true, bg: bg }), 'note-graph.png');
+		} else if (format === 'svg') {
+			var svgString = cy.svg({ full: true, bg: bg });
+			var svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+			downloadFile(URL.createObjectURL(svgBlob), 'note-graph.svg');
 		} else if (format === 'json') {
 			var blob = new Blob([JSON.stringify(cy.json().elements, null, 2)], { type: 'application/json' });
 			downloadFile(URL.createObjectURL(blob), 'note-graph.json');
@@ -506,7 +507,10 @@ function init() {
 		if (typeof webviewApi !== 'undefined') {
 			webviewApi.onMessage(function (message) {
 				if (message && message.type === 'graph-data') {
-					clearInterval(pollTimer);
+					if (pollTimer) {
+						clearInterval(pollTimer);
+						pollTimer = null;
+					}
 					renderGraph(message);
 				}
 				if (message && message.type === 'fit-to-screen') {
