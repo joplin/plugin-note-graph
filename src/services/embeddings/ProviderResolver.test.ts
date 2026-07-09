@@ -43,5 +43,13 @@ describe('ProviderResolver', () => {
 			expect(provider.id).toBe('joplin-native');
 			expect(provider.modelName).toBe('test-model');
 		});
+
+		it('uses the default native model when index status omits modelId', async () => {
+			(joplin as any).ai = {
+				getIndexStatus: jest.fn().mockResolvedValue({ ready: true }),
+			};
+			const provider = await ProviderResolver.resolveWithValidation();
+			expect(provider.modelName).toBe('joplin-native');
+		});
 	});
 });

@@ -1,4 +1,5 @@
 import { EmbeddingOrchestrator } from './Orchestrator';
+import { BatchProgress } from './Types';
 import { Note } from '../../data/Types';
 
 function makeNote(id: string, title: string, body: string): Note {
@@ -70,6 +71,34 @@ describe('EmbeddingOrchestrator', () => {
 			expect(result.embeddedNotes).toHaveLength(1);
 			expect(result.errors).toHaveLength(1);
 			expect(result.errors[0].noteId).toBe('n2');
+		});
+
+		it('emits progress updates while embedding', async () => {
+			const progressUpdates: BatchProgress[] = [];
+			orchestrator.setOnProgress((progress) => {
+				progressUpdates.push(progress);
+			});
+
+			const mockVectors = new Map<string, number[]>();
+			mockVectors.set('n1', [0.1, 0.2, 0.3]);
+			mockVectors.set('n2', [0.4, 0.5, 0.6]);
+
+			orchestrator.setProvider({
+				id: 'joplin-native',
+				modelName: 'test-model',
+				fetchVectorsByNoteIds: jest.fn().mockResolvedValue(mockVectors),
+			});
+
+			await orchestrator.embedNotes([
+				makeNote('n1', 'T1', 'B1'),
+				makeNote('n2', 'T2', 'B2'),
+			]);
+
+			expect(progressUpdates).toEqual([
+				{ current: 0, total: 2, phase: 'embedding' },
+				{ current: 1, total: 2, phase: 'embedding' },
+				{ current: 2, total: 2, phase: 'embedding' },
+			]);
 		});
 
 		it('returns empty when cancelled', async () => {

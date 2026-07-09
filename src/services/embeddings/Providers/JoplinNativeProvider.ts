@@ -1,6 +1,20 @@
 import joplin from 'api';
 import { EmbeddingProvider, ProviderId } from '../Types';
 
+interface JoplinAiApi {
+	getIndexStatus: () => Promise<{ ready: boolean; modelId?: string | null }>;
+	getEmbeddings: (params: {
+		noteIds?: string[];
+		cursor?: string;
+		limit: number;
+	}) => Promise<{
+		modelId?: string | null;
+		dimension: number;
+		chunks: Array<{ noteId: string; vector: number[] }>;
+		nextCursor?: string;
+	}>;
+}
+
 export class JoplinNativeProvider implements EmbeddingProvider {
 	public readonly id: ProviderId = 'joplin-native';
 
@@ -18,8 +32,19 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		return this._modelName;
 	}
 
+	/**
+	 * Fetches embeddings for the requested note IDs and pools repeated chunks
+	 * into one normalized vector per note.
+	 */
 	public async fetchVectorsByNoteIds(noteIds: string[]): Promise<Map<string, number[]>> {
-		const joplinAi = joplin.ai as any;
+		if (noteIds.length === 0) {
+			return new Map();
+		}
+
+		this.cachedVectors = null;
+		this.fetchedModelId = null;
+
+		const joplinAi = joplin.ai as unknown as JoplinAiApi | undefined;
 		if (!joplinAi || typeof joplinAi.getEmbeddings !== 'function') {
 			throw new Error('joplin.ai.getEmbeddings is not available. Enable AI in Settings → AI.');
 		}
@@ -32,49 +57,60 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 			throw new Error('Joplin AI index is not ready. Wait for indexing to complete or enable AI in Settings → AI.');
 		}
 
-		const statusModelId = status.modelId ?? null;
-		this.fetchedModelId = statusModelId;
-		this._modelName = statusModelId ?? 'joplin-native';
+		let trackedModelId: string | null = status.modelId ?? null;
+		this._modelName = trackedModelId ?? 'joplin-native';
 
-		const allChunks: { noteId: string; chunkIndex: number; chunkText: string; vector: number[] }[] = [];
+		const grouped = new Map<string, number[][]>();
 		let cursor: string | undefined;
 		let modelChangeRetries = 0;
 		const MAX_MODEL_CHANGE_RETRIES = 3;
 
-		do {
+		while (true) {
 			const page = await joplinAi.getEmbeddings({
-				noteIds: noteIds.length > 0 ? noteIds : undefined,
+				noteIds: noteIds,
 				cursor: cursor,
 				limit: 1000,
 			});
 
-			if (this.fetchedModelId && page.modelId !== this.fetchedModelId) {
-				modelChangeRetries++;
-				if (modelChangeRetries > MAX_MODEL_CHANGE_RETRIES) {
-					throw new Error('Model changed too many times during pagination.');
+			const pageModelId = page.modelId ?? null;
+
+			if (pageModelId) {
+				if (!trackedModelId) {
+					trackedModelId = pageModelId;
+					this._modelName = pageModelId;
+				} else if (pageModelId !== trackedModelId) {
+					modelChangeRetries++;
+					if (modelChangeRetries > MAX_MODEL_CHANGE_RETRIES) {
+						throw new Error('Model changed too many times during pagination.');
+					}
+					trackedModelId = pageModelId;
+					this._modelName = pageModelId;
+					grouped.clear();
+					cursor = undefined;
+					continue;
 				}
-				allChunks.length = 0;
-				cursor = undefined;
-				this.fetchedModelId = page.modelId ?? null;
-				this._modelName = page.modelId ?? this._modelName;
-				continue;
 			}
 
 			if (this._dimension === 0 && page.dimension > 0) {
 				this._dimension = page.dimension;
 			}
 
-			allChunks.push(...page.chunks);
-			cursor = page.nextCursor;
-		} while (cursor);
-
-		const grouped = new Map<string, number[][]>();
-		for (const chunk of allChunks) {
-			if (!grouped.has(chunk.noteId)) {
-				grouped.set(chunk.noteId, []);
+			for (const chunk of page.chunks) {
+				const list = grouped.get(chunk.noteId);
+				if (list) {
+					list.push(chunk.vector);
+				} else {
+					grouped.set(chunk.noteId, [chunk.vector]);
+				}
 			}
-			grouped.get(chunk.noteId)!.push(chunk.vector);
+
+			cursor = page.nextCursor;
+			if (!cursor) {
+				break;
+			}
 		}
+
+		this.fetchedModelId = trackedModelId;
 
 		const result = new Map<string, number[]>();
 		for (const [noteId, vectors] of grouped) {

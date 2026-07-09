@@ -8,6 +8,10 @@ export class ProviderResolver {
 		return new JoplinNativeProvider();
 	}
 
+	/**
+	 * Resolves the native embedding provider after verifying that Joplin AI is
+	 * available and its embedding index is ready.
+	 */
 	public static async resolveWithValidation(): Promise<EmbeddingProvider> {
 		const joplinAi = joplin.ai as any;
 		if (!joplinAi || typeof joplinAi.getIndexStatus !== 'function') {

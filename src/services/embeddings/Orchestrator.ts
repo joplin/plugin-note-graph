@@ -24,6 +24,10 @@ export class EmbeddingOrchestrator {
 		this.cancelled = true;
 	}
 
+	/**
+	 * Embeds the provided notes, preserving note order and reporting missing
+	 * embeddings as per-note errors.
+	 */
 	public async embedNotes(notes: Note[]): Promise<EmbeddingResult> {
 		const embeddedNotes: EmbeddedNote[] = [];
 		const errors: Array<{ noteId: string; error: string }> = [];

@@ -34,6 +34,21 @@ describe('EdgeFactory', () => {
 		expect(factory.createEdges([note('a', 'A'), note('b', 'B')])).toEqual([]);
 	});
 
+	it('handles missing links and tags arrays', () => {
+		const edges = factory.createEdges([
+			{
+				id: 'a',
+				parent_id: 'p1',
+				title: 'A',
+				body: '',
+				created_time: 0,
+				updated_time: 1,
+			} as Note,
+		]);
+
+		expect(edges).toEqual([]);
+	});
+
 	it('ignores resource links that are not note IDs', () => {
 		const notes = [
 			note('a', 'A', ['resource123']),
@@ -100,5 +115,13 @@ describe('EdgeFactory', () => {
 
 	it('ignores self-referencing links', () => {
 		expect(factory.createEdges([note('a', 'A', ['a'])])).toEqual([]);
+	});
+
+	it('skips tags that connect too many notes', () => {
+		const notes = Array.from({ length: 21 }, (_, i) =>
+			note(`n${i}`, `N${i}`, [], ['common'])
+		);
+
+		expect(factory.createEdges(notes)).toEqual([]);
 	});
 });
