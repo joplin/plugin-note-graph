@@ -17,13 +17,15 @@ export interface JoplinAiApi {
 
 export class JoplinNativeProvider implements EmbeddingProvider {
 	public readonly id: ProviderId = 'joplin-native';
+	public static readonly DEFAULT_MODEL_ID = 'joplin-native';
+	private static readonly PAGE_SIZE = 1000;
 
 	private _modelName: string;
 	private _dimension: number;
 	private cachedVectors: Map<string, number[]> | null = null;
 	private fetchedModelId: string | null = null;
 
-	public constructor(modelName: string = 'joplin-native', dimension: number = 0) {
+	public constructor(modelName: string = JoplinNativeProvider.DEFAULT_MODEL_ID, dimension: number = 0) {
 		this._modelName = modelName;
 		this._dimension = dimension;
 	}
@@ -96,7 +98,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 			const page = await api.getEmbeddings({
 				noteIds: noteIds,
 				cursor: cursor,
-				limit: 1000,
+				limit: JoplinNativeProvider.PAGE_SIZE,
 			});
 
 			const pageModelId = page.modelId ?? null;
@@ -135,7 +137,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 			}
 		}
 
-		this._modelName = trackedModelId ?? 'joplin-native';
+		this._modelName = trackedModelId ?? JoplinNativeProvider.DEFAULT_MODEL_ID;
 		return grouped;
 	}
 

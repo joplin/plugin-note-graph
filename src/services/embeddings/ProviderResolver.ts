@@ -21,7 +21,7 @@ export class ProviderResolver {
 		if (!status || !status.ready) {
 			throw new Error('Joplin AI index is not ready. Enable AI and the embedding index in Settings → AI.');
 		}
-		return new JoplinNativeProvider(status.modelId ?? 'joplin-native', 0);
+		return new JoplinNativeProvider(status.modelId ?? JoplinNativeProvider.DEFAULT_MODEL_ID, 0);
 	}
 
 	public static getDefaultConfig(): ProviderConfig {
