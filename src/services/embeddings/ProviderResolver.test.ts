@@ -29,6 +29,7 @@ describe('ProviderResolver', () => {
 		it('throws when index is not ready', async () => {
 			(joplin as any).ai = {
 				getIndexStatus: jest.fn().mockResolvedValue({ ready: false, state: 'disabled' }),
+				getEmbeddings: jest.fn(),
 			};
 			await expect(ProviderResolver.resolveWithValidation()).rejects.toThrow(
 				'Joplin AI index is not ready'
@@ -38,6 +39,7 @@ describe('ProviderResolver', () => {
 		it('returns provider when index is ready', async () => {
 			(joplin as any).ai = {
 				getIndexStatus: jest.fn().mockResolvedValue({ ready: true, modelId: 'test-model' }),
+				getEmbeddings: jest.fn(),
 			};
 			const provider = await ProviderResolver.resolveWithValidation();
 			expect(provider.id).toBe('joplin-native');
@@ -47,6 +49,7 @@ describe('ProviderResolver', () => {
 		it('uses the default native model when index status omits modelId', async () => {
 			(joplin as any).ai = {
 				getIndexStatus: jest.fn().mockResolvedValue({ ready: true }),
+				getEmbeddings: jest.fn(),
 			};
 			const provider = await ProviderResolver.resolveWithValidation();
 			expect(provider.modelName).toBe('joplin-native');

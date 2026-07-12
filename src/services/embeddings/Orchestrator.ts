@@ -24,27 +24,24 @@ export class EmbeddingOrchestrator {
 		this.cancelled = true;
 	}
 
-	/**
-	 * Embeds the provided notes, preserving note order and reporting missing
-	 * embeddings as per-note errors.
-	 */
 	public async embedNotes(notes: Note[]): Promise<EmbeddingResult> {
-		const embeddedNotes: EmbeddedNote[] = [];
-		const errors: Array<{ noteId: string; error: string }> = [];
-
 		if (!notes || notes.length === 0) {
-			return { embeddedNotes, errors };
+			return { embeddedNotes: [], errors: [] };
 		}
 
 		if (!this.provider) {
-			return { embeddedNotes, errors: notes.map(function (n) { return { noteId: n.id, error: 'No provider configured' }; }) };
+			const errors = notes.map(n => ({ noteId: n.id, error: 'No provider configured' }));
+			return { embeddedNotes: [], errors };
 		}
 
 		try {
 			this.reportProgress(0, notes.length, 'embedding');
 
-			const noteIds = notes.map(function (n) { return n.id; });
+			const noteIds = notes.map(n => n.id);
 			const vectorsByNoteId = await this.provider.fetchVectorsByNoteIds(noteIds);
+
+			const embeddedNotes: EmbeddedNote[] = [];
+			const errors: Array<{ noteId: string; error: string }> = [];
 
 			for (let i = 0; i < notes.length; i++) {
 				if (this.cancelled) break;
@@ -53,20 +50,17 @@ export class EmbeddingOrchestrator {
 				if (vector) {
 					embeddedNotes.push({ note: note, embedding: vector });
 				} else {
-					errors.push({ noteId: note.id, error: 'Note not yet indexed by Joplin AI. Wait for indexing to complete.' });
+					errors.push({ noteId: note.id, error: 'Note not yet indexed by Joplin AI.' });
 				}
 				this.reportProgress(i + 1, notes.length, 'embedding');
 			}
+
+			return { embeddedNotes, errors };
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			for (let n = 0; n < notes.length; n++) {
-				if (!embeddedNotes.some(function (en) { return en.note.id === notes[n].id; })) {
-					errors.push({ noteId: notes[n].id, error: msg });
-				}
-			}
+			const errors = notes.map(n => ({ noteId: n.id, error: msg }));
+			return { embeddedNotes: [], errors };
 		}
-
-		return { embeddedNotes, errors };
 	}
 
 	private reportProgress(current: number, total: number, phase: BatchProgress['phase']): void {

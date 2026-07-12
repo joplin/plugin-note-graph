@@ -19,15 +19,14 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 	public readonly id: ProviderId = 'joplin-native';
 	public static readonly DEFAULT_MODEL_ID = 'joplin-native';
 	private static readonly PAGE_SIZE = 1000;
+	private static readonly MAX_PAGES = 500;
 
 	private _modelName: string;
-	private _dimension: number;
 	private cachedVectors: Map<string, number[]> | null = null;
 	private fetchedModelId: string | null = null;
 
-	public constructor(modelName: string = JoplinNativeProvider.DEFAULT_MODEL_ID, dimension: number = 0) {
+	public constructor(modelName: string = JoplinNativeProvider.DEFAULT_MODEL_ID) {
 		this._modelName = modelName;
-		this._dimension = dimension;
 	}
 
 	public get modelName(): string {
@@ -92,9 +91,15 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		const grouped = new Map<string, number[][]>();
 		let cursor: string | undefined;
 		let modelChangeRetries = 0;
+		let pageCount = 0;
 		const MAX_MODEL_CHANGE_RETRIES = 3;
 
 		while (true) {
+			if (pageCount >= JoplinNativeProvider.MAX_PAGES) {
+				throw new Error('Too many pages. The embedding index may be in an unexpected state.');
+			}
+			pageCount++;
+
 			const page = await api.getEmbeddings({
 				noteIds: noteIds,
 				cursor: cursor,
@@ -116,10 +121,6 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 					cursor = undefined;
 					continue;
 				}
-			}
-
-			if (this._dimension === 0 && page.dimension > 0) {
-				this._dimension = page.dimension;
 			}
 
 			for (const chunk of page.chunks) {

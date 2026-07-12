@@ -204,7 +204,12 @@ function renderGraph(message) {
 
 	cy.layout(FCOSE_OPTIONS).run();
 
-	hideStatus();
+	var edgeCount = (message.edges || []).length;
+	if (edgeCount === 0) {
+		showStatus(message.nodes.length + ' notes, 0 connections');
+	} else {
+		hideStatus();
+	}
 }
 
 /** Write counts into the stats bar elements (stat-notes, stat-explicit, stat-semantic, stat-tags). */

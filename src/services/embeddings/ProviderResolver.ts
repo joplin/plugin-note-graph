@@ -1,6 +1,6 @@
 import joplin from 'api';
 import { EmbeddingProvider, ProviderConfig } from './Types';
-import { JoplinNativeProvider, JoplinAiApi } from './Providers/JoplinNativeProvider';
+import { JoplinNativeProvider, JoplinAiApi } from './providers/JoplinNativeProvider';
 
 export class ProviderResolver {
 
@@ -14,14 +14,14 @@ export class ProviderResolver {
 	 */
 	public static async resolveWithValidation(): Promise<EmbeddingProvider> {
 		const joplinAi = joplin.ai as unknown as JoplinAiApi | undefined;
-		if (!joplinAi || typeof joplinAi.getIndexStatus !== 'function') {
+		if (!joplinAi || typeof joplinAi.getIndexStatus !== 'function' || typeof joplinAi.getEmbeddings !== 'function') {
 			throw new Error('joplin.ai is not available. Enable AI in Settings → AI. Requires Joplin v3.7+.');
 		}
 		const status = await joplinAi.getIndexStatus();
 		if (!status || !status.ready) {
 			throw new Error('Joplin AI index is not ready. Enable AI and the embedding index in Settings → AI.');
 		}
-		return new JoplinNativeProvider(status.modelId ?? JoplinNativeProvider.DEFAULT_MODEL_ID, 0);
+		return new JoplinNativeProvider(status.modelId ?? JoplinNativeProvider.DEFAULT_MODEL_ID);
 	}
 
 	public static getDefaultConfig(): ProviderConfig {
