@@ -32,10 +32,6 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		return this._modelName;
 	}
 
-	/**
-	 * Fetches embeddings for the requested note IDs and pools repeated chunks
-	 * into one normalized vector per note.
-	 */
 	public async fetchVectorsByNoteIds(noteIds: string[]): Promise<Map<string, number[]>> {
 		if (noteIds.length === 0) {
 			return new Map();
@@ -44,15 +40,47 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		this.cachedVectors = null;
 		this.fetchedModelId = null;
 
-		const joplinAi = joplin.ai as unknown as JoplinAiApi | undefined;
-		if (!joplinAi || typeof joplinAi.getEmbeddings !== 'function') {
+		const api = this.validateAiApi();
+		const grouped = await this.fetchAllPages(api, noteIds);
+
+		this.fetchedModelId = this._modelName;
+
+		const result = this.poolAndNormalize(grouped);
+		this.cachedVectors = result;
+		return result;
+	}
+
+	public getCachedVectors(): Map<string, number[]> | null {
+		return this.cachedVectors;
+	}
+
+	public getFetchedModelId(): string | null {
+		return this.fetchedModelId;
+	}
+
+	/** Checks that joplin.ai exists and has the required methods. */
+	private validateAiApi(): JoplinAiApi {
+		const api = joplin.ai as unknown as JoplinAiApi | undefined;
+
+		if (!api || typeof api.getEmbeddings !== 'function') {
 			throw new Error('joplin.ai.getEmbeddings is not available. Enable AI in Settings → AI.');
 		}
-		if (typeof joplinAi.getIndexStatus !== 'function') {
+		if (typeof api.getIndexStatus !== 'function') {
 			throw new Error('joplin.ai.getIndexStatus is not available. Enable AI in Settings → AI.');
 		}
 
-		const status = await joplinAi.getIndexStatus();
+		return api;
+	}
+
+	/**
+	 * Pages through getEmbeddings collecting vectors per note.
+	 * Restarts pagination if the embedding model changes mid-fetch.
+	 */
+	private async fetchAllPages(
+		api: JoplinAiApi,
+		noteIds: string[],
+	): Promise<Map<string, number[][]>> {
+		const status = await api.getIndexStatus();
 		if (!status || !status.ready) {
 			throw new Error('Joplin AI index is not ready. Wait for indexing to complete or enable AI in Settings → AI.');
 		}
@@ -66,7 +94,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		const MAX_MODEL_CHANGE_RETRIES = 3;
 
 		while (true) {
-			const page = await joplinAi.getEmbeddings({
+			const page = await api.getEmbeddings({
 				noteIds: noteIds,
 				cursor: cursor,
 				limit: 1000,
@@ -110,9 +138,13 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 			}
 		}
 
-		this.fetchedModelId = trackedModelId;
+		return grouped;
+	}
 
+	/** Averages multiple chunk vectors per note into one vector and L2-normalizes. */
+	private poolAndNormalize(grouped: Map<string, number[][]>): Map<string, number[]> {
 		const result = new Map<string, number[]>();
+
 		for (const [noteId, vectors] of grouped) {
 			if (vectors.length === 0) continue;
 
@@ -141,15 +173,6 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 			result.set(noteId, pooled);
 		}
 
-		this.cachedVectors = result;
 		return result;
-	}
-
-	public getCachedVectors(): Map<string, number[]> | null {
-		return this.cachedVectors;
-	}
-
-	public getFetchedModelId(): string | null {
-		return this.fetchedModelId;
 	}
 }
