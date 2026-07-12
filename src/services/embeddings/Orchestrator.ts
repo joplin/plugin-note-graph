@@ -35,7 +35,7 @@ export class EmbeddingOrchestrator {
 		}
 
 		try {
-			this.reportProgress(0, notes.length, 'embedding');
+			this.reportProgress(0, notes.length);
 
 			const noteIds = notes.map(n => n.id);
 			const vectorsByNoteId = await this.provider.fetchVectorsByNoteIds(noteIds);
@@ -52,7 +52,7 @@ export class EmbeddingOrchestrator {
 				} else {
 					errors.push({ noteId: note.id, error: 'Note not yet indexed by Joplin AI.' });
 				}
-				this.reportProgress(i + 1, notes.length, 'embedding');
+				this.reportProgress(i + 1, notes.length);
 			}
 
 			return { embeddedNotes, errors };
@@ -63,9 +63,9 @@ export class EmbeddingOrchestrator {
 		}
 	}
 
-	private reportProgress(current: number, total: number, phase: BatchProgress['phase']): void {
+	private reportProgress(current: number, total: number): void {
 		if (this.onProgress) {
-			this.onProgress({ current, total, phase });
+			this.onProgress({ current, total });
 		}
 	}
 }

@@ -95,9 +95,9 @@ describe('EmbeddingOrchestrator', () => {
 			]);
 
 			expect(progressUpdates).toEqual([
-				{ current: 0, total: 2, phase: 'embedding' },
-				{ current: 1, total: 2, phase: 'embedding' },
-				{ current: 2, total: 2, phase: 'embedding' },
+				{ current: 0, total: 2 },
+				{ current: 1, total: 2 },
+				{ current: 2, total: 2 },
 			]);
 		});
 

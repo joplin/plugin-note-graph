@@ -22,7 +22,6 @@ export interface EmbeddedNote {
 export interface BatchProgress {
 	current: number;
 	total: number;
-	phase: 'preprocessing' | 'embedding';
 }
 
 export interface EmbeddingResult {
