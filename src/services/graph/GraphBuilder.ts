@@ -8,6 +8,7 @@ export class GraphBuilder {
 	public constructor(edgeFactory = new EdgeFactory()) {
 		this.edgeFactory = edgeFactory;
 	}
+
 	/**
 	 * Builds a graph from enriched notes, creating nodes and edges from links and shared tags.
 	 * @param notes - notes with `links` and `tags` already populated.
