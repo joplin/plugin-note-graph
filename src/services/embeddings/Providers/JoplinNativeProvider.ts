@@ -1,7 +1,7 @@
 import joplin from 'api';
 import { EmbeddingProvider, ProviderId } from '../Types';
 
-interface JoplinAiApi {
+export interface JoplinAiApi {
 	getIndexStatus: () => Promise<{ ready: boolean; modelId?: string | null }>;
 	getEmbeddings: (params: {
 		noteIds?: string[];
