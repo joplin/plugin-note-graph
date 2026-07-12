@@ -86,7 +86,6 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		}
 
 		let trackedModelId: string | null = status.modelId ?? null;
-		this._modelName = trackedModelId ?? 'joplin-native';
 
 		const grouped = new Map<string, number[][]>();
 		let cursor: string | undefined;
@@ -105,14 +104,12 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 			if (pageModelId) {
 				if (!trackedModelId) {
 					trackedModelId = pageModelId;
-					this._modelName = pageModelId;
 				} else if (pageModelId !== trackedModelId) {
 					modelChangeRetries++;
 					if (modelChangeRetries > MAX_MODEL_CHANGE_RETRIES) {
 						throw new Error('Model changed too many times during pagination.');
 					}
 					trackedModelId = pageModelId;
-					this._modelName = pageModelId;
 					grouped.clear();
 					cursor = undefined;
 					continue;
@@ -138,6 +135,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 			}
 		}
 
+		this._modelName = trackedModelId ?? 'joplin-native';
 		return grouped;
 	}
 
