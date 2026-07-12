@@ -52,6 +52,9 @@ const getPanel = (): ViewHandle => {
 	return panelHandle;
 };
 
+/**
+ * Initializes the note graph panel. Safe to call multiple times (no-op after first).
+ */
 export const initializeAiNoteGraphPanel = async (): Promise<void> => {
 	if (panelHandle) {
 		return;
@@ -59,11 +62,19 @@ export const initializeAiNoteGraphPanel = async (): Promise<void> => {
 	panelHandle = await createPanel();
 };
 
+/**
+ * Shows the note graph panel in the Joplin UI.
+ */
 export const showAiNoteGraphPanel = async (): Promise<void> => {
 	const handle = getPanel();
 	await joplin.views.panels.show(handle);
 };
 
+/**
+ * Stores graph data and pushes it to the panel if already shown.
+ * On first call the panel requests the data on load; subsequent calls push proactively.
+ * @param graphData - the graph nodes and edges to display.
+ */
 export const postGraphData = async (graphData: GraphData): Promise<void> => {
 	const hadData = currentGraphData !== null;
 	currentGraphData = graphData;

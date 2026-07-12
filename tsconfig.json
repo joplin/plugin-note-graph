@@ -8,6 +8,5 @@
 		"baseUrl": ".",
 		"ignoreDeprecations": "6.0",
 		"types": ["jest", "node"]
-	},
-	"include": ["src"]
+	}
 }
