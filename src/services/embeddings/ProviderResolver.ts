@@ -4,10 +4,6 @@ import { JoplinNativeProvider, JoplinAiApi } from './providers/JoplinNativeProvi
 
 export class ProviderResolver {
 
-	public static resolve(): EmbeddingProvider {
-		return new JoplinNativeProvider();
-	}
-
 	/**
 	 * Resolves the native embedding provider after verifying that Joplin AI is
 	 * available and its embedding index is ready.
@@ -25,6 +21,6 @@ export class ProviderResolver {
 	}
 
 	public static getDefaultConfig(): ProviderConfig {
-		return { id: 'joplin-native' };
+		return { id: JoplinNativeProvider.DEFAULT_MODEL_ID };
 	}
 }

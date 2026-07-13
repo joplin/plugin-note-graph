@@ -2,15 +2,6 @@ import { ProviderResolver } from './ProviderResolver';
 import joplin from 'api';
 
 describe('ProviderResolver', () => {
-	describe('resolve', () => {
-		it('returns JoplinNativeProvider', () => {
-			const provider = ProviderResolver.resolve();
-			expect(provider).toBeDefined();
-			expect(provider.id).toBe('joplin-native');
-			expect(provider.modelName).toBe('joplin-native');
-		});
-	});
-
 	describe('getDefaultConfig', () => {
 		it('returns joplin-native as default', () => {
 			const config = ProviderResolver.getDefaultConfig();

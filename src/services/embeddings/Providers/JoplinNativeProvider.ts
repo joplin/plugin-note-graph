@@ -20,6 +20,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 	public static readonly DEFAULT_MODEL_ID = 'joplin-native';
 	private static readonly PAGE_SIZE = 1000;
 	private static readonly MAX_PAGES = 500;
+	private static readonly MAX_MODEL_CHANGE_RETRIES = 3;
 
 	private _modelName: string;
 	private cachedVectors: Map<string, number[]> | null = null;
@@ -92,7 +93,6 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		let cursor: string | undefined;
 		let modelChangeRetries = 0;
 		let pageCount = 0;
-		const MAX_MODEL_CHANGE_RETRIES = 3;
 
 		while (true) {
 			if (pageCount >= JoplinNativeProvider.MAX_PAGES) {
@@ -113,7 +113,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 					trackedModelId = pageModelId;
 				} else if (pageModelId !== trackedModelId) {
 					modelChangeRetries++;
-					if (modelChangeRetries > MAX_MODEL_CHANGE_RETRIES) {
+					if (modelChangeRetries > JoplinNativeProvider.MAX_MODEL_CHANGE_RETRIES) {
 						throw new Error('Model changed too many times during pagination.');
 					}
 					trackedModelId = pageModelId;
