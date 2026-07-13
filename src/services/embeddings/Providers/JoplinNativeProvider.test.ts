@@ -9,7 +9,7 @@ describe('JoplinNativeProvider', () => {
 			getEmbeddings: jest.Mock;
 		};
 
-		ai.getIndexStatus.mockResolvedValue({ ready: true, modelId: 'test-model' });
+		ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' });
 		ai.getEmbeddings.mockResolvedValue({
 			modelId: 'test-model',
 			dimension: 3,
@@ -30,7 +30,7 @@ describe('JoplinNativeProvider', () => {
 			getEmbeddings: jest.Mock;
 		};
 
-		ai.getIndexStatus.mockResolvedValue({ ready: true, modelId: 'fresh-model' });
+		ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'fresh-model' });
 		ai.getEmbeddings.mockResolvedValue({
 			modelId: 'fresh-model',
 			dimension: 2,
@@ -56,7 +56,7 @@ describe('JoplinNativeProvider', () => {
 			getEmbeddings: jest.Mock;
 		};
 
-		ai.getIndexStatus.mockResolvedValue({ ready: true, modelId: 'test-model' });
+		ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' });
 		ai.getEmbeddings
 			.mockResolvedValueOnce({
 				modelId: 'test-model',
@@ -88,7 +88,7 @@ describe('JoplinNativeProvider', () => {
 			getEmbeddings: jest.Mock;
 		};
 
-		ai.getIndexStatus.mockResolvedValue({ ready: true, modelId: 'model-a' });
+		ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'model-a' });
 		ai.getEmbeddings
 			.mockResolvedValueOnce({
 				modelId: 'model-a',
@@ -116,5 +116,39 @@ describe('JoplinNativeProvider', () => {
 		expect(vector).toEqual([0, 1]);
 		expect(provider.getFetchedModelId()).toBe('model-b');
 		expect(provider.modelName).toBe('model-b');
+	});
+
+	it('fetches vectors while the index is still indexing, since results are just partial', async () => {
+		const provider = new JoplinNativeProvider();
+		const ai = joplin.ai as unknown as {
+			getIndexStatus: jest.Mock;
+			getEmbeddings: jest.Mock;
+		};
+
+		ai.getIndexStatus.mockResolvedValue({ ready: false, state: 'indexing', modelId: 'test-model' });
+		ai.getEmbeddings.mockResolvedValue({
+			modelId: 'test-model',
+			dimension: 2,
+			chunks: [{ noteId: 'n1', vector: [1, 0] }],
+			nextCursor: undefined,
+		});
+
+		const vectors = await provider.fetchVectorsByNoteIds(['n1']);
+
+		expect(vectors.get('n1')).toEqual([1, 0]);
+	});
+
+	it('throws when the index is disabled', async () => {
+		const provider = new JoplinNativeProvider();
+		const ai = joplin.ai as unknown as {
+			getIndexStatus: jest.Mock;
+			getEmbeddings: jest.Mock;
+		};
+
+		ai.getIndexStatus.mockResolvedValue({ ready: false, state: 'disabled', modelId: null });
+
+		await expect(provider.fetchVectorsByNoteIds(['n1'])).rejects.toThrow(
+			'Joplin AI index is not usable yet (state: disabled)'
+		);
 	});
 });

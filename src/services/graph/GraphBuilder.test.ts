@@ -1,10 +1,13 @@
 import { GraphBuilder } from './GraphBuilder';
 import { EdgeFactory } from '../similarity/EdgeFactory';
+import { SimilarityEngine } from '../similarity/SimilarityEngine';
 import { Note } from '../../data/Types';
 
 jest.mock('../similarity/EdgeFactory');
+jest.mock('../similarity/SimilarityEngine');
 
 const MockEdgeFactory = EdgeFactory as jest.MockedClass<typeof EdgeFactory>;
+const MockSimilarityEngine = SimilarityEngine as jest.MockedClass<typeof SimilarityEngine>;
 
 function note(
 	id: string,
@@ -76,5 +79,46 @@ describe('GraphBuilder', () => {
 		const result = builder.build(notes);
 		expect(result.edges).toHaveLength(1);
 		expect(result.edges[0].data).toEqual({ source: 'a', target: 'b', type: 'link' });
+	});
+
+	describe('buildWithSimilarity', () => {
+		it('adds semantic edges computed from embeddings alongside structural edges', async () => {
+			mockEdgeFactory.createEdges.mockReturnValue([{ source: 'a', target: 'c', type: 'link' }]);
+			mockEdgeFactory.createSemanticEdges.mockReturnValue([
+				{ source: 'a', target: 'b', type: 'semantic' },
+			]);
+			MockSimilarityEngine.mockImplementation(() => ({
+				compute: jest.fn().mockResolvedValue([{ source: 'a', target: 'b', score: 0.8 }]),
+			}) as unknown as SimilarityEngine);
+
+			const notes = [note('a', 'A'), note('b', 'B'), note('c', 'C')];
+			const embeddedNotes = [
+				{ note: notes[0], embedding: [1, 0] },
+				{ note: notes[1], embedding: [0.9, 0.1] },
+			];
+
+			const result = await builder.buildWithSimilarity(notes, embeddedNotes);
+
+			expect(mockEdgeFactory.createSemanticEdges).toHaveBeenCalledWith([
+				{ source: 'a', target: 'b', score: 0.8 },
+			]);
+			expect(result.edges).toContainEqual({ data: { source: 'a', target: 'b', type: 'semantic' } });
+			expect(result.edges).toContainEqual({ data: { source: 'a', target: 'c', type: 'link' } });
+			expect(result.edges).toHaveLength(2);
+		});
+
+		it('still returns a graph when there are no semantic matches', async () => {
+			mockEdgeFactory.createEdges.mockReturnValue([]);
+			mockEdgeFactory.createSemanticEdges.mockReturnValue([]);
+			MockSimilarityEngine.mockImplementation(() => ({
+				compute: jest.fn().mockResolvedValue([]),
+			}) as unknown as SimilarityEngine);
+
+			const notes = [note('a', 'A'), note('b', 'B')];
+			const result = await builder.buildWithSimilarity(notes, []);
+
+			expect(result.nodes).toHaveLength(2);
+			expect(result.edges).toEqual([]);
+		});
 	});
 });

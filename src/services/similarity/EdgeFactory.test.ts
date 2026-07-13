@@ -101,4 +101,25 @@ describe('EdgeFactory', () => {
 	it('ignores self-referencing links', () => {
 		expect(factory.createEdges([note('a', 'A', ['a'])])).toEqual([]);
 	});
+
+	describe('createSemanticEdges', () => {
+		it('returns empty for no pairs', () => {
+			expect(factory.createSemanticEdges([])).toEqual([]);
+		});
+
+		it('creates a semantic edge for each positive-score pair', () => {
+			const edges = factory.createSemanticEdges([
+				{ source: 'a', target: 'b', score: 0.8 },
+			]);
+			expect(edges).toEqual([{ source: 'a', target: 'b', type: 'semantic' }]);
+		});
+
+		it('excludes pairs with a non-positive score', () => {
+			const edges = factory.createSemanticEdges([
+				{ source: 'a', target: 'b', score: 0 },
+				{ source: 'c', target: 'd', score: -0.1 },
+			]);
+			expect(edges).toEqual([]);
+		});
+	});
 });
