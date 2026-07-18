@@ -35,6 +35,12 @@ export class VectorRepository implements VectorCache {
 	/** SQLite caps bound parameters per statement (as low as 999 on some builds); stay well under it. */
 	private static readonly QUERY_BATCH_SIZE = 500;
 
+	/**
+	 * Serializes writes: sqlite transactions live on the shared connection, so
+	 * two interleaved saveMany calls would nest BEGIN TRANSACTION and error.
+	 */
+	private writeLock: Promise<void> = Promise.resolve();
+
 	public constructor(private readonly db: IVectorDatabase = new VectorDatabase()) {}
 
 	/** Returns cached vectors for the given note IDs, keyed by note ID. Missing notes are omitted. */
@@ -59,12 +65,22 @@ export class VectorRepository implements VectorCache {
 		return result;
 	}
 
-	/** Inserts or updates vectors for the given notes, in a single transaction. */
-	public async saveMany(entries: VectorCacheEntry[]): Promise<void> {
+	/** Inserts or updates vectors for the given notes, in a single transaction. Calls are serialized. */
+	public saveMany(entries: VectorCacheEntry[]): Promise<void> {
 		if (entries.length === 0) {
-			return;
+			return Promise.resolve();
 		}
 
+		const task = this.writeLock.then(() => this.saveManyInternal(entries));
+		// Keep the lock chain alive whether this write succeeds or fails.
+		this.writeLock = task.then(
+			() => undefined,
+			() => undefined
+		);
+		return task;
+	}
+
+	private async saveManyInternal(entries: VectorCacheEntry[]): Promise<void> {
 		await this.db.open();
 
 		await this.db.run('BEGIN TRANSACTION', []);
@@ -77,12 +93,23 @@ export class VectorRepository implements VectorCache {
 						model_id = excluded.model_id,
 						updated_time = excluded.updated_time,
 						vector = excluded.vector`,
-					[entry.noteId, entry.modelId, entry.updatedTime, this.encodeVector(entry.vector)],
+					[
+						entry.noteId,
+						entry.modelId,
+						entry.updatedTime,
+						this.encodeVector(entry.vector),
+					]
 				);
 			}
 			await this.db.run('COMMIT', []);
 		} catch (e) {
-			await this.db.run('ROLLBACK', []);
+			// A failed ROLLBACK (e.g. "database is locked") must not mask the
+			// original write error.
+			try {
+				await this.db.run('ROLLBACK', []);
+			} catch (rollbackError) {
+				console.error('Vector cache rollback failed after a write error:', rollbackError);
+			}
 			throw e;
 		}
 	}
@@ -91,7 +118,7 @@ export class VectorRepository implements VectorCache {
 		const placeholders = noteIds.map(() => '?').join(',');
 		return this.db.all<VectorRow>(
 			`SELECT note_id, model_id, updated_time, vector FROM note_vectors WHERE note_id IN (${placeholders})`,
-			noteIds,
+			noteIds
 		);
 	}
 
@@ -109,13 +136,14 @@ export class VectorRepository implements VectorCache {
 		return Buffer.from(floats.buffer, floats.byteOffset, floats.byteLength);
 	}
 
-	/** Decodes a Float32 BLOB back into a plain number array. */
+	/**
+	 * Decodes a Float32 BLOB back into a plain number array. Copies the bytes
+	 * first: Node pools small Buffers at arbitrary byte offsets, and viewing
+	 * an unaligned offset with `new Float32Array(buffer, byteOffset, …)`
+	 * throws a RangeError.
+	 */
 	private decodeVector(blob: Buffer): number[] {
-		const floats = new Float32Array(
-			blob.buffer,
-			blob.byteOffset,
-			blob.byteLength / Float32Array.BYTES_PER_ELEMENT,
-		);
-		return Array.from(floats);
+		const copy = blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength);
+		return Array.from(new Float32Array(copy));
 	}
 }

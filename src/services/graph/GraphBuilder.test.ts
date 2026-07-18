@@ -9,11 +9,7 @@ jest.mock('../similarity/SimilarityEngine');
 const MockEdgeFactory = EdgeFactory as jest.MockedClass<typeof EdgeFactory>;
 const MockSimilarityEngine = SimilarityEngine as jest.MockedClass<typeof SimilarityEngine>;
 
-function note(
-	id: string,
-	title: string,
-	links: string[] = []
-): Note {
+function note(id: string, title: string, links: string[] = []): Note {
 	return {
 		id,
 		parent_id: 'p1',
@@ -45,9 +41,7 @@ describe('GraphBuilder', () => {
 	});
 
 	it('computes degree from edges', () => {
-		mockEdgeFactory.createEdges.mockReturnValue([
-			{ source: 'a', target: 'b', type: 'link' },
-		]);
+		mockEdgeFactory.createEdges.mockReturnValue([{ source: 'a', target: 'b', type: 'link' }]);
 		const notes = [note('a', 'A'), note('b', 'B')];
 		const result = builder.build(notes);
 		expect(result.nodes[0].data.degree).toBe(1);
@@ -83,13 +77,20 @@ describe('GraphBuilder', () => {
 
 	describe('buildWithSimilarity', () => {
 		it('adds semantic edges computed from embeddings alongside structural edges', async () => {
-			mockEdgeFactory.createEdges.mockReturnValue([{ source: 'a', target: 'c', type: 'link' }]);
+			mockEdgeFactory.createEdges.mockReturnValue([
+				{ source: 'a', target: 'c', type: 'link' },
+			]);
 			mockEdgeFactory.createSemanticEdges.mockReturnValue([
 				{ source: 'a', target: 'b', type: 'semantic' },
 			]);
-			MockSimilarityEngine.mockImplementation(() => ({
-				compute: jest.fn().mockResolvedValue([{ source: 'a', target: 'b', score: 0.8 }]),
-			}) as unknown as SimilarityEngine);
+			MockSimilarityEngine.mockImplementation(
+				() =>
+					({
+						compute: jest
+							.fn()
+							.mockResolvedValue([{ source: 'a', target: 'b', score: 0.8 }]),
+					} as unknown as SimilarityEngine)
+			);
 
 			const notes = [note('a', 'A'), note('b', 'B'), note('c', 'C')];
 			const embeddedNotes = [
@@ -102,17 +103,24 @@ describe('GraphBuilder', () => {
 			expect(mockEdgeFactory.createSemanticEdges).toHaveBeenCalledWith([
 				{ source: 'a', target: 'b', score: 0.8 },
 			]);
-			expect(result.edges).toContainEqual({ data: { source: 'a', target: 'b', type: 'semantic' } });
-			expect(result.edges).toContainEqual({ data: { source: 'a', target: 'c', type: 'link' } });
+			expect(result.edges).toContainEqual({
+				data: { source: 'a', target: 'b', type: 'semantic' },
+			});
+			expect(result.edges).toContainEqual({
+				data: { source: 'a', target: 'c', type: 'link' },
+			});
 			expect(result.edges).toHaveLength(2);
 		});
 
 		it('still returns a graph when there are no semantic matches', async () => {
 			mockEdgeFactory.createEdges.mockReturnValue([]);
 			mockEdgeFactory.createSemanticEdges.mockReturnValue([]);
-			MockSimilarityEngine.mockImplementation(() => ({
-				compute: jest.fn().mockResolvedValue([]),
-			}) as unknown as SimilarityEngine);
+			MockSimilarityEngine.mockImplementation(
+				() =>
+					({
+						compute: jest.fn().mockResolvedValue([]),
+					} as unknown as SimilarityEngine)
+			);
 
 			const notes = [note('a', 'A'), note('b', 'B')];
 			const result = await builder.buildWithSimilarity(notes, []);

@@ -27,7 +27,7 @@ export class GraphBuilder {
 	 */
 	public async buildWithSimilarity(
 		notes: Note[],
-		embeddedNotes: EmbeddedNote[],
+		embeddedNotes: EmbeddedNote[]
 	): Promise<GraphData> {
 		const structuralEdges = this.edgeFactory.createEdges(notes);
 
@@ -92,7 +92,7 @@ export class GraphBuilder {
 	private logGraphStats(
 		nodes: Array<{ data: GraphNode }>,
 		visibleEdges: GraphEdge[],
-		degreeMap: Map<string, number>,
+		degreeMap: Map<string, number>
 	): void {
 		const connectedIds = new Set<string>();
 		for (const edge of visibleEdges) {

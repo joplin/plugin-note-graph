@@ -8,7 +8,11 @@ export interface IVectorDatabase {
 
 interface Sqlite3Database {
 	run(sql: string, params: unknown[], callback: (err: Error | null) => void): void;
-	all(sql: string, params: unknown[], callback: (err: Error | null, rows: unknown[]) => void): void;
+	all(
+		sql: string,
+		params: unknown[],
+		callback: (err: Error | null, rows: unknown[]) => void
+	): void;
 }
 
 /**
@@ -31,11 +35,19 @@ export class VectorDatabase implements IVectorDatabase {
 	private db: Sqlite3Database | null = null;
 	private opening: Promise<void> | null = null;
 
-	/** Opens (creating if needed) the vector cache database. Safe to call repeatedly. */
+	/**
+	 * Opens (creating if needed) the vector cache database. Safe to call
+	 * repeatedly. A failed open is not cached: `opening` is reset on
+	 * rejection so a later call can retry (e.g. after a transient lock),
+	 * instead of every future open() re-awaiting the same stale rejection.
+	 */
 	public async open(): Promise<void> {
 		if (this.db) return;
 		if (!this.opening) {
-			this.opening = this.openInternal();
+			this.opening = this.openInternal().catch((e) => {
+				this.opening = null;
+				throw e;
+			});
 		}
 		await this.opening;
 	}

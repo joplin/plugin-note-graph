@@ -29,17 +29,27 @@ export class SimilarityEngine {
 	private readonly createdTimeMap: Map<string, number>;
 
 	public constructor(notes: Note[], embeddedNotes: EmbeddedNote[]) {
-		this.noteIds = notes.map(n => n.id);
+		this.noteIds = notes.map((n) => n.id);
 		this.vectors = new Map<string, number[]>();
 		for (const en of embeddedNotes) {
 			this.vectors.set(en.note.id, en.embedding);
 		}
 		this.tagMap = this.buildTagMap(notes);
 		this.linkSet = this.buildLinkSet(notes);
-		this.createdTimeMap = new Map(notes.map(n => [n.id, n.created_time]));
+		this.createdTimeMap = new Map(notes.map((n) => [n.id, n.created_time]));
 	}
 
-	/** Orchestrates the full similarity pipeline: compute → normalize → floor → enrich → threshold → top-K. */
+	/**
+	 * Orchestrates the full similarity pipeline:
+	 * compute → floor (raw scores) → normalize → enrich → threshold → top-K.
+	 *
+	 * SEMANTIC_FLOOR is applied to *raw* scores, before normalization. Min-max
+	 * normalization always maps the batch's most-similar pair to exactly 1.0,
+	 * so a post-normalization floor can never reject it — even in a vault of
+	 * completely unrelated notes. Flooring on the raw scale (where 0.3 has an
+	 * absolute meaning) is what actually guarantees that tags alone can never
+	 * manufacture an edge out of a weak semantic score.
+	 */
 	public async compute(): Promise<SimilarityPair[]> {
 		if (this.noteIds.length <= 1) {
 			return [];
@@ -51,9 +61,14 @@ export class SimilarityEngine {
 			return [];
 		}
 
-		const normalized = this.normalize(rawPairs);
-		const aboveFloor = this.filterBelowFloor(normalized, SEMANTIC_FLOOR);
-		const enriched = this.addBonusPoints(aboveFloor);
+		const aboveFloor = this.filterBelowFloor(rawPairs, SEMANTIC_FLOOR);
+
+		if (aboveFloor.length === 0) {
+			return [];
+		}
+
+		const normalized = this.normalize(aboveFloor);
+		const enriched = this.addBonusPoints(normalized);
 		const aboveThreshold = this.filterBelowThreshold(enriched, DEFAULT_THRESHOLD);
 		const topPairs = this.selectTopK(aboveThreshold, TOP_K);
 
@@ -96,6 +111,16 @@ export class SimilarityEngine {
 	 * Uses joplin.ai.search({ noteId }) to find candidate pairs via vector index.
 	 * Only checks that joplin.ai itself exists — never probes a specific method
 	 * property without invoking it (see JoplinNativeProvider.validateAiApi for why).
+	 *
+	 * Score-scale assumption: search relevance scores are treated as raw
+	 * similarity scores and flow through the same floor → normalize pipeline
+	 * as cosine scores.
+	 *
+	 * Failure handling: individual per-note search failures are skipped (a
+	 * partial candidate set is still useful), but if *every* call fails —
+	 * e.g. joplin.ai exists but search doesn't on this Joplin version — we
+	 * fall back to O(n²) cosine instead of silently returning zero pairs.
+	 * Retry/backoff and progress/cancel for this path are ANG-012.
 	 */
 	private async computeSearchPairs(): Promise<SimilarityPair[]> {
 		const joplinAi = joplin.ai as unknown as
@@ -107,6 +132,8 @@ export class SimilarityEngine {
 
 		const seen = new Set<string>();
 		const pairs: SimilarityPair[] = [];
+		let successCount = 0;
+		let firstError: unknown = null;
 
 		for (const noteId of this.noteIds) {
 			try {
@@ -114,6 +141,7 @@ export class SimilarityEngine {
 					query: { noteId },
 					relevance: 'normal',
 				});
+				successCount++;
 
 				for (const r of results) {
 					if (!this.vectors.has(r.noteId) || r.noteId === noteId) {
@@ -124,15 +152,29 @@ export class SimilarityEngine {
 					if (seen.has(key)) continue;
 					seen.add(key);
 
-					const [source, target] = noteId < r.noteId
-						? [noteId, r.noteId]
-						: [r.noteId, noteId];
+					const [source, target] =
+						noteId < r.noteId ? [noteId, r.noteId] : [r.noteId, noteId];
 
 					pairs.push({ source, target, score: r.score });
 				}
-			} catch {
+			} catch (e) {
+				if (firstError === null) {
+					firstError = e;
+					console.warn(
+						'joplin.ai.search failed for a note; skipping it. First error:',
+						e
+					);
+				}
 				continue;
 			}
+		}
+
+		if (successCount === 0 && this.noteIds.length > 0) {
+			console.warn(
+				'All joplin.ai.search calls failed; falling back to pairwise cosine similarity.',
+				firstError
+			);
+			return this.computeCosinePairs();
 		}
 
 		return pairs;
@@ -172,7 +214,8 @@ export class SimilarityEngine {
 	/** Adds shared-tag, direct-link, and temporal-proximity bonuses to each pair's score. */
 	private addBonusPoints(pairs: SimilarityPair[]): SimilarityPair[] {
 		for (const p of pairs) {
-			p.score += this.sharedTagBonus(p) + this.directLinkBonus(p) + this.temporalProximityBonus(p);
+			p.score +=
+				this.sharedTagBonus(p) + this.directLinkBonus(p) + this.temporalProximityBonus(p);
 		}
 		return pairs;
 	}
@@ -213,18 +256,19 @@ export class SimilarityEngine {
 	}
 
 	/**
-	 * Removes pairs below the safety floor — unless the notes are directly
-	 * linked, in which case they're kept and left for the threshold check
-	 * below. SEMANTIC_FLOOR guards against spurious tag-only edges, not
-	 * against edges the user already created explicitly.
+	 * Removes pairs whose *raw* score is below the safety floor — unless the
+	 * notes are directly linked, in which case they're kept and left for the
+	 * threshold check later. Runs before normalization on purpose: the floor
+	 * guards against spurious tag-only edges, which requires an absolute
+	 * scale, not a batch-relative one.
 	 */
 	private filterBelowFloor(pairs: SimilarityPair[], floor: number): SimilarityPair[] {
-		return pairs.filter(p => p.score >= floor || this.isDirectlyLinked(p));
+		return pairs.filter((p) => p.score >= floor || this.isDirectlyLinked(p));
 	}
 
 	/** Keeps only pairs whose bonus-boosted score clears the threshold. */
 	private filterBelowThreshold(pairs: SimilarityPair[], threshold: number): SimilarityPair[] {
-		return pairs.filter(p => p.score >= threshold);
+		return pairs.filter((p) => p.score >= threshold);
 	}
 
 	/**
@@ -232,13 +276,18 @@ export class SimilarityEngine {
 	 * their union, so a note that many others pick as one of their top-K can
 	 * end up with more than K edges. This is the standard k-nearest-neighbor
 	 * graph definition and preserves degree as a centrality signal.
+	 * Output pairs are always oriented source < target.
 	 */
 	private selectTopK(pairs: SimilarityPair[], k: number): SimilarityPair[] {
 		const bySource = new Map<string, SimilarityPair[]>();
 
 		for (const p of pairs) {
 			this.appendPair(bySource, p.source, p);
-			this.appendPair(bySource, p.target, { source: p.target, target: p.source, score: p.score });
+			this.appendPair(bySource, p.target, {
+				source: p.target,
+				target: p.source,
+				score: p.score,
+			});
 		}
 
 		const deduped = new Map<string, SimilarityPair>();
@@ -250,7 +299,9 @@ export class SimilarityEngine {
 			for (const p of kept) {
 				const key = this.makePairKey(p.source, p.target);
 				if (!deduped.has(key)) {
-					deduped.set(key, p);
+					const [source, target] =
+						p.source < p.target ? [p.source, p.target] : [p.target, p.source];
+					deduped.set(key, { source, target, score: p.score });
 				}
 			}
 		}
@@ -261,7 +312,7 @@ export class SimilarityEngine {
 	private appendPair(
 		map: Map<string, SimilarityPair[]>,
 		noteId: string,
-		pair: SimilarityPair,
+		pair: SimilarityPair
 	): void {
 		let list = map.get(noteId);
 		if (!list) {
@@ -282,7 +333,7 @@ export class SimilarityEngine {
 
 		const map = new Map<string, Set<string>>();
 		for (const n of notes) {
-			const meaningfulTags = (n.tags ?? []).filter(t => !organizationalTags.has(t));
+			const meaningfulTags = (n.tags ?? []).filter((t) => !organizationalTags.has(t));
 			map.set(n.id, new Set(meaningfulTags));
 		}
 		return map;

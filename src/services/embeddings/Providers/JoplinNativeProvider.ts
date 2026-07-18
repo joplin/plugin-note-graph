@@ -42,7 +42,11 @@ export interface JoplinAiApi {
 	getEmbeddings: (options: GetEmbeddingsOptions) => Promise<EmbeddingsPage>;
 }
 
-const BLOCKING_STATES: ReadonlySet<AiIndexState> = new Set(['unavailable', 'disabled', 'preparing']);
+const BLOCKING_STATES: ReadonlySet<AiIndexState> = new Set([
+	'unavailable',
+	'disabled',
+	'preparing',
+]);
 
 /** True once the index has enough data to fetch from, even if still indexing. */
 export function isIndexUsable(state: AiIndexState | undefined): boolean {
@@ -119,7 +123,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 	 */
 	private async fetchAllPages(
 		api: JoplinAiApi,
-		noteIds: string[],
+		noteIds: string[]
 	): Promise<Map<string, number[][]>> {
 		let trackedModelId = await this.requireUsableIndex(api);
 
@@ -130,7 +134,9 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 
 		while (true) {
 			if (pageCount >= JoplinNativeProvider.MAX_PAGES) {
-				throw new Error('Too many pages. The embedding index may be in an unexpected state.');
+				throw new Error(
+					'Too many pages. The embedding index may be in an unexpected state.'
+				);
 			}
 			pageCount++;
 

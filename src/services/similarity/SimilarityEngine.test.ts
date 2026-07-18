@@ -7,7 +7,7 @@ function makeNote(
 	title: string,
 	links: string[] = [],
 	tags: string[] = [],
-	createdTime = 0,
+	createdTime = 0
 ): Note {
 	return {
 		id,
@@ -36,10 +36,7 @@ describe('SimilarityEngine', () => {
 		});
 
 		it('returns empty for a single note', async () => {
-			const engine = new SimilarityEngine(
-				[makeNote('a', 'A')],
-				[embed('a', [1, 0, 0])],
-			);
+			const engine = new SimilarityEngine([makeNote('a', 'A')], [embed('a', [1, 0, 0])]);
 			const pairs = await engine.compute();
 			expect(pairs).toEqual([]);
 		});
@@ -83,9 +80,7 @@ describe('SimilarityEngine', () => {
 			const engine = new SimilarityEngine(notes, embedded);
 			const pairs = await engine.compute();
 
-			const involvesB = pairs.some(
-				p => p.source === 'b' || p.target === 'b',
-			);
+			const involvesB = pairs.some((p) => p.source === 'b' || p.target === 'b');
 			expect(involvesB).toBe(false);
 		});
 	});
@@ -93,11 +88,7 @@ describe('SimilarityEngine', () => {
 	describe('normalization', () => {
 		it('produces scores in [0, 1] range', async () => {
 			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C')];
-			const embedded = [
-				embed('a', [1, 0]),
-				embed('b', [0.95, 0.3]),
-				embed('c', [0.3, 0.95]),
-			];
+			const embedded = [embed('a', [1, 0]), embed('b', [0.95, 0.3]), embed('c', [0.3, 0.95])];
 
 			const engine = new SimilarityEngine(notes, embedded);
 			const pairs = await engine.compute();
@@ -109,30 +100,29 @@ describe('SimilarityEngine', () => {
 		});
 
 		it('gives higher scores to more similar notes', async () => {
-			const notes = [
-				makeNote('a', 'A'), makeNote('b', 'B'),
-				makeNote('c', 'C'), makeNote('d', 'D'),
-			];
+			// With the floor applied to the raw score before normalize, whichever
+			// pair is weakest among the floor survivors normalizes to exactly 0 —
+			// b-c (raw ~0.589) plays that role here so it doesn't drag a-c down
+			// with it, letting both a-b and a-c clear the threshold with a-b
+			// still scoring higher.
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C')];
 			const embedded = [
-				embed('a', [1, 0]),
-				embed('b', [0.95, 0.31]),
-				embed('c', [0.7, 0.71]),
-				embed('d', [-1, 0]),
+				embed('a', [1, 0, 0]),
+				embed('b', [0.9, Math.sqrt(1 - 0.81), 0]),
+				embed('c', [0.8, -0.3, Math.sqrt(0.27)]),
 			];
 
 			const engine = new SimilarityEngine(notes, embedded);
 			const pairs = await engine.compute();
 
 			const abScore = pairs.find(
-				p =>
-					(p.source === 'a' && p.target === 'b') ||
-					(p.source === 'b' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a')
 			);
 
 			const acScore = pairs.find(
-				p =>
-					(p.source === 'a' && p.target === 'c') ||
-					(p.source === 'c' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'c') || (p.source === 'c' && p.target === 'a')
 			);
 
 			expect(abScore).toBeDefined();
@@ -168,14 +158,12 @@ describe('SimilarityEngine', () => {
 			const pairs = await engine.compute();
 
 			const abWithTag = pairs.find(
-				p =>
-					(p.source === 'a' && p.target === 'b') ||
-					(p.source === 'b' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a')
 			);
 			const acNoTag = pairs.find(
-				p =>
-					(p.source === 'a' && p.target === 'c') ||
-					(p.source === 'c' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'c') || (p.source === 'c' && p.target === 'a')
 			);
 
 			expect(abWithTag).toBeDefined();
@@ -216,10 +204,12 @@ describe('SimilarityEngine', () => {
 			const pairs = await engine.compute();
 
 			const ab = pairs.find(
-				p => (p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a')
 			);
 			const cd = pairs.find(
-				p => (p.source === 'c' && p.target === 'd') || (p.source === 'd' && p.target === 'c'),
+				(p) =>
+					(p.source === 'c' && p.target === 'd') || (p.source === 'd' && p.target === 'c')
 			);
 
 			expect(ab).toBeDefined();
@@ -259,10 +249,12 @@ describe('SimilarityEngine', () => {
 			const pairs = await engine.compute();
 
 			const abSharesProject = pairs.find(
-				p => (p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a')
 			);
 			const acSharesOnlyInbox = pairs.find(
-				p => (p.source === 'a' && p.target === 'c') || (p.source === 'c' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'c') || (p.source === 'c' && p.target === 'a')
 			);
 
 			expect(abSharesProject).toBeDefined();
@@ -288,14 +280,12 @@ describe('SimilarityEngine', () => {
 			const pairs = await engine.compute();
 
 			const abWithLink = pairs.find(
-				p =>
-					(p.source === 'a' && p.target === 'b') ||
-					(p.source === 'b' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a')
 			);
 			const acNoLink = pairs.find(
-				p =>
-					(p.source === 'a' && p.target === 'c') ||
-					(p.source === 'c' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'c') || (p.source === 'c' && p.target === 'a')
 			);
 
 			expect(abWithLink).toBeDefined();
@@ -337,10 +327,12 @@ describe('SimilarityEngine', () => {
 			const pairs = await engine.compute();
 
 			const ab = pairs.find(
-				p => (p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a')
 			);
 			const cd = pairs.find(
-				p => (p.source === 'c' && p.target === 'd') || (p.source === 'd' && p.target === 'c'),
+				(p) =>
+					(p.source === 'c' && p.target === 'd') || (p.source === 'd' && p.target === 'c')
 			);
 
 			expect(ab).toBeDefined();
@@ -374,10 +366,12 @@ describe('SimilarityEngine', () => {
 			const pairs = await engine.compute();
 
 			const ab = pairs.find(
-				p => (p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a')
 			);
 			const cd = pairs.find(
-				p => (p.source === 'c' && p.target === 'd') || (p.source === 'd' && p.target === 'c'),
+				(p) =>
+					(p.source === 'c' && p.target === 'd') || (p.source === 'd' && p.target === 'c')
 			);
 
 			expect(ab).toBeDefined();
@@ -411,10 +405,12 @@ describe('SimilarityEngine', () => {
 			const pairs = await engine.compute();
 
 			const ab = pairs.find(
-				p => (p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a'),
+				(p) =>
+					(p.source === 'a' && p.target === 'b') || (p.source === 'b' && p.target === 'a')
 			);
 			const cd = pairs.find(
-				p => (p.source === 'c' && p.target === 'd') || (p.source === 'd' && p.target === 'c'),
+				(p) =>
+					(p.source === 'c' && p.target === 'd') || (p.source === 'd' && p.target === 'c')
 			);
 
 			expect(ab).toBeDefined();
@@ -430,10 +426,7 @@ describe('SimilarityEngine', () => {
 			for (let i = 0; i < 6; i++) {
 				notes.push(makeNote(`n${i}`, `Note ${i}`));
 				embedded.push(
-					embed(`n${i}`, [
-						Math.cos((i * Math.PI) / 3),
-						Math.sin((i * Math.PI) / 3),
-					]),
+					embed(`n${i}`, [Math.cos((i * Math.PI) / 3), Math.sin((i * Math.PI) / 3)])
 				);
 			}
 
@@ -441,9 +434,7 @@ describe('SimilarityEngine', () => {
 			const pairs = await engine.compute();
 
 			for (const note of notes) {
-				const edges = pairs.filter(
-					p => p.source === note.id || p.target === note.id,
-				);
+				const edges = pairs.filter((p) => p.source === note.id || p.target === note.id);
 				expect(edges.length).toBeLessThanOrEqual(5);
 			}
 		});
@@ -472,7 +463,7 @@ describe('SimilarityEngine', () => {
 			const engine = new SimilarityEngine(notes, embedded);
 			const pairs = await engine.compute();
 
-			const aEdges = pairs.filter(p => p.source === 'a' || p.target === 'a');
+			const aEdges = pairs.filter((p) => p.source === 'a' || p.target === 'a');
 			expect(aEdges.length).toBeGreaterThan(5);
 		});
 	});
@@ -483,10 +474,7 @@ describe('SimilarityEngine', () => {
 			// linked. SEMANTIC_FLOOR must reject them before bonuses or threshold
 			// ever apply — tags alone can never manufacture an edge out of a weak
 			// semantic score.
-			const notes = [
-				makeNote('a', 'A', [], ['shared']),
-				makeNote('b', 'B', [], ['shared']),
-			];
+			const notes = [makeNote('a', 'A', [], ['shared']), makeNote('b', 'B', [], ['shared'])];
 			const embedded = [embed('a', [1, 0]), embed('b', [0, 1])];
 
 			const engine = new SimilarityEngine(notes, embedded);
@@ -505,6 +493,33 @@ describe('SimilarityEngine', () => {
 				makeNote('b', 'B', [], ['shared']),
 			];
 			const embedded = [embed('a', [1, 0]), embed('b', [0, 1])];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs).toEqual([]);
+		});
+	});
+
+	describe('floor is applied to raw scores, before normalization', () => {
+		it('returns zero pairs for a vault of unrelated notes even when normalization runs', async () => {
+			// Raw dots span 0 to 0.12 (spread >= 0.1, so normalization would run
+			// and map the best pair to 1.0). Vectors are near-orthogonal with
+			// only a small "leakage" component on a shared axis, so every
+			// pairwise raw score stays below SEMANTIC_FLOOR (0.3) — with the
+			// floor applied on the raw scale, nothing survives.
+			const notes = [
+				makeNote('a', 'A'),
+				makeNote('b', 'B'),
+				makeNote('c', 'C'),
+				makeNote('d', 'D'),
+			];
+			const embedded = [
+				embed('a', [1, 0.05, 0, 0]),
+				embed('b', [0, 1, 0.08, 0]),
+				embed('c', [0, 0, 1, 0.12]),
+				embed('d', [0.03, 0, 0, 1]),
+			];
 
 			const engine = new SimilarityEngine(notes, embedded);
 			const pairs = await engine.compute();

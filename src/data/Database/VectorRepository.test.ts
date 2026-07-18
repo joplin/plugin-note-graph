@@ -10,7 +10,10 @@ import { IVectorDatabase } from './VectorDatabase';
 class FakeVectorDatabase implements IVectorDatabase {
 	public opened = false;
 	public allCallBatchSizes: number[] = [];
-	private rows = new Map<string, { note_id: string; model_id: string; updated_time: number; vector: Buffer }>();
+	private rows = new Map<
+		string,
+		{ note_id: string; model_id: string; updated_time: number; vector: Buffer }
+	>();
 
 	public async open(): Promise<void> {
 		this.opened = true;
@@ -21,13 +24,20 @@ class FakeVectorDatabase implements IVectorDatabase {
 			return; // BEGIN TRANSACTION / COMMIT / ROLLBACK
 		}
 		const [noteId, modelId, updatedTime, vector] = params as [string, string, number, Buffer];
-		this.rows.set(noteId, { note_id: noteId, model_id: modelId, updated_time: updatedTime, vector });
+		this.rows.set(noteId, {
+			note_id: noteId,
+			model_id: modelId,
+			updated_time: updatedTime,
+			vector,
+		});
 	}
 
 	public async all<T>(_sql: string, params: unknown[]): Promise<T[]> {
 		const ids = params as string[];
 		this.allCallBatchSizes.push(ids.length);
-		const found = ids.map(id => this.rows.get(id)).filter((r): r is NonNullable<typeof r> => !!r);
+		const found = ids
+			.map((id) => this.rows.get(id))
+			.filter((r): r is NonNullable<typeof r> => !!r);
 		return found as unknown as T[];
 	}
 }
@@ -74,8 +84,12 @@ describe('VectorRepository', () => {
 		});
 
 		it('overwrites the previous entry for the same note ID', async () => {
-			await repo.saveMany([{ noteId: 'n1', vector: [1, 0], modelId: 'm1', updatedTime: 100 }]);
-			await repo.saveMany([{ noteId: 'n1', vector: [0, 1], modelId: 'm2', updatedTime: 200 }]);
+			await repo.saveMany([
+				{ noteId: 'n1', vector: [1, 0], modelId: 'm1', updatedTime: 100 },
+			]);
+			await repo.saveMany([
+				{ noteId: 'n1', vector: [0, 1], modelId: 'm2', updatedTime: 200 },
+			]);
 
 			const result = await repo.getMany(['n1']);
 			const entry = result.get('n1');
@@ -106,10 +120,10 @@ describe('VectorRepository', () => {
 	});
 
 	describe('large vaults', () => {
-		it('chunks getMany so a single query never exceeds SQLite\'s bound-parameter limit', async () => {
+		it("chunks getMany so a single query never exceeds SQLite's bound-parameter limit", async () => {
 			const noteIds = Array.from({ length: 1200 }, (_, i) => `n${i}`);
 			await repo.saveMany(
-				noteIds.map(id => ({ noteId: id, vector: [1, 0], modelId: 'm1', updatedTime: 1 })),
+				noteIds.map((id) => ({ noteId: id, vector: [1, 0], modelId: 'm1', updatedTime: 1 }))
 			);
 
 			const result = await repo.getMany(noteIds);

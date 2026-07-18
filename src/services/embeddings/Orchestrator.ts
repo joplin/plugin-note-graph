@@ -1,11 +1,6 @@
 import { Note } from '../../data/Types';
 import { CachedVector, VectorCache, VectorCacheEntry } from '../../data/Database/VectorRepository';
-import {
-	EmbeddingProvider,
-	EmbeddedNote,
-	EmbeddingResult,
-	BatchProgress,
-} from './Types';
+import { EmbeddingProvider, EmbeddedNote, EmbeddingResult, BatchProgress } from './Types';
 
 export class EmbeddingOrchestrator {
 	private provider: EmbeddingProvider | null = null;
@@ -37,7 +32,7 @@ export class EmbeddingOrchestrator {
 		}
 
 		if (!this.provider) {
-			const errors = notes.map(n => ({ noteId: n.id, error: 'No provider configured' }));
+			const errors = notes.map((n) => ({ noteId: n.id, error: 'No provider configured' }));
 			return { embeddedNotes: [], errors };
 		}
 
@@ -64,7 +59,7 @@ export class EmbeddingOrchestrator {
 			return { embeddedNotes, errors };
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			const errors = notes.map(n => ({ noteId: n.id, error: msg }));
+			const errors = notes.map((n) => ({ noteId: n.id, error: msg }));
 			return { embeddedNotes: [], errors };
 		}
 	}
@@ -74,15 +69,21 @@ export class EmbeddingOrchestrator {
 	 * `updated_time` and model haven't changed and only asking the provider
 	 * to (re-)fetch the rest.
 	 */
-	private async resolveVectors(notes: Note[], provider: EmbeddingProvider): Promise<Map<string, number[]>> {
+	private async resolveVectors(
+		notes: Note[],
+		provider: EmbeddingProvider
+	): Promise<Map<string, number[]>> {
 		const modelId = provider.modelName;
 		const cached = await this.getCachedVectors(notes);
 
-		const notesToFetch = notes.filter(n => !this.isFreshCacheHit(cached.get(n.id), n, modelId));
+		const notesToFetch = notes.filter(
+			(n) => !this.isFreshCacheHit(cached.get(n.id), n, modelId)
+		);
 
-		const fresh = notesToFetch.length > 0
-			? await provider.fetchVectorsByNoteIds(notesToFetch.map(n => n.id))
-			: new Map<string, number[]>();
+		const fresh =
+			notesToFetch.length > 0
+				? await provider.fetchVectorsByNoteIds(notesToFetch.map((n) => n.id))
+				: new Map<string, number[]>();
 
 		await this.saveFreshVectors(notesToFetch, fresh, modelId);
 
@@ -94,7 +95,7 @@ export class EmbeddingOrchestrator {
 		notes: Note[],
 		cached: Map<string, CachedVector>,
 		fresh: Map<string, number[]>,
-		modelId: string,
+		modelId: string
 	): Map<string, number[]> {
 		const merged = new Map<string, number[]>();
 		for (const note of notes) {
@@ -115,7 +116,7 @@ export class EmbeddingOrchestrator {
 	private async getCachedVectors(notes: Note[]): Promise<Map<string, CachedVector>> {
 		if (!this.cache) return new Map();
 		try {
-			return await this.cache.getMany(notes.map(n => n.id));
+			return await this.cache.getMany(notes.map((n) => n.id));
 		} catch (e) {
 			console.error('Vector cache read failed, falling back to a full fetch:', e);
 			return new Map();
@@ -125,13 +126,13 @@ export class EmbeddingOrchestrator {
 	private async saveFreshVectors(
 		notes: Note[],
 		vectors: Map<string, number[]>,
-		modelId: string,
+		modelId: string
 	): Promise<void> {
 		if (!this.cache || vectors.size === 0) return;
 
 		const entries: VectorCacheEntry[] = notes
-			.filter(n => vectors.has(n.id))
-			.map(n => ({
+			.filter((n) => vectors.has(n.id))
+			.map((n) => ({
 				noteId: n.id,
 				vector: vectors.get(n.id)!,
 				modelId,

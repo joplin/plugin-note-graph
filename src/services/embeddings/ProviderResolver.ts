@@ -3,7 +3,6 @@ import { EmbeddingProvider, ProviderConfig } from './Types';
 import { JoplinNativeProvider, JoplinAiApi, isIndexUsable } from './providers/JoplinNativeProvider';
 
 export class ProviderResolver {
-
 	/**
 	 * Resolves the native embedding provider after verifying that Joplin AI is
 	 * available and its embedding index is usable.
@@ -11,7 +10,9 @@ export class ProviderResolver {
 	public static async resolveWithValidation(): Promise<EmbeddingProvider> {
 		const joplinAi = joplin.ai as unknown as JoplinAiApi | undefined;
 		if (!joplinAi) {
-			throw new Error('joplin.ai is not available. Enable AI in Settings → AI. Requires Joplin v3.7+.');
+			throw new Error(
+				'joplin.ai is not available. Enable AI in Settings → AI. Requires Joplin v3.7+.'
+			);
 		}
 		const status = await joplinAi.getIndexStatus();
 		if (!status || !isIndexUsable(status.state)) {

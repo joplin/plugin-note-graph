@@ -30,7 +30,11 @@ describe('JoplinNativeProvider', () => {
 			getEmbeddings: jest.Mock;
 		};
 
-		ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'fresh-model' });
+		ai.getIndexStatus.mockResolvedValue({
+			ready: true,
+			state: 'ready',
+			modelId: 'fresh-model',
+		});
 		ai.getEmbeddings.mockResolvedValue({
 			modelId: 'fresh-model',
 			dimension: 2,
@@ -125,7 +129,11 @@ describe('JoplinNativeProvider', () => {
 			getEmbeddings: jest.Mock;
 		};
 
-		ai.getIndexStatus.mockResolvedValue({ ready: false, state: 'indexing', modelId: 'test-model' });
+		ai.getIndexStatus.mockResolvedValue({
+			ready: false,
+			state: 'indexing',
+			modelId: 'test-model',
+		});
 		ai.getEmbeddings.mockResolvedValue({
 			modelId: 'test-model',
 			dimension: 2,

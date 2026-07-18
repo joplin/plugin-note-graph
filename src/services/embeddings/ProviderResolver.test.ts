@@ -39,7 +39,9 @@ describe('ProviderResolver', () => {
 
 		it('returns provider when index is ready', async () => {
 			(joplin as any).ai = {
-				getIndexStatus: jest.fn().mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' }),
+				getIndexStatus: jest
+					.fn()
+					.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' }),
 				getEmbeddings: jest.fn(),
 			};
 			const provider = await ProviderResolver.resolveWithValidation();
@@ -49,7 +51,9 @@ describe('ProviderResolver', () => {
 
 		it('returns provider while the index is still indexing, since search still works with partial data', async () => {
 			(joplin as any).ai = {
-				getIndexStatus: jest.fn().mockResolvedValue({ ready: false, state: 'indexing', modelId: 'test-model' }),
+				getIndexStatus: jest
+					.fn()
+					.mockResolvedValue({ ready: false, state: 'indexing', modelId: 'test-model' }),
 				getEmbeddings: jest.fn(),
 			};
 			const provider = await ProviderResolver.resolveWithValidation();
