@@ -13,6 +13,7 @@ interface Sqlite3Database {
 		params: unknown[],
 		callback: (err: Error | null, rows: unknown[]) => void
 	): void;
+	close(callback?: (err: Error | null) => void): void;
 }
 
 /**
@@ -37,15 +38,21 @@ export class VectorDatabase implements IVectorDatabase {
 
 	/**
 	 * Opens (creating if needed) the vector cache database. Safe to call
-	 * repeatedly. A failed open is not cached: `opening` is reset on
-	 * rejection so a later call can retry (e.g. after a transient lock),
-	 * instead of every future open() re-awaiting the same stale rejection.
+	 * repeatedly. A failed open is not cached: both `opening` and `db` are
+	 * reset on rejection so a later call can retry from scratch, instead of
+	 * either re-awaiting the same stale rejection or (if the connection
+	 * itself succeeded but schema creation failed) treating a half-open
+	 * database as ready forever.
 	 */
 	public async open(): Promise<void> {
 		if (this.db) return;
 		if (!this.opening) {
 			this.opening = this.openInternal().catch((e) => {
 				this.opening = null;
+				if (this.db) {
+					this.db.close();
+					this.db = null;
+				}
 				throw e;
 			});
 		}

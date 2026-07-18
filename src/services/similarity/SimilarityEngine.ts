@@ -130,8 +130,7 @@ export class SimilarityEngine {
 			return this.computeCosinePairs();
 		}
 
-		const seen = new Set<string>();
-		const pairs: SimilarityPair[] = [];
+		const pairs = new Map<string, SimilarityPair>();
 		let successCount = 0;
 		let firstError: unknown = null;
 
@@ -149,13 +148,16 @@ export class SimilarityEngine {
 					}
 
 					const key = this.makePairKey(noteId, r.noteId);
-					if (seen.has(key)) continue;
-					seen.add(key);
+					const existing = pairs.get(key);
+					if (existing) {
+						existing.score = Math.max(existing.score, r.score);
+						continue;
+					}
 
 					const [source, target] =
 						noteId < r.noteId ? [noteId, r.noteId] : [r.noteId, noteId];
 
-					pairs.push({ source, target, score: r.score });
+					pairs.set(key, { source, target, score: r.score });
 				}
 			} catch (e) {
 				if (firstError === null) {
@@ -177,7 +179,7 @@ export class SimilarityEngine {
 			return this.computeCosinePairs();
 		}
 
-		return pairs;
+		return Array.from(pairs.values());
 	}
 
 	/** Dot product of two same-length vectors. */
