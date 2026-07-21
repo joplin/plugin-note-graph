@@ -128,5 +128,19 @@ describe('GraphBuilder', () => {
 			expect(result.nodes).toHaveLength(2);
 			expect(result.edges).toEqual([]);
 		});
+
+		it('forwards a custom threshold and top-K to SimilarityEngine.compute', async () => {
+			mockEdgeFactory.createEdges.mockReturnValue([]);
+			mockEdgeFactory.createSemanticEdges.mockReturnValue([]);
+			const computeMock = jest.fn().mockResolvedValue([]);
+			MockSimilarityEngine.mockImplementation(
+				() => ({ compute: computeMock } as unknown as SimilarityEngine)
+			);
+
+			const notes = [note('a', 'A'), note('b', 'B')];
+			await builder.buildWithSimilarity(notes, [], 0.7, 3);
+
+			expect(computeMock).toHaveBeenCalledWith(0.7, 3);
+		});
 	});
 });

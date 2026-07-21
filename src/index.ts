@@ -1,13 +1,28 @@
 import joplin from 'api';
 import { MenuItemLocation } from 'api/types';
-import { initializeAiNoteGraphPanel, showAiNoteGraphPanel, postGraphData } from './ui/webview';
+import {
+	initializeAiNoteGraphPanel,
+	showAiNoteGraphPanel,
+	postGraphData,
+	postStatus,
+	postProgress,
+} from './ui/webview';
 import { NoteRepository } from './data/NoteRepository';
 import { NotePreprocessor } from './data/NotePreprocessor';
 import { Note } from './data/Types';
-import { GraphBuilder } from './services/graph/GraphBuilder';
+import { AnalysisController } from './services/AnalysisController';
+import { registerGraphSettings, isAiAnalysisEnabled } from './services/settings/GraphSettings';
 
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
+const NOTE_GRAPH_SETTING_KEYS = [
+	'noteGraph.aiAnalysisEnabled',
+	'noteGraph.similarityThreshold',
+	'noteGraph.maxEdgesPerNote',
+];
+
+const analysisController = new AnalysisController();
+let lastLoadedNotes: Note[] | null = null;
 
 /**
  * Loads all notes from the Joplin API and enriches them with links and tags.
@@ -22,6 +37,18 @@ export const loadNotes = async (): Promise<Note[]> => {
 	return enrichedNotes;
 };
 
+/** Embeds notes (if AI analysis is on and ready) and pushes whichever graph results. */
+const runSemanticAnalysis = async (notes: Note[]): Promise<void> => {
+	const { graphData, usedAi } = await analysisController.embedAndBuildSemantic(notes, (progress) => {
+		void postProgress(progress.current, progress.total);
+	});
+
+	await postGraphData(graphData);
+	if (!usedAi && (await isAiAnalysisEnabled())) {
+		await postStatus('AI analysis unavailable - showing structural graph.');
+	}
+};
+
 const noteGraphCommand = {
 	name: SHOW_NOTE_GRAPH_COMMAND,
 	label: 'Show Note Graph',
@@ -29,14 +56,37 @@ const noteGraphCommand = {
 		try {
 			const enrichedNotes = await loadNotes();
 			console.info(`Loaded ${enrichedNotes.length} notes.`);
-			const builder = new GraphBuilder();
-			const graphData = builder.build(enrichedNotes);
-			await postGraphData(graphData);
+			lastLoadedNotes = enrichedNotes;
+
+			await postGraphData(analysisController.buildStructural(enrichedNotes));
 			await showAiNoteGraphPanel();
+
+			await runSemanticAnalysis(enrichedNotes);
 		} catch (error) {
 			console.error('Failed to load note graph:', error);
 		}
 	},
+};
+
+/**
+ * Reacts to changes made in Tools → Options → Note Graph. Toggling AI analysis
+ * re-runs the full analysis; changing threshold/top-K only recomputes from the
+ * already-embedded vectors. No-ops if the graph hasn't been opened yet.
+ */
+const handleSettingsChange = async (event: { keys: string[] }): Promise<void> => {
+	if (!lastLoadedNotes || !event.keys.some((key) => NOTE_GRAPH_SETTING_KEYS.includes(key))) {
+		return;
+	}
+
+	if (event.keys.includes('noteGraph.aiAnalysisEnabled')) {
+		await runSemanticAnalysis(lastLoadedNotes);
+		return;
+	}
+
+	const graphData = await analysisController.recompute();
+	if (graphData) {
+		await postGraphData(graphData);
+	}
 };
 
 const registerCommands = async (): Promise<void> => {
@@ -54,6 +104,8 @@ const registerMenuItems = async (): Promise<void> => {
 joplin.plugins.register({
 	onStart: async function () {
 		console.info('Note Graph plugin started.');
+		await registerGraphSettings();
+		await joplin.settings.onChange(handleSettingsChange);
 		await initializeAiNoteGraphPanel();
 		await registerCommands();
 		await registerMenuItems();

@@ -27,12 +27,14 @@ export class GraphBuilder {
 	 */
 	public async buildWithSimilarity(
 		notes: Note[],
-		embeddedNotes: EmbeddedNote[]
+		embeddedNotes: EmbeddedNote[],
+		threshold?: number,
+		topK?: number
 	): Promise<GraphData> {
 		const structuralEdges = this.edgeFactory.createEdges(notes);
 
 		const engine = new SimilarityEngine(notes, embeddedNotes);
-		const pairs = await engine.compute();
+		const pairs = await engine.compute(threshold, topK);
 		const semanticEdges = this.edgeFactory.createSemanticEdges(pairs);
 
 		const allEdges = [...structuralEdges, ...semanticEdges];

@@ -468,6 +468,57 @@ describe('SimilarityEngine', () => {
 		});
 	});
 
+	describe('custom threshold and top-K overrides', () => {
+		it('applies a stricter caller-supplied threshold instead of DEFAULT_THRESHOLD', async () => {
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B')];
+			const embedded = [embed('a', [1, 0]), embed('b', [0.95, 0.3])];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const defaultPairs = await engine.compute();
+			const strictPairs = await engine.compute(1.2);
+
+			expect(defaultPairs).toHaveLength(1);
+			expect(strictPairs).toEqual([]);
+		});
+
+		it('applies a looser caller-supplied threshold that admits a pair DEFAULT_THRESHOLD would reject', async () => {
+			// Raw cosine 0.35 (above SEMANTIC_FLOOR) plus the same-day temporal
+			// bonus (0.1) lands at 0.45 — below DEFAULT_THRESHOLD (0.5) but above
+			// a caller-supplied 0.4.
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B')];
+			const embedded = [embed('a', [1, 0]), embed('b', [0.35, Math.sqrt(1 - 0.35 * 0.35)])];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const defaultPairs = await engine.compute();
+			const loosePairs = await engine.compute(0.4);
+
+			expect(defaultPairs).toEqual([]);
+			expect(loosePairs).toHaveLength(1);
+		});
+
+		it('applies a caller-supplied top-K instead of TOP_K', async () => {
+			// selectTopK is a per-note union (a pair survives if *either* endpoint
+			// keeps it in its own top-K), so topK=0 is the only value that
+			// unambiguously proves the override took effect: every note's own
+			// kept list is empty, so no pair can survive from any side.
+			const notes = [];
+			const embedded = [];
+			for (let i = 0; i < 6; i++) {
+				notes.push(makeNote(`n${i}`, `Note ${i}`));
+				embedded.push(
+					embed(`n${i}`, [Math.cos((i * Math.PI) / 3), Math.sin((i * Math.PI) / 3)])
+				);
+			}
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const defaultPairs = await engine.compute();
+			const zeroKPairs = await engine.compute(undefined, 0);
+
+			expect(defaultPairs.length).toBeGreaterThan(0);
+			expect(zeroKPairs).toEqual([]);
+		});
+	});
+
 	describe('SEMANTIC_FLOOR and threshold ordering', () => {
 		it('rejects a below-floor pair even with a shared tag', async () => {
 			// a and b are nearly orthogonal (cosine ~0), share a tag but are not

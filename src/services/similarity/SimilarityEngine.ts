@@ -50,7 +50,10 @@ export class SimilarityEngine {
 	 * absolute meaning) is what actually guarantees that tags alone can never
 	 * manufacture an edge out of a weak semantic score.
 	 */
-	public async compute(): Promise<SimilarityPair[]> {
+	public async compute(
+		threshold: number = DEFAULT_THRESHOLD,
+		topK: number = TOP_K
+	): Promise<SimilarityPair[]> {
 		if (this.noteIds.length <= 1) {
 			return [];
 		}
@@ -69,8 +72,8 @@ export class SimilarityEngine {
 
 		const normalized = this.normalize(aboveFloor);
 		const enriched = this.addBonusPoints(normalized);
-		const aboveThreshold = this.filterBelowThreshold(enriched, DEFAULT_THRESHOLD);
-		const topPairs = this.selectTopK(aboveThreshold, TOP_K);
+		const aboveThreshold = this.filterBelowThreshold(enriched, threshold);
+		const topPairs = this.selectTopK(aboveThreshold, topK);
 
 		return topPairs;
 	}
