@@ -1,12 +1,7 @@
 import { EdgeFactory } from './EdgeFactory';
 import { Note } from '../../data/Types';
 
-function note(
-	id: string,
-	title: string,
-	links: string[] = [],
-	tags: string[] = []
-): Note {
+function note(id: string, title: string, links: string[] = [], tags: string[] = []): Note {
 	return {
 		id,
 		parent_id: 'p1',
@@ -35,26 +30,17 @@ describe('EdgeFactory', () => {
 	});
 
 	it('ignores resource links that are not note IDs', () => {
-		const notes = [
-			note('a', 'A', ['resource123']),
-			note('b', 'B', ['resource123']),
-		];
+		const notes = [note('a', 'A', ['resource123']), note('b', 'B', ['resource123'])];
 		expect(factory.createEdges(notes)).toEqual([]);
 	});
 
 	it('creates link edge when note body references another note ID', () => {
-		const edges = factory.createEdges([
-			note('a', 'A', ['b']),
-			note('b', 'B', []),
-		]);
+		const edges = factory.createEdges([note('a', 'A', ['b']), note('b', 'B', [])]);
 		expect(edges).toEqual([{ source: 'a', target: 'b', type: 'link' }]);
 	});
 
 	it('creates bidirectional links when notes reference each other', () => {
-		const edges = factory.createEdges([
-			note('a', 'A', ['b']),
-			note('b', 'B', ['a']),
-		]);
+		const edges = factory.createEdges([note('a', 'A', ['b']), note('b', 'B', ['a'])]);
 		expect(edges).toHaveLength(2);
 		expect(edges).toContainEqual({ source: 'a', target: 'b', type: 'link' });
 		expect(edges).toContainEqual({ source: 'b', target: 'a', type: 'link' });
@@ -65,9 +51,7 @@ describe('EdgeFactory', () => {
 			note('a', 'A', [], ['shared']),
 			note('b', 'B', [], ['shared']),
 		]);
-		expect(edges).toEqual([
-			{ source: 'a', target: 'b', type: 'tag', tagName: 'shared' },
-		]);
+		expect(edges).toEqual([{ source: 'a', target: 'b', type: 'tag', tagName: 'shared' }]);
 	});
 
 	it('merges multiple shared tag names into one edge', () => {
@@ -100,5 +84,24 @@ describe('EdgeFactory', () => {
 
 	it('ignores self-referencing links', () => {
 		expect(factory.createEdges([note('a', 'A', ['a'])])).toEqual([]);
+	});
+
+	describe('createSemanticEdges', () => {
+		it('returns empty for no pairs', () => {
+			expect(factory.createSemanticEdges([])).toEqual([]);
+		});
+
+		it('creates a semantic edge for each positive-score pair', () => {
+			const edges = factory.createSemanticEdges([{ source: 'a', target: 'b', score: 0.8 }]);
+			expect(edges).toEqual([{ source: 'a', target: 'b', type: 'semantic' }]);
+		});
+
+		it('excludes pairs with a non-positive score', () => {
+			const edges = factory.createSemanticEdges([
+				{ source: 'a', target: 'b', score: 0 },
+				{ source: 'c', target: 'd', score: -0.1 },
+			]);
+			expect(edges).toEqual([]);
+		});
 	});
 });

@@ -1,18 +1,56 @@
 import joplin from 'api';
 import { EmbeddingProvider, ProviderId } from '../Types';
 
+/**
+ * Mirrors Joplin's official AiIndexState type (joplinapp.org/api/references/plugin_api).
+ * 'unavailable' | 'disabled' | 'preparing' block any fetch (no data yet).
+ * 'indexing' still allows fetching — results are partial, handled downstream
+ * as per-note "not yet indexed" errors. 'ready' is the fully-indexed state.
+ */
+export type AiIndexState = 'unavailable' | 'disabled' | 'preparing' | 'indexing' | 'ready';
+
+export interface AiIndexStatus {
+	modelId: string | null;
+	notesIndexed: number;
+	ready: boolean;
+	state: AiIndexState;
+	totalNotes: number;
+}
+
+export interface EmbeddingChunk {
+	chunkIndex: number;
+	chunkText: string;
+	noteId: string;
+	vector: number[];
+}
+
+export interface EmbeddingsPage {
+	chunks: EmbeddingChunk[];
+	dimension: number;
+	modelId: string;
+	nextCursor?: string;
+}
+
+export interface GetEmbeddingsOptions {
+	cursor?: string;
+	limit?: number;
+	noteIds?: string[];
+}
+
 export interface JoplinAiApi {
-	getIndexStatus: () => Promise<{ ready: boolean; modelId?: string | null }>;
-	getEmbeddings: (params: {
-		noteIds?: string[];
-		cursor?: string;
-		limit: number;
-	}) => Promise<{
-		modelId?: string | null;
-		dimension: number;
-		chunks: Array<{ noteId: string; vector: number[] }>;
-		nextCursor?: string;
-	}>;
+	getIndexStatus: () => Promise<AiIndexStatus>;
+	getEmbeddings: (options: GetEmbeddingsOptions) => Promise<EmbeddingsPage>;
+}
+
+const BLOCKING_STATES: ReadonlySet<AiIndexState> = new Set([
+	'unavailable',
+	'disabled',
+	'preparing',
+]);
+
+/** True once the index has enough data to fetch from, even if still indexing. */
+export function isIndexUsable(state: AiIndexState | undefined): boolean {
+	return !!state && !BLOCKING_STATES.has(state);
 }
 
 export class JoplinNativeProvider implements EmbeddingProvider {
@@ -60,15 +98,20 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		return this.fetchedModelId;
 	}
 
-	/** Checks that joplin.ai exists and has the required methods. */
+	/**
+	 * Checks that joplin.ai exists. Deliberately does not probe individual
+	 * method properties (e.g. `typeof api.getEmbeddings`) — Joplin's plugin
+	 * RPC bridge exposes joplin.ai as a proxy that accumulates property-path
+	 * state across accesses, so a property read that's never invoked can
+	 * corrupt the path used by a later real call. Always access a method and
+	 * invoke it in the same expression; let a genuinely missing method throw
+	 * on invocation instead of pre-checking with typeof.
+	 */
 	private validateAiApi(): JoplinAiApi {
 		const api = joplin.ai as unknown as JoplinAiApi | undefined;
 
-		if (!api || typeof api.getEmbeddings !== 'function') {
-			throw new Error('joplin.ai.getEmbeddings is not available. Enable AI in Settings → AI.');
-		}
-		if (typeof api.getIndexStatus !== 'function') {
-			throw new Error('joplin.ai.getIndexStatus is not available. Enable AI in Settings → AI.');
+		if (!api) {
+			throw new Error('joplin.ai is not available. Enable AI in Settings → AI.');
 		}
 
 		return api;
@@ -80,14 +123,9 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 	 */
 	private async fetchAllPages(
 		api: JoplinAiApi,
-		noteIds: string[],
+		noteIds: string[]
 	): Promise<Map<string, number[][]>> {
-		const status = await api.getIndexStatus();
-		if (!status || !status.ready) {
-			throw new Error('Joplin AI index is not ready. Wait for indexing to complete or enable AI in Settings → AI.');
-		}
-
-		let trackedModelId: string | null = status.modelId ?? null;
+		let trackedModelId = await this.requireUsableIndex(api);
 
 		const grouped = new Map<string, number[][]>();
 		let cursor: string | undefined;
@@ -96,7 +134,9 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 
 		while (true) {
 			if (pageCount >= JoplinNativeProvider.MAX_PAGES) {
-				throw new Error('Too many pages. The embedding index may be in an unexpected state.');
+				throw new Error(
+					'Too many pages. The embedding index may be in an unexpected state.'
+				);
 			}
 			pageCount++;
 
@@ -123,14 +163,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 				}
 			}
 
-			for (const chunk of page.chunks) {
-				const list = grouped.get(chunk.noteId);
-				if (list) {
-					list.push(chunk.vector);
-				} else {
-					grouped.set(chunk.noteId, [chunk.vector]);
-				}
-			}
+			this.addChunksToGroup(grouped, page.chunks);
 
 			cursor = page.nextCursor;
 			if (!cursor) {
@@ -140,6 +173,30 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 
 		this._modelName = trackedModelId ?? JoplinNativeProvider.DEFAULT_MODEL_ID;
 		return grouped;
+	}
+
+	/** Throws if the index isn't usable yet; otherwise returns the model ID it's currently indexed with. */
+	private async requireUsableIndex(api: JoplinAiApi): Promise<string | null> {
+		const status = await api.getIndexStatus();
+		if (!status || !isIndexUsable(status.state)) {
+			throw new Error(
+				`Joplin AI index is not usable yet (state: ${status?.state ?? 'unknown'}). ` +
+					'Enable AI and wait for the embedding model to finish loading in Settings → AI.'
+			);
+		}
+		return status.modelId ?? null;
+	}
+
+	/** Appends each chunk's vector onto its note's running vector list. */
+	private addChunksToGroup(grouped: Map<string, number[][]>, chunks: EmbeddingChunk[]): void {
+		for (const chunk of chunks) {
+			const list = grouped.get(chunk.noteId);
+			if (list) {
+				list.push(chunk.vector);
+			} else {
+				grouped.set(chunk.noteId, [chunk.vector]);
+			}
+		}
 	}
 
 	/** Averages multiple chunk vectors per note into one vector and L2-normalizes. */

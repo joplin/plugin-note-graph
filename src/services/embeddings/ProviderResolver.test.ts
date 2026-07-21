@@ -17,19 +17,31 @@ describe('ProviderResolver', () => {
 			);
 		});
 
-		it('throws when index is not ready', async () => {
+		it('throws when index is disabled', async () => {
 			(joplin as any).ai = {
 				getIndexStatus: jest.fn().mockResolvedValue({ ready: false, state: 'disabled' }),
 				getEmbeddings: jest.fn(),
 			};
 			await expect(ProviderResolver.resolveWithValidation()).rejects.toThrow(
-				'Joplin AI index is not ready'
+				'Joplin AI index is not usable yet (state: disabled)'
+			);
+		});
+
+		it('throws while the embedding model is still preparing', async () => {
+			(joplin as any).ai = {
+				getIndexStatus: jest.fn().mockResolvedValue({ ready: false, state: 'preparing' }),
+				getEmbeddings: jest.fn(),
+			};
+			await expect(ProviderResolver.resolveWithValidation()).rejects.toThrow(
+				'Joplin AI index is not usable yet (state: preparing)'
 			);
 		});
 
 		it('returns provider when index is ready', async () => {
 			(joplin as any).ai = {
-				getIndexStatus: jest.fn().mockResolvedValue({ ready: true, modelId: 'test-model' }),
+				getIndexStatus: jest
+					.fn()
+					.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' }),
 				getEmbeddings: jest.fn(),
 			};
 			const provider = await ProviderResolver.resolveWithValidation();
@@ -37,9 +49,20 @@ describe('ProviderResolver', () => {
 			expect(provider.modelName).toBe('test-model');
 		});
 
+		it('returns provider while the index is still indexing, since search still works with partial data', async () => {
+			(joplin as any).ai = {
+				getIndexStatus: jest
+					.fn()
+					.mockResolvedValue({ ready: false, state: 'indexing', modelId: 'test-model' }),
+				getEmbeddings: jest.fn(),
+			};
+			const provider = await ProviderResolver.resolveWithValidation();
+			expect(provider.modelName).toBe('test-model');
+		});
+
 		it('uses the default native model when index status omits modelId', async () => {
 			(joplin as any).ai = {
-				getIndexStatus: jest.fn().mockResolvedValue({ ready: true }),
+				getIndexStatus: jest.fn().mockResolvedValue({ ready: true, state: 'ready' }),
 				getEmbeddings: jest.fn(),
 			};
 			const provider = await ProviderResolver.resolveWithValidation();
