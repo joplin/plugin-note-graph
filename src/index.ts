@@ -11,15 +11,15 @@ import { NoteRepository } from './data/NoteRepository';
 import { NotePreprocessor } from './data/NotePreprocessor';
 import { Note } from './data/Types';
 import { AnalysisController } from './services/AnalysisController';
-import { registerGraphSettings, isAiAnalysisEnabled } from './services/settings/GraphSettings';
+import {
+	registerGraphSettings,
+	isAiAnalysisEnabled,
+	AI_ANALYSIS_ENABLED_KEY,
+	NOTE_GRAPH_SETTING_KEYS,
+} from './services/settings/GraphSettings';
 
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
-const NOTE_GRAPH_SETTING_KEYS = [
-	'noteGraph.aiAnalysisEnabled',
-	'noteGraph.similarityThreshold',
-	'noteGraph.maxEdgesPerNote',
-];
 
 const analysisController = new AnalysisController();
 let lastLoadedNotes: Note[] | null = null;
@@ -37,15 +37,23 @@ export const loadNotes = async (): Promise<Note[]> => {
 	return enrichedNotes;
 };
 
-/** Embeds notes (if AI analysis is on and ready) and pushes whichever graph results. */
+/**
+ * Embeds notes (if AI analysis is on and ready) and pushes whichever graph results.
+ * A `null` result means a newer call started before this one finished — its
+ * data is stale, so it's dropped instead of overwriting the newer graph.
+ */
 const runSemanticAnalysis = async (notes: Note[]): Promise<void> => {
-	const { graphData, usedAi } = await analysisController.embedAndBuildSemantic(notes, (progress) => {
+	const result = await analysisController.embedAndBuildSemantic(notes, (progress) => {
 		void postProgress(progress.current, progress.total);
 	});
+	if (!result) {
+		return;
+	}
 
+	const { graphData, usedAi, fallbackReason } = result;
 	await postGraphData(graphData);
 	if (!usedAi && (await isAiAnalysisEnabled())) {
-		await postStatus('AI analysis unavailable - showing structural graph.');
+		await postStatus(fallbackReason ?? 'AI analysis unavailable - showing structural graph.');
 	}
 };
 
@@ -78,8 +86,15 @@ const handleSettingsChange = async (event: { keys: string[] }): Promise<void> =>
 		return;
 	}
 
-	if (event.keys.includes('noteGraph.aiAnalysisEnabled')) {
+	if (event.keys.includes(AI_ANALYSIS_ENABLED_KEY)) {
 		await runSemanticAnalysis(lastLoadedNotes);
+		return;
+	}
+
+	// Threshold / top-K only affect semantic edges, which exist only while AI
+	// analysis is enabled (matches the settings' own description). Skip the
+	// recompute when it's off so a stale embedding cache can't resurrect edges.
+	if (!(await isAiAnalysisEnabled())) {
 		return;
 	}
 

@@ -3,9 +3,16 @@ import { SettingItemType } from 'api/types';
 import { DEFAULT_THRESHOLD, TOP_K } from '../similarity/ThresholdPresets';
 
 const SECTION_NAME = 'noteGraph';
-const AI_ANALYSIS_ENABLED_KEY = 'noteGraph.aiAnalysisEnabled';
+export const AI_ANALYSIS_ENABLED_KEY = 'noteGraph.aiAnalysisEnabled';
 const SIMILARITY_THRESHOLD_KEY = 'noteGraph.similarityThreshold';
 const MAX_EDGES_PER_NOTE_KEY = 'noteGraph.maxEdgesPerNote';
+
+/** All Note Graph setting keys — the single source of truth for anything that needs to check "did one of our settings change?" */
+export const NOTE_GRAPH_SETTING_KEYS = [
+	AI_ANALYSIS_ENABLED_KEY,
+	SIMILARITY_THRESHOLD_KEY,
+	MAX_EDGES_PER_NOTE_KEY,
+];
 
 /**
  * Registers plugin settings. Registration is dynamic (lost on restart), so

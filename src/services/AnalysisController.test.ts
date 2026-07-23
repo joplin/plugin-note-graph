@@ -39,6 +39,20 @@ const fakeProvider: EmbeddingProvider = {
 	fetchVectorsByNoteIds: jest.fn(),
 };
 
+type EmbedResult = { embeddedNotes: unknown[]; errors: unknown[] };
+
+/** A promise plus its own resolve function, for tests that need to control exactly when a mocked async call settles. */
+function deferredEmbedResult(): {
+	promise: Promise<EmbedResult>;
+	resolve: (result: EmbedResult) => void;
+} {
+	let resolve!: (result: EmbedResult) => void;
+	const promise = new Promise<EmbedResult>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
+}
+
 describe('AnalysisController', () => {
 	let mockBuilder: jest.Mocked<GraphBuilder>;
 	let controller: AnalysisController;
@@ -83,12 +97,13 @@ describe('AnalysisController', () => {
 
 			const result = await controller.embedAndBuildSemantic(notes);
 
-			expect(result.usedAi).toBe(false);
+			expect(result?.usedAi).toBe(false);
+			expect(result?.fallbackReason).toBeUndefined();
 			expect(mockBuilder.build).toHaveBeenCalledWith(notes);
 			expect(MockProviderResolver.resolveWithValidation).not.toHaveBeenCalled();
 		});
 
-		it('falls back to the structural graph when provider resolution throws', async () => {
+		it('falls back to the structural graph when provider resolution throws, carrying the reason', async () => {
 			mockIsAiAnalysisEnabled.mockResolvedValue(true);
 			MockProviderResolver.resolveWithValidation.mockRejectedValue(
 				new Error('joplin.ai is not available')
@@ -97,12 +112,13 @@ describe('AnalysisController', () => {
 
 			const result = await controller.embedAndBuildSemantic(notes);
 
-			expect(result.usedAi).toBe(false);
+			expect(result?.usedAi).toBe(false);
+			expect(result?.fallbackReason).toBe('joplin.ai is not available');
 			expect(mockBuilder.build).toHaveBeenCalledWith(notes);
 			expect(mockBuilder.buildWithSimilarity).not.toHaveBeenCalled();
 		});
 
-		it('falls back to the structural graph when embedding produces no vectors', async () => {
+		it('falls back to the structural graph when embedding produces no vectors, carrying the reason', async () => {
 			mockIsAiAnalysisEnabled.mockResolvedValue(true);
 			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
 			mockOrchestratorInstance.embedNotes.mockResolvedValue({
@@ -113,7 +129,8 @@ describe('AnalysisController', () => {
 
 			const result = await controller.embedAndBuildSemantic(notes);
 
-			expect(result.usedAi).toBe(false);
+			expect(result?.usedAi).toBe(false);
+			expect(result?.fallbackReason).toBe('Note not yet indexed by Joplin AI.');
 			expect(mockBuilder.buildWithSimilarity).not.toHaveBeenCalled();
 		});
 
@@ -126,10 +143,40 @@ describe('AnalysisController', () => {
 
 			const result = await controller.embedAndBuildSemantic(notes);
 
-			expect(result.usedAi).toBe(true);
+			expect(result?.usedAi).toBe(true);
 			expect(mockOrchestratorInstance.setProvider).toHaveBeenCalledWith(fakeProvider);
 			expect(mockOrchestratorInstance.setCache).toHaveBeenCalled();
-			expect(mockBuilder.buildWithSimilarity).toHaveBeenCalledWith(notes, embeddedNotes, 0.5, 5);
+			expect(mockBuilder.buildWithSimilarity).toHaveBeenCalledWith(
+				notes,
+				embeddedNotes,
+				0.5,
+				5
+			);
+		});
+
+		it('discards a run that resolves after a newer run has already started', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+
+			const first = deferredEmbedResult();
+			const second = deferredEmbedResult();
+			mockOrchestratorInstance.embedNotes
+				.mockReturnValueOnce(first.promise)
+				.mockReturnValueOnce(second.promise);
+
+			const firstCall = controller.embedAndBuildSemantic([note('a')]);
+			const secondCall = controller.embedAndBuildSemantic([note('b')]);
+
+			// The newer (second) run finishes first...
+			second.resolve({ embeddedNotes: [{ note: note('b'), embedding: [0, 1] }], errors: [] });
+			const secondResult = await secondCall;
+
+			// ...then the stale first run finishes after it and should be discarded.
+			first.resolve({ embeddedNotes: [{ note: note('a'), embedding: [1, 0] }], errors: [] });
+			const firstResult = await firstCall;
+
+			expect(secondResult?.usedAi).toBe(true);
+			expect(firstResult).toBeNull();
 		});
 
 		it('wires an onProgress callback into the orchestrator when provided', async () => {
@@ -143,7 +190,44 @@ describe('AnalysisController', () => {
 
 			await controller.embedAndBuildSemantic([note('a')], onProgress);
 
-			expect(mockOrchestratorInstance.setOnProgress).toHaveBeenCalledWith(onProgress);
+			expect(mockOrchestratorInstance.setOnProgress).toHaveBeenCalledTimes(1);
+			const wiredProgress = mockOrchestratorInstance.setOnProgress.mock.calls[0][0];
+			wiredProgress({ current: 1, total: 1 });
+			expect(onProgress).toHaveBeenCalledWith({ current: 1, total: 1 });
+		});
+
+		it('stops forwarding progress from a run once a newer run has started', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+
+			const first = deferredEmbedResult();
+			mockOrchestratorInstance.embedNotes
+				.mockReturnValueOnce(first.promise)
+				.mockResolvedValueOnce({
+					embeddedNotes: [{ note: note('b'), embedding: [0, 1] }],
+					errors: [],
+				});
+
+			const onProgressFirst = jest.fn();
+			const firstCall = controller.embedAndBuildSemantic([note('a')], onProgressFirst);
+			// Let the two internal awaits (isAiAnalysisEnabled, resolveWithValidation) settle
+			// so the orchestrator is constructed and wired before we grab its callback.
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+			// Second call has no onProgress, so this is unambiguously the first run's wired callback.
+			const firstRunProgress = mockOrchestratorInstance.setOnProgress.mock.calls[0][0];
+
+			const secondCall = controller.embedAndBuildSemantic([note('b')]);
+			await secondCall;
+
+			// The stale first run reports progress after being superseded...
+			firstRunProgress({ current: 1, total: 1 });
+			// ...it should not reach the original caller.
+			expect(onProgressFirst).not.toHaveBeenCalled();
+
+			first.resolve({ embeddedNotes: [{ note: note('a'), embedding: [1, 0] }], errors: [] });
+			await firstCall;
 		});
 	});
 
