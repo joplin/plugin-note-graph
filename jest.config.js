@@ -11,6 +11,7 @@ module.exports = {
 
     moduleNameMapper: {
         '^api$': '<rootDir>/src/tests/mocks/joplin.ts',
+        '^api/types$': '<rootDir>/api/types.ts',
     },
 
     clearMocks: true,

@@ -84,3 +84,15 @@ export const postGraphData = async (graphData: GraphData): Promise<void> => {
 		joplin.views.panels.postMessage(handle, { type: 'graph-data', ...graphData });
 	}
 };
+
+/** Pushes a one-line status message to the panel (e.g. a fallback notice). */
+export const postStatus = async (text: string): Promise<void> => {
+	const handle = getPanel();
+	await joplin.views.panels.postMessage(handle, { type: 'status', text });
+};
+
+/** Pushes embedding progress to the panel's progress bar. */
+export const postProgress = async (current: number, total: number): Promise<void> => {
+	const handle = getPanel();
+	await joplin.views.panels.postMessage(handle, { type: 'progress', current, total });
+};

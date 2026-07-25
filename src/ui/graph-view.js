@@ -34,6 +34,9 @@ var statusEl;
 var pollTimer;
 var tooltipEl;
 var nodeStats;
+var progressEl;
+var progressFillEl;
+var progressLabelEl;
 
 function showStatus(text) {
 	if (statusEl) {
@@ -45,6 +48,21 @@ function showStatus(text) {
 function hideStatus() {
 	if (statusEl) {
 		statusEl.style.display = 'none';
+	}
+}
+
+/** Updates the progress bar below the stats bar with an "embedding N/M notes" state. */
+function showProgress(current, total) {
+	if (!progressEl || !progressFillEl || !progressLabelEl) return;
+	progressEl.style.display = '';
+	var pct = total > 0 ? Math.round((current / total) * 100) : 0;
+	progressFillEl.style.width = pct + '%';
+	progressLabelEl.textContent = 'Embedding notes: ' + current + '/' + total;
+}
+
+function hideProgress() {
+	if (progressEl) {
+		progressEl.style.display = 'none';
 	}
 }
 
@@ -322,6 +340,10 @@ function init() {
 		statusEl.style.display = '';
 	}
 
+	progressEl = document.getElementById('analysis-progress');
+	progressFillEl = document.getElementById('analysis-progress-fill');
+	progressLabelEl = document.getElementById('analysis-progress-label');
+
 	tooltipEl = document.createElement('div');
 	tooltipEl.className = 'graph-tooltip';
 	document.body.appendChild(tooltipEl);
@@ -516,10 +538,18 @@ function init() {
 						clearInterval(pollTimer);
 						pollTimer = null;
 					}
+					hideProgress();
 					renderGraph(message);
 				}
 				if (message && message.type === 'fit-to-screen') {
 					cy.fit(undefined, 30);
+				}
+				if (message && message.type === 'status' && message.text) {
+					hideProgress();
+					showStatus(message.text);
+				}
+				if (message && message.type === 'progress') {
+					showProgress(message.current, message.total);
 				}
 			});
 		}
