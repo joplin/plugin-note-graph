@@ -86,21 +86,25 @@ const handleSettingsChange = async (event: { keys: string[] }): Promise<void> =>
 		return;
 	}
 
-	if (event.keys.includes(AI_ANALYSIS_ENABLED_KEY)) {
-		await runSemanticAnalysis(lastLoadedNotes);
-		return;
-	}
+	try {
+		if (event.keys.includes(AI_ANALYSIS_ENABLED_KEY)) {
+			await runSemanticAnalysis(lastLoadedNotes);
+			return;
+		}
 
-	// Threshold / top-K only affect semantic edges, which exist only while AI
-	// analysis is enabled (matches the settings' own description). Skip the
-	// recompute when it's off so a stale embedding cache can't resurrect edges.
-	if (!(await isAiAnalysisEnabled())) {
-		return;
-	}
+		// Threshold / top-K only affect semantic edges, which exist only while AI
+		// analysis is enabled (matches the settings' own description). Skip the
+		// recompute when it's off so a stale embedding cache can't resurrect edges.
+		if (!(await isAiAnalysisEnabled())) {
+			return;
+		}
 
-	const graphData = await analysisController.recompute();
-	if (graphData) {
-		await postGraphData(graphData);
+		const graphData = await analysisController.recompute();
+		if (graphData) {
+			await postGraphData(graphData);
+		}
+	} catch (error) {
+		console.error('Failed to handle note graph settings change:', error);
 	}
 };
 
