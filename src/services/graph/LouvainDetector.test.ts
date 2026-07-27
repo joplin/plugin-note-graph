@@ -115,13 +115,9 @@ describe('LouvainDetector', () => {
 		});
 
 		it('weighs a note more strongly toward a cluster it shares multiple edge types with', () => {
-			// x is tied to triangle A by two relationships (a link and a tag
-			// between the same pair) and to triangle B by a single link.
-			// Tested this against the real library. Without adding up the
-			// weight per edge type, x-a1 and x-b1 both stay at weight 1 and x
-			// ties toward B. With the weight added up, x-a1 reaches weight 2
-			// and pulls x into A instead. This is a real regression test for
-			// that logic, not just a "doesn't throw" check.
+			// x has two relationships with a1 (link + tag) but only one with b1.
+			// Verified against the real library that this specific setup is what
+			// flips x from tying toward b1 to grouping with a1.
 			const triangle = (prefix: string): GraphEdge[] => [
 				{ source: `${prefix}1`, target: `${prefix}2`, type: 'link' },
 				{ source: `${prefix}2`, target: `${prefix}3`, type: 'link' },
@@ -181,10 +177,7 @@ describe('LouvainDetector', () => {
 				note('e5', 'Isolate five'),
 				note('e6', 'Isolate six'),
 			];
-			// Just one edge among 10 otherwise disconnected notes. Louvain
-			// would end up with 9 communities (one pair plus eight
-			// singletons), well past the degenerate threshold, even though
-			// edges.length is greater than 0.
+			// One edge among 10 otherwise disconnected notes: 9 communities, past the degenerate threshold.
 			const edges: GraphEdge[] = [{ source: 'a', target: 'b', type: 'link' }];
 
 			const communities = detector.detectCommunities(notes, edges);

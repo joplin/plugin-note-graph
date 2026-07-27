@@ -68,12 +68,7 @@ function hideProgress() {
 	}
 }
 
-/**
- * Colors for community groups. Community ids are ordered largest first, so
- * index 0 is always the biggest cluster. The first 7 colors are the
- * Okabe-Ito colorblind-safe palette. 3 more were added and kept as distinct
- * as possible, since Okabe-Ito only covers 7 usable colors and we need 10.
- */
+/** Colors for community groups, ordered largest cluster first. First 7 are the Okabe-Ito colorblind-safe palette, 3 more added to reach 10. */
 var COMMUNITY_COLORS = [
 	'#e69f00', // orange
 	'#56b4e9', // sky blue
@@ -90,14 +85,13 @@ var COMMUNITY_COLORS = [
 /** Neutral color for communities past the palette. A long tail of small groups isn't worth giving each one its own color. */
 var COMMUNITY_OVERFLOW_COLOR = '#9aa0a6';
 
-/** Maps a node's community id onto the categorical palette. */
 function communityColor(ele) {
 	var community = ele.data('community') || 0;
 	if (community >= COMMUNITY_COLORS.length) return COMMUNITY_OVERFLOW_COLOR;
 	return COMMUNITY_COLORS[community];
 }
 
-/** Turns a node's 1-10 centrality score into a pixel size, so small notes stay readable and hubs stand out. */
+/** Maps the 1-10 centrality score to a pixel diameter. */
 function nodeDiameter(ele) {
 	var size = ele.data('size') || 1;
 	return 18 + (size - 1) * 3;

@@ -5,11 +5,7 @@ const MAX_SIZE = 10;
 const FLAT_DEGREE_SIZE = 5;
 
 export class CentralityScorer {
-	/**
-	 * Maps each note's degree (connection count) to a 1-10 size scale, so
-	 * the most connected notes render biggest. See scale() for why this
-	 * isn't plain min-max.
-	 */
+	/** Maps each note's degree to a 1-10 size scale. See `scale()` for why this isn't plain min-max. */
 	public score(degreeMap: Map<string, number>): Map<string, number> {
 		if (degreeMap.size === 0) {
 			return new Map();
@@ -30,12 +26,7 @@ export class CentralityScorer {
 		return sizes;
 	}
 
-	/**
-	 * Most notes only have a few connections, and a couple of hubs have way
-	 * more. Plain min-max scaling would squeeze almost everything down near
-	 * MIN_SIZE. Using log compression instead spreads the low-degree notes
-	 * out across the scale instead of flattening them.
-	 */
+	/** Log compression instead of plain min-max, since most notes have few connections and a couple of hubs have way more; linear scaling would squeeze everyone but the hubs down near MIN_SIZE. */
 	private scale(degree: number, min: number, spread: number): number {
 		const normalized = Math.log1p(degree - min) / Math.log1p(spread);
 		return Math.round(MIN_SIZE + normalized * (MAX_SIZE - MIN_SIZE));

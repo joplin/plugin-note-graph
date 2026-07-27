@@ -6,15 +6,10 @@ import { GraphEdge } from './types';
 /** Below this note count there isn't enough structure for Louvain to produce a meaningful result. */
 const MIN_NOTES_FOR_LOUVAIN = 3;
 
-/** If Louvain ends up with this many communities per note or more, it hasn't found real structure (for example one stray edge in an otherwise disconnected graph). Grouping by keyword works better than near-all-singleton clusters in that case. */
+/** At or above this ratio of communities to notes, Louvain has basically found nothing (near-all singletons). */
 const DEGENERATE_COMMUNITY_RATIO = 0.8;
 
-/**
- * Seeded PRNG (mulberry32) so the same graph always produces the same
- * Louvain result. The library's default `rng` is `Math.random`, which would
- * otherwise reshuffle community ids, and node colors, on every rebuild of
- * the same graph.
- */
+/** Seeded PRNG so the same graph always produces the same Louvain result, instead of the library's default `Math.random` reshuffling colors on every rebuild. */
 const createDeterministicRng = (): (() => number) => {
 	let state = 0x9e3779b9;
 	return () => {
@@ -80,15 +75,7 @@ const STOPWORDS = new Set([
  * to grouping notes by their most frequent keyword otherwise.
  */
 export class LouvainDetector {
-	/**
-	 * When `isDegenerate` is true, the whole Louvain result gets thrown away
-	 * for keyword grouping, even notes that were genuinely well connected. We
-	 * could keep Louvain's real clusters and only keyword-group the
-	 * singletons, but that adds real complexity: merging two id schemes and
-	 * deciding how they're colored relative to each other. This case is
-	 * already the sparse, low-signal tail end of the data, so it's kept
-	 * all-or-nothing for now.
-	 */
+	/** Degenerate results are discarded entirely rather than partially kept, on purpose, to avoid mixing two different id schemes. */
 	public detectCommunities(notes: Note[], edges: GraphEdge[]): Map<string, number> {
 		if (this.isTooSparse(notes, edges)) {
 			return this.groupByKeyword(notes);
@@ -106,21 +93,12 @@ export class LouvainDetector {
 		return notes.length < MIN_NOTES_FOR_LOUVAIN || edges.length === 0;
 	}
 
-	/** Catches something a raw edge count can't: a few edges scattered across an otherwise disconnected graph, like a strict similarity threshold. Louvain resolves that to almost all singletons. */
 	private isDegenerate(raw: Record<string, number>, noteCount: number): boolean {
 		const communityCount = new Set(Object.values(raw)).size;
 		return communityCount >= noteCount * DEGENERATE_COMMUNITY_RATIO;
 	}
 
-	/**
-	 * Builds the graphology graph, weighting each edge by how many different
-	 * relationships connect the same pair of notes. Two notes that are both
-	 * linked and semantically similar are a stronger pair than two notes that
-	 * just happen to share a tag. Louvain reads this through its 'weight'
-	 * edge attribute by default, so adding up the weight here, instead of
-	 * collapsing every relationship into one unweighted edge, lets strongly
-	 * related notes end up in the same community more easily.
-	 */
+	/** Weights each edge by how many relationships connect the same pair of notes, so a note linked and tagged and semantically similar to another counts for more than a single coincidental edge. */
 	private runLouvain(notes: Note[], edges: GraphEdge[]): Record<string, number> {
 		const graph = new Graph({ type: 'undirected' });
 		for (const note of notes) {
@@ -140,13 +118,7 @@ export class LouvainDetector {
 		return louvain(graph, { rng: createDeterministicRng() });
 	}
 
-	/**
-	 * Louvain's raw community ids are arbitrary. Renumbering by community
-	 * size, largest first, and breaking ties by the lowest member note id,
-	 * gives stable and meaningful ids. Id 0 is always the largest cluster, so
-	 * the UI can save its most distinct colors for the communities that
-	 * matter most.
-	 */
+	/** Louvain's raw ids are arbitrary. Renumbering by size (largest first, ties broken by lowest member id) makes id 0 always the biggest cluster. */
 	private renumberBySize(raw: Record<string, number>): Map<string, number> {
 		const membersByRawId = new Map<number, string[]>();
 		for (const [noteId, rawId] of Object.entries(raw)) {
@@ -173,7 +145,6 @@ export class LouvainDetector {
 		return renumbered;
 	}
 
-	/** Groups notes sharing the same dominant keyword into the same community. */
 	private groupByKeyword(notes: Note[]): Map<string, number> {
 		const communityByKeyword = new Map<string, number>();
 		const assignments = new Map<string, number>();
@@ -191,7 +162,7 @@ export class LouvainDetector {
 		return assignments;
 	}
 
-	/** Picks the note's own most frequent significant word, weighting the title over the body. Falls back to a note-unique key when nothing qualifies, so unrelated notes never collide. */
+	/** Falls back to a note-unique key when nothing qualifies, so unrelated notes never collide. */
 	private extractKeyword(note: Note): string {
 		const counts = new Map<string, number>();
 		for (const word of this.tokenize(`${note.title} ${note.title} ${note.body ?? ''}`)) {
@@ -211,7 +182,7 @@ export class LouvainDetector {
 		return bestWord ?? `note:${note.id}`;
 	}
 
-	/** Only matches Latin-script words. Notes in other scripts always miss and fall through to `extractKeyword`'s per-note key. This is a known limit of this fallback-of-a-fallback path. */
+	/** Latin-script words only; other scripts fall through to the per-note key above. */
 	private tokenize(text: string): string[] {
 		return text.toLowerCase().match(/[a-z]{2,}/g) ?? [];
 	}

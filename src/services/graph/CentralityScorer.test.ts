@@ -48,7 +48,6 @@ describe('CentralityScorer', () => {
 	});
 
 	it('spreads a right-skewed degree distribution instead of pinning most notes near the minimum', () => {
-		// A realistic shape: most notes are low (3-8), one hub is far above them.
 		const result = scorer.score(
 			new Map([
 				['a', 0],
@@ -61,8 +60,7 @@ describe('CentralityScorer', () => {
 		);
 		expect(result.get('a')).toBe(1);
 		expect(result.get('hub')).toBe(10);
-		// Plain min-max would put all of these at size 1-2. The log curve
-		// should spread them further up the scale.
+		// Plain min-max would leave these near size 1-2.
 		expect(result.get('b')).toBeGreaterThanOrEqual(4);
 		expect(result.get('e')).toBeGreaterThanOrEqual(6);
 	});
