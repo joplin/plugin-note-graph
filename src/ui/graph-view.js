@@ -17,7 +17,9 @@ var FCOSE_OPTIONS = {
 	uniformNodeDimensions: true,
 	packComponents: true,
 	nodeSeparation: 140,
-	nodeRepulsion: function () { return 8000; },
+	nodeRepulsion: function () {
+		return 8000;
+	},
 	gravity: 0.12,
 	gravityRange: 5.0,
 	idealEdgeLength: 180,
@@ -66,6 +68,41 @@ function hideProgress() {
 	}
 }
 
+/**
+ * Colors for community groups. Community ids are ordered largest first, so
+ * index 0 is always the biggest cluster. The first 7 colors are the
+ * Okabe-Ito colorblind-safe palette. 3 more were added and kept as distinct
+ * as possible, since Okabe-Ito only covers 7 usable colors and we need 10.
+ */
+var COMMUNITY_COLORS = [
+	'#e69f00', // orange
+	'#56b4e9', // sky blue
+	'#009e73', // bluish green
+	'#f0e442', // yellow
+	'#0072b2', // blue
+	'#d55e00', // vermillion
+	'#cc79a7', // reddish purple
+	'#332288', // indigo
+	'#44aa99', // teal
+	'#aa4499', // purple
+];
+
+/** Neutral color for communities past the palette. A long tail of small groups isn't worth giving each one its own color. */
+var COMMUNITY_OVERFLOW_COLOR = '#9aa0a6';
+
+/** Maps a node's community id onto the categorical palette. */
+function communityColor(ele) {
+	var community = ele.data('community') || 0;
+	if (community >= COMMUNITY_COLORS.length) return COMMUNITY_OVERFLOW_COLOR;
+	return COMMUNITY_COLORS[community];
+}
+
+/** Turns a node's 1-10 centrality score into a pixel size, so small notes stay readable and hubs stand out. */
+function nodeDiameter(ele) {
+	var size = ele.data('size') || 1;
+	return 18 + (size - 1) * 3;
+}
+
 /** Detect whether the current Joplin theme is dark by computing luminance of --joplin-background-color. */
 function isDarkTheme() {
 	var bg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
@@ -86,7 +123,7 @@ function buildStylesheet() {
 		{
 			selector: 'node',
 			style: {
-				'background-color': '#5b9bd5',
+				'background-color': communityColor,
 				label: 'data(label)',
 				color: dark ? '#ddd' : '#222',
 				'font-size': '9px',
@@ -95,10 +132,10 @@ function buildStylesheet() {
 				'text-margin-y': -4,
 				'text-wrap': 'ellipsis',
 				'text-max-width': '100px',
-				width: 28,
-				height: 28,
+				width: nodeDiameter,
+				height: nodeDiameter,
 				'border-width': 1.5,
-				'border-color': '#4a8cc4',
+				'border-color': dark ? '#1e1e1e' : '#ffffff',
 			},
 		},
 		{
@@ -245,7 +282,8 @@ function updateStats(notes, explicit, semantic, tags) {
 function createExportMenu(btn) {
 	var menu = document.createElement('div');
 	menu.className = 'export-menu';
-	menu.innerHTML = '<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="svg"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>SVG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
+	menu.innerHTML =
+		'<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="svg"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>SVG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
 	document.body.appendChild(menu);
 
 	btn.addEventListener('click', function (e) {
@@ -255,7 +293,7 @@ function createExportMenu(btn) {
 		if (!open) {
 			var rect = btn.getBoundingClientRect();
 			menu.style.left = rect.left + 'px';
-			menu.style.top = (rect.bottom + 4) + 'px';
+			menu.style.top = rect.bottom + 4 + 'px';
 		}
 	});
 
@@ -265,7 +303,9 @@ function createExportMenu(btn) {
 		if (!item) return;
 		var format = item.getAttribute('data-format');
 		menu.style.display = 'none';
-		var bg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim() || '#1e1e1e';
+		var bg =
+			getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim() ||
+			'#1e1e1e';
 		if (format === 'png') {
 			downloadFile(cy.png({ full: true, bg: bg }), 'note-graph.png');
 		} else if (format === 'svg') {
@@ -273,7 +313,9 @@ function createExportMenu(btn) {
 			var svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
 			downloadFile(URL.createObjectURL(svgBlob), 'note-graph.svg');
 		} else if (format === 'json') {
-			var blob = new Blob([JSON.stringify(cy.json().elements, null, 2)], { type: 'application/json' });
+			var blob = new Blob([JSON.stringify(cy.json().elements, null, 2)], {
+				type: 'application/json',
+			});
 			downloadFile(URL.createObjectURL(blob), 'note-graph.json');
 		}
 	});
@@ -327,7 +369,7 @@ function init() {
 	var headerH = header ? header.offsetHeight : 0;
 	var legendH = legend ? legend.offsetHeight : 0;
 	var statsH = statsBar ? statsBar.offsetHeight : 0;
-	container.style.height = (window.innerHeight - headerH - legendH - statsH) + 'px';
+	container.style.height = window.innerHeight - headerH - legendH - statsH + 'px';
 	container.style.minHeight = '350px';
 	container.style.width = '100%';
 
@@ -365,7 +407,10 @@ function init() {
 			zoomInBtn.addEventListener('click', function () {
 				cy.zoom({
 					level: cy.zoom() * 1.3,
-					renderedPosition: { x: container.clientWidth / 2, y: container.clientHeight / 2 },
+					renderedPosition: {
+						x: container.clientWidth / 2,
+						y: container.clientHeight / 2,
+					},
 				});
 			});
 		}
@@ -373,7 +418,10 @@ function init() {
 			zoomOutBtn.addEventListener('click', function () {
 				cy.zoom({
 					level: cy.zoom() * 0.7,
-					renderedPosition: { x: container.clientWidth / 2, y: container.clientHeight / 2 },
+					renderedPosition: {
+						x: container.clientWidth / 2,
+						y: container.clientHeight / 2,
+					},
 				});
 			});
 		}
@@ -389,8 +437,8 @@ function init() {
 
 		cy.on('mousemove', 'edge[type="tag"]', function (evt) {
 			if (!tooltipEl) return;
-			tooltipEl.style.left = (evt.originalEvent.clientX + 12) + 'px';
-			tooltipEl.style.top = (evt.originalEvent.clientY + 12) + 'px';
+			tooltipEl.style.left = evt.originalEvent.clientX + 12 + 'px';
+			tooltipEl.style.top = evt.originalEvent.clientY + 12 + 'px';
 		});
 
 		cy.on('mouseout', 'edge[type="tag"]', function () {
@@ -404,19 +452,35 @@ function init() {
 			var label = node.data('label') || '(untitled)';
 			var id = node.id();
 			var degree = node.data('degree') || 0;
+			var community = node.data('community') || 0;
 			var stats = nodeStats && nodeStats[id] ? nodeStats[id] : { linkCount: 0, tagCount: 0 };
-			var safeLabel = label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-			tooltipEl.innerHTML = '<div class="graph-tooltip__title">' + safeLabel + '</div>'
-				+ '<div class="graph-tooltip__row"><span>Degree</span><strong>' + degree + '</strong></div>'
-				+ '<div class="graph-tooltip__row"><span>Links</span><strong>' + stats.linkCount + '</strong></div>'
-				+ '<div class="graph-tooltip__row"><span>Tags</span><strong>' + stats.tagCount + '</strong></div>';
+			var safeLabel = label
+				.replace(/&/g, '&amp;')
+				.replace(/</g, '&lt;')
+				.replace(/>/g, '&gt;');
+			tooltipEl.innerHTML =
+				'<div class="graph-tooltip__title">' +
+				safeLabel +
+				'</div>' +
+				'<div class="graph-tooltip__row"><span>Degree</span><strong>' +
+				degree +
+				'</strong></div>' +
+				'<div class="graph-tooltip__row"><span>Links</span><strong>' +
+				stats.linkCount +
+				'</strong></div>' +
+				'<div class="graph-tooltip__row"><span>Tags</span><strong>' +
+				stats.tagCount +
+				'</strong></div>' +
+				'<div class="graph-tooltip__row"><span>Community</span><strong>' +
+				community +
+				'</strong></div>';
 			tooltipEl.style.display = 'block';
 		});
 
 		cy.on('mousemove', 'node', function (evt) {
 			if (!tooltipEl) return;
-			tooltipEl.style.left = (evt.originalEvent.clientX + 14) + 'px';
-			tooltipEl.style.top = (evt.originalEvent.clientY + 14) + 'px';
+			tooltipEl.style.left = evt.originalEvent.clientX + 14 + 'px';
+			tooltipEl.style.top = evt.originalEvent.clientY + 14 + 'px';
 		});
 
 		cy.on('mouseout', 'node', function () {
@@ -434,23 +498,33 @@ function init() {
 			var h = header ? header.offsetHeight : 0;
 			var lh = legend ? legend.offsetHeight : 0;
 			var sh = statsBar ? statsBar.offsetHeight : 0;
-			container.style.height = (window.innerHeight - h - lh - sh) + 'px';
+			container.style.height = window.innerHeight - h - lh - sh + 'px';
 			cy.resize();
 			cy.fit(undefined, 30);
 		});
 		observer.observe(container);
 		observer.observe(document.body);
 
-		var lastBg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
+		var lastBg = getComputedStyle(document.body)
+			.getPropertyValue('--joplin-background-color')
+			.trim();
 		var themeObserver = new MutationObserver(function () {
-			var currentBg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
+			var currentBg = getComputedStyle(document.body)
+				.getPropertyValue('--joplin-background-color')
+				.trim();
 			if (currentBg !== lastBg) {
 				lastBg = currentBg;
 				cy.style().fromJson(buildStylesheet()).update();
 			}
 		});
-		themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
-		themeObserver.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] });
+		themeObserver.observe(document.documentElement, {
+			attributes: true,
+			attributeFilter: ['style', 'class'],
+		});
+		themeObserver.observe(document.body, {
+			attributes: true,
+			attributeFilter: ['style', 'class'],
+		});
 
 		var fitBtn = document.getElementById('graph-fit');
 		if (fitBtn) {
@@ -484,8 +558,7 @@ function init() {
 				var q = this.value.trim().toLowerCase();
 				if (searchTimer) clearTimeout(searchTimer);
 				cy.nodes().style('opacity', 1);
-				cy.nodes().style('border-width', 1.5);
-				cy.nodes().style('border-color', '#4a8cc4');
+				cy.nodes().removeStyle('border-width border-color');
 				cy.nodes().stop(true, false);
 				if (!q) return;
 				cy.nodes().style('opacity', 0.15);
@@ -497,8 +570,7 @@ function init() {
 					matches.style('border-width', 3);
 					matches.style('border-color', '#ffa500');
 					searchTimer = setTimeout(function () {
-						matches.style('border-width', 1.5);
-						matches.style('border-color', '#4a8cc4');
+						matches.removeStyle('border-width border-color');
 					}, 800);
 					cy.animate({ fit: { eles: matches, padding: 50 }, duration: 400 });
 				}

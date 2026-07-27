@@ -1,13 +1,19 @@
 import { GraphBuilder } from './GraphBuilder';
 import { EdgeFactory } from '../similarity/EdgeFactory';
 import { SimilarityEngine } from '../similarity/SimilarityEngine';
+import { LouvainDetector } from './LouvainDetector';
+import { CentralityScorer } from './CentralityScorer';
 import { Note } from '../../data/Types';
 
 jest.mock('../similarity/EdgeFactory');
 jest.mock('../similarity/SimilarityEngine');
+jest.mock('./LouvainDetector');
+jest.mock('./CentralityScorer');
 
 const MockEdgeFactory = EdgeFactory as jest.MockedClass<typeof EdgeFactory>;
 const MockSimilarityEngine = SimilarityEngine as jest.MockedClass<typeof SimilarityEngine>;
+const MockLouvainDetector = LouvainDetector as jest.MockedClass<typeof LouvainDetector>;
+const MockCentralityScorer = CentralityScorer as jest.MockedClass<typeof CentralityScorer>;
 
 function note(id: string, title: string, links: string[] = []): Note {
 	return {
@@ -25,11 +31,17 @@ function note(id: string, title: string, links: string[] = []): Note {
 describe('GraphBuilder', () => {
 	let builder: GraphBuilder;
 	let mockEdgeFactory: jest.Mocked<EdgeFactory>;
+	let mockLouvainDetector: jest.Mocked<LouvainDetector>;
+	let mockCentralityScorer: jest.Mocked<CentralityScorer>;
 
 	beforeEach(() => {
 		jest.clearAllMocks();
 		mockEdgeFactory = new MockEdgeFactory() as jest.Mocked<EdgeFactory>;
-		builder = new GraphBuilder(mockEdgeFactory);
+		mockLouvainDetector = new MockLouvainDetector() as jest.Mocked<LouvainDetector>;
+		mockCentralityScorer = new MockCentralityScorer() as jest.Mocked<CentralityScorer>;
+		mockLouvainDetector.detectCommunities.mockReturnValue(new Map());
+		mockCentralityScorer.score.mockReturnValue(new Map());
+		builder = new GraphBuilder(mockEdgeFactory, mockLouvainDetector, mockCentralityScorer);
 	});
 
 	it('creates nodes with degree 0 when no edges', () => {
@@ -73,6 +85,35 @@ describe('GraphBuilder', () => {
 		const result = builder.build(notes);
 		expect(result.edges).toHaveLength(1);
 		expect(result.edges[0].data).toEqual({ source: 'a', target: 'b', type: 'link' });
+	});
+
+	it('applies the detected community and centrality size to each node', () => {
+		mockEdgeFactory.createEdges.mockReturnValue([{ source: 'a', target: 'b', type: 'link' }]);
+		mockLouvainDetector.detectCommunities.mockReturnValue(
+			new Map([
+				['a', 2],
+				['b', 2],
+			])
+		);
+		mockCentralityScorer.score.mockReturnValue(
+			new Map([
+				['a', 7],
+				['b', 3],
+			])
+		);
+
+		const notes = [note('a', 'A'), note('b', 'B')];
+		const result = builder.build(notes);
+
+		expect(result.nodes[0].data).toMatchObject({ id: 'a', community: 2, size: 7 });
+		expect(result.nodes[1].data).toMatchObject({ id: 'b', community: 2, size: 3 });
+	});
+
+	it('defaults community to 0 and size to 1 when a note is missing from either map', () => {
+		mockEdgeFactory.createEdges.mockReturnValue([]);
+		const notes = [note('a', 'A')];
+		const result = builder.build(notes);
+		expect(result.nodes[0].data).toMatchObject({ community: 0, size: 1 });
 	});
 
 	describe('buildWithSimilarity', () => {
