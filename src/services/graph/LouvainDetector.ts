@@ -75,17 +75,21 @@ const STOPWORDS = new Set([
  * to grouping notes by their most frequent keyword otherwise.
  */
 export class LouvainDetector {
-	/** Degenerate results are discarded entirely rather than partially kept, on purpose, to avoid mixing two different id schemes. */
+	/**
+	 * Both the Louvain and keyword-fallback paths are renumbered by size before returning, so
+	 * callers (e.g. the community color palette) can always rely on id 0 being the largest
+	 * community regardless of which path produced the result.
+	 */
 	public detectCommunities(notes: Note[], edges: GraphEdge[]): Map<string, number> {
 		if (this.isTooSparse(notes, edges)) {
-			return this.groupByKeyword(notes);
+			return this.renumberBySize(this.groupByKeyword(notes));
 		}
 
 		const raw = this.runLouvain(notes, edges);
 		if (this.isDegenerate(raw, notes.length)) {
-			return this.groupByKeyword(notes);
+			return this.renumberBySize(this.groupByKeyword(notes));
 		}
-		return this.renumberBySize(raw);
+		return this.renumberBySize(new Map(Object.entries(raw)));
 	}
 
 	/** Too few notes, or no connections at all, means Louvain would only produce singleton communities. */
@@ -118,10 +122,10 @@ export class LouvainDetector {
 		return louvain(graph, { rng: createDeterministicRng() });
 	}
 
-	/** Louvain's raw ids are arbitrary. Renumbering by size (largest first, ties broken by lowest member id) makes id 0 always the biggest cluster. */
-	private renumberBySize(raw: Record<string, number>): Map<string, number> {
+	/** Raw ids (from either Louvain or the keyword fallback) are arbitrary. Renumbering by size (largest first, ties broken by lowest member id) makes id 0 always the biggest cluster. */
+	private renumberBySize(raw: Map<string, number>): Map<string, number> {
 		const membersByRawId = new Map<number, string[]>();
-		for (const [noteId, rawId] of Object.entries(raw)) {
+		for (const [noteId, rawId] of raw) {
 			const members = membersByRawId.get(rawId);
 			if (members) {
 				members.push(noteId);

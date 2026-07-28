@@ -57,6 +57,26 @@ describe('LouvainDetector', () => {
 
 			expect(new Set(communities.values()).size).toBe(3);
 		});
+
+		it('numbers keyword-fallback communities by descending size, not by first-appearance order', () => {
+			const notes = [
+				note('solo1', 'Astronomy basics'),
+				note('solo2', 'Philosophy overview'),
+				note('a', 'Gardening tips', 'Watering the garden every gardening morning'),
+				note('b', 'More gardening', 'Gardening pruning gardening advice'),
+				note('c', 'Gardening again', 'Gardening season gardening harvest'),
+			];
+
+			const communities = detector.detectCommunities(notes, []);
+
+			// The 3-note gardening group is the largest, so it must get id 0 even though
+			// it appears after the two singleton notes in the input.
+			expect(communities.get('a')).toBe(0);
+			expect(communities.get('b')).toBe(0);
+			expect(communities.get('c')).toBe(0);
+			expect(communities.get('solo1')).not.toBe(0);
+			expect(communities.get('solo2')).not.toBe(0);
+		});
 	});
 
 	describe('Louvain', () => {
