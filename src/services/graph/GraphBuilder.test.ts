@@ -109,11 +109,14 @@ describe('GraphBuilder', () => {
 		expect(result.nodes[1].data).toMatchObject({ id: 'b', community: 2, size: 3 });
 	});
 
-	it('defaults community to 0 and size to 1 when a note is missing from either map', () => {
+	it('defaults community to 0 and size to 1 when a note is missing from either map, and logs it', () => {
+		const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 		mockEdgeFactory.createEdges.mockReturnValue([]);
 		const notes = [note('a', 'A')];
 		const result = builder.build(notes);
 		expect(result.nodes[0].data).toMatchObject({ community: 0, size: 1 });
+		expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('a'));
+		consoleErrorSpy.mockRestore();
 	});
 
 	describe('buildWithSimilarity', () => {

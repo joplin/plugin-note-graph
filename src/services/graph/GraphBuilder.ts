@@ -90,6 +90,14 @@ export class GraphBuilder {
 		const nodes: Array<{ data: GraphNode }> = [];
 		for (const note of notes) {
 			const degree = degreeMap.get(note.id) ?? 0;
+			const community = communities.get(note.id);
+			const size = sizes.get(note.id);
+			if (community === undefined || size === undefined) {
+				console.error(
+					`Note ${note.id} missing from community or size map (expected every note to be covered); defaulting to community 0, size 1.`
+				);
+			}
+
 			const label = note.title || '(untitled)';
 			nodes.push({
 				data: {
@@ -97,8 +105,8 @@ export class GraphBuilder {
 					label: label.length > 64 ? label.substring(0, 61) + '...' : label,
 					noteId: note.id,
 					degree,
-					community: communities.get(note.id) ?? 0,
-					size: sizes.get(note.id) ?? 1,
+					community: community ?? 0,
+					size: size ?? 1,
 				},
 			});
 		}
