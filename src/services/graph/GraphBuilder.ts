@@ -3,12 +3,22 @@ import { EdgeFactory } from '../similarity/EdgeFactory';
 import { SimilarityEngine } from '../similarity/SimilarityEngine';
 import { EmbeddedNote } from '../embeddings/Types';
 import { GraphData, GraphEdge, GraphNode } from './types';
+import { LouvainDetector } from './LouvainDetector';
+import { CentralityScorer } from './CentralityScorer';
 
 export class GraphBuilder {
 	private readonly edgeFactory: EdgeFactory;
+	private readonly louvainDetector: LouvainDetector;
+	private readonly centralityScorer: CentralityScorer;
 
-	public constructor(edgeFactory = new EdgeFactory()) {
+	public constructor(
+		edgeFactory = new EdgeFactory(),
+		louvainDetector = new LouvainDetector(),
+		centralityScorer = new CentralityScorer()
+	) {
 		this.edgeFactory = edgeFactory;
+		this.louvainDetector = louvainDetector;
+		this.centralityScorer = centralityScorer;
 	}
 
 	/**
@@ -43,12 +53,14 @@ export class GraphBuilder {
 
 	private buildData(notes: Note[], edges: GraphEdge[]): GraphData {
 		const degreeMap = this.computeDegreeMap(notes, edges);
-		const nodes = this.buildNodes(notes, degreeMap);
+		const communities = this.louvainDetector.detectCommunities(notes, edges);
+		const sizes = this.centralityScorer.score(degreeMap);
+		const nodes = this.buildNodes(notes, degreeMap, communities, sizes);
 
 		const nodeIdSet = new Set(nodes.map((n) => n.data.id));
 		const visibleEdges = this.filterVisibleEdges(edges, nodeIdSet);
 
-		this.logGraphStats(nodes, visibleEdges, degreeMap);
+		this.logGraphStats(nodes, visibleEdges, degreeMap, communities);
 
 		return { nodes, edges: visibleEdges.map((e) => ({ data: e })) };
 	}
@@ -69,10 +81,23 @@ export class GraphBuilder {
 	}
 
 	/** Builds one node per note, truncating long titles to keep labels readable in the graph. */
-	private buildNodes(notes: Note[], degreeMap: Map<string, number>): Array<{ data: GraphNode }> {
+	private buildNodes(
+		notes: Note[],
+		degreeMap: Map<string, number>,
+		communities: Map<string, number>,
+		sizes: Map<string, number>
+	): Array<{ data: GraphNode }> {
 		const nodes: Array<{ data: GraphNode }> = [];
 		for (const note of notes) {
 			const degree = degreeMap.get(note.id) ?? 0;
+			const community = communities.get(note.id);
+			const size = sizes.get(note.id);
+			if (community === undefined || size === undefined) {
+				console.error(
+					`Note ${note.id} missing from community or size map (expected every note to be covered); defaulting to community 0, size 1.`
+				);
+			}
+
 			const label = note.title || '(untitled)';
 			nodes.push({
 				data: {
@@ -80,6 +105,8 @@ export class GraphBuilder {
 					label: label.length > 64 ? label.substring(0, 61) + '...' : label,
 					noteId: note.id,
 					degree,
+					community: community ?? 0,
+					size: size ?? 1,
 				},
 			});
 		}
@@ -94,7 +121,8 @@ export class GraphBuilder {
 	private logGraphStats(
 		nodes: Array<{ data: GraphNode }>,
 		visibleEdges: GraphEdge[],
-		degreeMap: Map<string, number>
+		degreeMap: Map<string, number>,
+		communities: Map<string, number>
 	): void {
 		const connectedIds = new Set<string>();
 		for (const edge of visibleEdges) {
@@ -103,10 +131,11 @@ export class GraphBuilder {
 		}
 		const isolatedCount = nodes.length - connectedIds.size;
 		const maxDegree = Math.max(1, ...degreeMap.values());
+		const communityCount = new Set(communities.values()).size;
 
 		console.info(
 			`Graph built: ${nodes.length} nodes, ${visibleEdges.length} edges ` +
-				`(${isolatedCount} isolated, max degree ${maxDegree})`
+				`(${isolatedCount} isolated, max degree ${maxDegree}, ${communityCount} communities)`
 		);
 	}
 }

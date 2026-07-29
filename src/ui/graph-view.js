@@ -66,6 +66,35 @@ function hideProgress() {
 	}
 }
 
+/** Colors for community groups, ordered largest cluster first. First 7 are the Okabe-Ito colorblind-safe palette, 3 more added to reach 10. */
+var COMMUNITY_COLORS = [
+	'#e69f00', // orange
+	'#56b4e9', // sky blue
+	'#009e73', // bluish green
+	'#f0e442', // yellow
+	'#0072b2', // blue
+	'#d55e00', // vermillion
+	'#cc79a7', // reddish purple
+	'#332288', // indigo
+	'#44aa99', // teal
+	'#aa4499', // purple
+];
+
+/** Neutral color for communities past the palette. A long tail of small groups isn't worth giving each one its own color. */
+var COMMUNITY_OVERFLOW_COLOR = '#9aa0a6';
+
+function communityColor(ele) {
+	var community = ele.data('community') || 0;
+	if (community >= COMMUNITY_COLORS.length) return COMMUNITY_OVERFLOW_COLOR;
+	return COMMUNITY_COLORS[community];
+}
+
+/** Maps the 1-10 centrality score to a pixel diameter. */
+function nodeDiameter(ele) {
+	var size = ele.data('size') || 1;
+	return 18 + (size - 1) * 3;
+}
+
 /** Detect whether the current Joplin theme is dark by computing luminance of --joplin-background-color. */
 function isDarkTheme() {
 	var bg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
@@ -86,7 +115,7 @@ function buildStylesheet() {
 		{
 			selector: 'node',
 			style: {
-				'background-color': '#5b9bd5',
+				'background-color': communityColor,
 				label: 'data(label)',
 				color: dark ? '#ddd' : '#222',
 				'font-size': '9px',
@@ -95,10 +124,10 @@ function buildStylesheet() {
 				'text-margin-y': -4,
 				'text-wrap': 'ellipsis',
 				'text-max-width': '100px',
-				width: 28,
-				height: 28,
+				width: nodeDiameter,
+				height: nodeDiameter,
 				'border-width': 1.5,
-				'border-color': '#4a8cc4',
+				'border-color': dark ? '#1e1e1e' : '#ffffff',
 			},
 		},
 		{
@@ -404,12 +433,14 @@ function init() {
 			var label = node.data('label') || '(untitled)';
 			var id = node.id();
 			var degree = node.data('degree') || 0;
+			var community = node.data('community') || 0;
 			var stats = nodeStats && nodeStats[id] ? nodeStats[id] : { linkCount: 0, tagCount: 0 };
 			var safeLabel = label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 			tooltipEl.innerHTML = '<div class="graph-tooltip__title">' + safeLabel + '</div>'
 				+ '<div class="graph-tooltip__row"><span>Degree</span><strong>' + degree + '</strong></div>'
 				+ '<div class="graph-tooltip__row"><span>Links</span><strong>' + stats.linkCount + '</strong></div>'
-				+ '<div class="graph-tooltip__row"><span>Tags</span><strong>' + stats.tagCount + '</strong></div>';
+				+ '<div class="graph-tooltip__row"><span>Tags</span><strong>' + stats.tagCount + '</strong></div>'
+				+ '<div class="graph-tooltip__row"><span>Community</span><strong>' + community + '</strong></div>';
 			tooltipEl.style.display = 'block';
 		});
 
@@ -484,8 +515,7 @@ function init() {
 				var q = this.value.trim().toLowerCase();
 				if (searchTimer) clearTimeout(searchTimer);
 				cy.nodes().style('opacity', 1);
-				cy.nodes().style('border-width', 1.5);
-				cy.nodes().style('border-color', '#4a8cc4');
+				cy.nodes().removeStyle('border-width border-color');
 				cy.nodes().stop(true, false);
 				if (!q) return;
 				cy.nodes().style('opacity', 0.15);
@@ -497,8 +527,7 @@ function init() {
 					matches.style('border-width', 3);
 					matches.style('border-color', '#ffa500');
 					searchTimer = setTimeout(function () {
-						matches.style('border-width', 1.5);
-						matches.style('border-color', '#4a8cc4');
+						matches.removeStyle('border-width border-color');
 					}, 800);
 					cy.animate({ fit: { eles: matches, padding: 50 }, duration: 400 });
 				}
