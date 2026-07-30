@@ -4,13 +4,19 @@ import {
 	initializeAiNoteGraphPanel,
 	showAiNoteGraphPanel,
 	postGraphData,
+	postGraphPatch,
 	postStatus,
 	postProgress,
 } from './ui/webview';
 import { NoteRepository } from './data/NoteRepository';
 import { NotePreprocessor } from './data/NotePreprocessor';
+import { EventsRepository } from './data/EventsRepository';
+import { GraphCacheRepository } from './data/Database/GraphCacheRepository';
+import { GraphBuilder } from './services/graph/GraphBuilder';
 import { Note } from './data/Types';
 import { AnalysisController } from './services/AnalysisController';
+import { IncrementalUpdater } from './services/sync/IncrementalUpdater';
+import { WorkspaceListener } from './services/sync/WorkspaceListener';
 import {
 	registerGraphSettings,
 	isAiAnalysisEnabled,
@@ -21,8 +27,8 @@ import {
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
 
-const analysisController = new AnalysisController();
-let lastLoadedNotes: Note[] | null = null;
+const graphCache = new GraphCacheRepository();
+const analysisController = new AnalysisController(new GraphBuilder(), graphCache);
 
 /**
  * Loads all notes from the Joplin API and enriches them with links and tags.
@@ -57,19 +63,52 @@ const runSemanticAnalysis = async (notes: Note[]): Promise<void> => {
 	}
 };
 
+const performFullReload = async (): Promise<void> => {
+	const enrichedNotes = await loadNotes();
+	console.info(`Loaded ${enrichedNotes.length} notes.`);
+	await postGraphData(analysisController.buildStructural(enrichedNotes));
+	await runSemanticAnalysis(enrichedNotes);
+};
+
+const incrementalUpdater = new IncrementalUpdater(
+	analysisController,
+	(diff, graphData) => {
+		postGraphPatch(diff, graphData).catch((e) => {
+			console.error('Failed to push graph patch to panel:', e);
+		});
+	},
+	performFullReload,
+	new NoteRepository(),
+	new NotePreprocessor(),
+	new EventsRepository(),
+	graphCache
+);
+const workspaceListener = new WorkspaceListener(incrementalUpdater);
+
 const noteGraphCommand = {
 	name: SHOW_NOTE_GRAPH_COMMAND,
 	label: 'Show Note Graph',
 	execute: async () => {
 		try {
-			const enrichedNotes = await loadNotes();
-			console.info(`Loaded ${enrichedNotes.length} notes.`);
-			lastLoadedNotes = enrichedNotes;
+			if (analysisController.hasNotes()) {
+				await showAiNoteGraphPanel();
+				return;
+			}
 
-			await postGraphData(analysisController.buildStructural(enrichedNotes));
+			const cached = await analysisController.loadFromCache();
+			if (cached) {
+				console.info(`Loaded graph from cache: ${cached.nodes.length} notes, no recompute.`);
+				await postGraphData(cached);
+				await showAiNoteGraphPanel();
+				await postStatus('Loaded from local cache - not recomputed. Refreshes as you edit or sync.');
+				incrementalUpdater.handleSyncComplete().catch((e) => {
+					console.error('Post-cache-load sync sweep failed:', e);
+				});
+				return;
+			}
+
 			await showAiNoteGraphPanel();
-
-			await runSemanticAnalysis(enrichedNotes);
+			await performFullReload();
 		} catch (error) {
 			console.error('Failed to load note graph:', error);
 		}
@@ -82,13 +121,16 @@ const noteGraphCommand = {
  * already-embedded vectors. No-ops if the graph hasn't been opened yet.
  */
 const handleSettingsChange = async (event: { keys: string[] }): Promise<void> => {
-	if (!lastLoadedNotes || !event.keys.some((key) => NOTE_GRAPH_SETTING_KEYS.includes(key))) {
+	if (
+		!analysisController.hasNotes() ||
+		!event.keys.some((key) => NOTE_GRAPH_SETTING_KEYS.includes(key))
+	) {
 		return;
 	}
 
 	try {
 		if (event.keys.includes(AI_ANALYSIS_ENABLED_KEY)) {
-			await runSemanticAnalysis(lastLoadedNotes);
+			await runSemanticAnalysis(analysisController.getCurrentNotes());
 			return;
 		}
 
@@ -128,5 +170,6 @@ joplin.plugins.register({
 		await initializeAiNoteGraphPanel();
 		await registerCommands();
 		await registerMenuItems();
+		await workspaceListener.register();
 	},
 });

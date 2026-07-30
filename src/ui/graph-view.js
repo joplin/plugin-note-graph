@@ -29,14 +29,22 @@ var FCOSE_OPTIONS = {
 	step: 'all',
 };
 
+var INCREMENTAL_FCOSE_OVERRIDES = {
+	randomize: false,
+	animate: false,
+	fit: false,
+	packComponents: false,
+};
+
 var cy;
 var statusEl;
-var pollTimer;
 var tooltipEl;
 var nodeStats;
 var progressEl;
 var progressFillEl;
 var progressLabelEl;
+var hasRenderedOnce = false;
+var lastSeenVersion = 0;
 
 function showStatus(text) {
 	if (statusEl) {
@@ -196,33 +204,14 @@ function onNodeDblClick(evt) {
 	});
 }
 
-/**
- * Replace the current graph with new data. Computes per-node link/tag counts,
- * deduplicates unique tag names for the stats bar, and runs the fCoSE layout.
- * @param {{ nodes: Array, edges: Array }} message - graph data from the plugin.
- */
-function renderGraph(message) {
-	cy.elements().remove();
-
-	if (!message || !message.nodes || !message.nodes.length) {
-		showStatus('No graph data received');
-		updateStats(0, 0, 0, 0);
-		return;
-	}
-
-	hideStatus();
-
-	cy.add(message.nodes);
-	cy.add(message.edges || []);
-
+function recomputeStats() {
 	nodeStats = {};
-	var edgesArr = message.edges || [];
 	var explicitCount = 0;
 	var semanticCount = 0;
 	var tagNames = {};
 
-	for (var i = 0; i < edgesArr.length; i++) {
-		var e = edgesArr[i].data || edgesArr[i];
+	cy.edges().forEach(function (edge) {
+		var e = edge.data();
 		if (!nodeStats[e.source]) nodeStats[e.source] = { linkCount: 0, tagCount: 0 };
 		if (!nodeStats[e.target]) nodeStats[e.target] = { linkCount: 0, tagCount: 0 };
 
@@ -244,19 +233,171 @@ function renderGraph(message) {
 				}
 			}
 		}
-	}
+	});
 
 	var totalTags = Object.keys(tagNames).length;
-	updateStats(message.nodes.length, explicitCount, semanticCount, totalTags);
+	updateStats(cy.nodes().length, explicitCount, semanticCount, totalTags);
+}
 
-	cy.layout(FCOSE_OPTIONS).run();
-
-	var edgeCount = (message.edges || []).length;
-	if (edgeCount === 0) {
-		showStatus(message.nodes.length + ' notes, 0 connections');
+function refreshEmptyStateStatus() {
+	if (cy.nodes().length === 0) {
+		showStatus('No graph data received');
+	} else if (cy.edges().length === 0) {
+		showStatus(cy.nodes().length + ' notes, 0 connections');
 	} else {
 		hideStatus();
 	}
+}
+
+/**
+ * Replace the current graph with new data and run a full fCoSE layout.
+ * @param {{ nodes: Array, edges: Array }} message - graph data from the plugin.
+ */
+function renderGraph(message) {
+	cy.elements().remove();
+
+	if (!message || !message.nodes || !message.nodes.length) {
+		showStatus('No graph data received');
+		updateStats(0, 0, 0, 0);
+		return;
+	}
+
+	hideStatus();
+
+	cy.add(message.nodes);
+	cy.add(message.edges || []);
+
+	recomputeStats();
+	cy.layout(FCOSE_OPTIONS).run();
+	refreshEmptyStateStatus();
+}
+
+function upsertElement(data) {
+	var existing = cy.getElementById(data.id);
+	if (existing && existing.length) {
+		existing.data(data);
+	} else {
+		cy.add({ data: data });
+	}
+}
+
+function applyGraphPatch(patch) {
+	if (!cy || !patch) return;
+	var hasChanges =
+		(patch.upsertedNodes && patch.upsertedNodes.length) ||
+		(patch.upsertedEdges && patch.upsertedEdges.length) ||
+		(patch.removedNodeIds && patch.removedNodeIds.length) ||
+		(patch.removedEdgeIds && patch.removedEdgeIds.length);
+	if (!hasChanges) return;
+
+	var movableIds = {};
+
+	(patch.removedEdgeIds || []).forEach(function (id) {
+		var ele = cy.getElementById(id);
+		if (ele && ele.length) {
+			movableIds[ele.data('source')] = true;
+			movableIds[ele.data('target')] = true;
+		}
+	});
+
+	var toRemove = cy.collection();
+	(patch.removedEdgeIds || []).concat(patch.removedNodeIds || []).forEach(function (id) {
+		var ele = cy.getElementById(id);
+		if (ele && ele.length) toRemove = toRemove.union(ele);
+	});
+	toRemove.remove();
+
+	(patch.upsertedNodes || []).forEach(function (item) {
+		var data = item.data || item;
+		var existing = cy.getElementById(data.id);
+		var isNew = !(existing && existing.length);
+		upsertElement(data);
+		if (isNew) movableIds[data.id] = true;
+	});
+	(patch.upsertedEdges || []).forEach(function (item) {
+		var data = item.data || item;
+		upsertElement(data);
+		movableIds[data.source] = true;
+		movableIds[data.target] = true;
+	});
+
+	recomputeStats();
+
+	var fixedNodeConstraint = [];
+	cy.nodes().forEach(function (n) {
+		if (!movableIds[n.id()]) {
+			fixedNodeConstraint.push({ nodeId: n.id(), position: n.position() });
+		}
+	});
+	cy.layout(
+		Object.assign({}, FCOSE_OPTIONS, INCREMENTAL_FCOSE_OVERRIDES, {
+			fixedNodeConstraint: fixedNodeConstraint,
+		})
+	).run();
+
+	refreshEmptyStateStatus();
+}
+
+function dataEqual(existingEle, data) {
+	if (!existingEle || !existingEle.length) return false;
+	var existing = existingEle.data();
+	var existingKeys = Object.keys(existing);
+	var newKeys = Object.keys(data);
+	if (existingKeys.length !== newKeys.length) return false;
+	return existingKeys.every(function (key) {
+		return existing[key] === data[key];
+	});
+}
+
+function computeClientPatch(graphData) {
+	var newNodeIds = {};
+	(graphData.nodes || []).forEach(function (n) {
+		newNodeIds[n.data.id] = true;
+	});
+	var newEdgeIds = {};
+	(graphData.edges || []).forEach(function (e) {
+		newEdgeIds[e.data.id] = true;
+	});
+
+	var upsertedNodes = (graphData.nodes || []).filter(function (n) {
+		return !dataEqual(cy.getElementById(n.data.id), n.data);
+	});
+	var upsertedEdges = (graphData.edges || []).filter(function (e) {
+		return !dataEqual(cy.getElementById(e.data.id), e.data);
+	});
+
+	var removedNodeIds = [];
+	cy.nodes().forEach(function (n) {
+		if (!newNodeIds[n.id()]) removedNodeIds.push(n.id());
+	});
+	var removedEdgeIds = [];
+	cy.edges().forEach(function (e) {
+		if (!newEdgeIds[e.id()]) removedEdgeIds.push(e.id());
+	});
+
+	return {
+		upsertedNodes: upsertedNodes,
+		upsertedEdges: upsertedEdges,
+		removedNodeIds: removedNodeIds,
+		removedEdgeIds: removedEdgeIds,
+	};
+}
+
+function handleGraphUpdate(type, message) {
+	var version = message.version || 0;
+	if (hasRenderedOnce && version <= lastSeenVersion) return;
+
+	if (type === 'graph-patch') {
+		if (!hasRenderedOnce || version !== lastSeenVersion + 1) return;
+		applyGraphPatch(message);
+	} else if (!hasRenderedOnce) {
+		renderGraph(message);
+		hasRenderedOnce = true;
+	} else {
+		applyGraphPatch(computeClientPatch(message));
+	}
+
+	lastSeenVersion = version;
 }
 
 /** Write counts into the stats bar elements (stat-notes, stat-explicit, stat-semantic, stat-tags). */
@@ -324,20 +465,31 @@ function downloadFile(data, filename) {
 	if (data.indexOf('blob:') === 0) URL.revokeObjectURL(data);
 }
 
-/** Poll every second for graph data via webviewApi until the first graph-data response arrives. */
+var POLL_INTERVAL_WAITING_MS = 1000;
+var POLL_INTERVAL_LIVE_MS = 3000;
+
+function requestData() {
+	webviewApi
+		.postMessage({ type: 'request-data', version: lastSeenVersion })
+		.then(function (response) {
+			if (response && response.type === 'graph-data') {
+				hideProgress();
+				handleGraphUpdate('graph-data', response);
+			}
+		})
+		.catch(function (e) {
+			console.error('Note Graph poll failed:', e);
+		})
+		.then(function () {
+			setTimeout(requestData, hasRenderedOnce ? POLL_INTERVAL_LIVE_MS : POLL_INTERVAL_WAITING_MS);
+		});
+}
+
 function pollForData() {
 	if (typeof webviewApi === 'undefined') {
 		return;
 	}
-
-	pollTimer = setInterval(function () {
-		webviewApi.postMessage({ type: 'request-data' }).then(function (response) {
-			if (response && response.type === 'graph-data') {
-				clearInterval(pollTimer);
-				renderGraph(response);
-			}
-		});
-	}, 1000);
+	requestData();
 }
 
 /**
@@ -563,12 +715,12 @@ function init() {
 		if (typeof webviewApi !== 'undefined') {
 			webviewApi.onMessage(function (message) {
 				if (message && message.type === 'graph-data') {
-					if (pollTimer) {
-						clearInterval(pollTimer);
-						pollTimer = null;
-					}
 					hideProgress();
-					renderGraph(message);
+					handleGraphUpdate('graph-data', message);
+				}
+				if (message && message.type === 'graph-patch') {
+					hideProgress();
+					handleGraphUpdate('graph-patch', message);
 				}
 				if (message && message.type === 'fit-to-screen') {
 					cy.fit(undefined, 30);
@@ -583,6 +735,7 @@ function init() {
 			});
 		}
 	} catch (e) {
+		console.error('Note Graph panel failed to initialize:', e);
 		showStatus('Error: ' + (e && e.message ? e.message : String(e)));
 	}
 }

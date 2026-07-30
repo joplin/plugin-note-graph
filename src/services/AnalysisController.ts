@@ -1,7 +1,9 @@
 import { Note } from '../data/Types';
 import { GraphBuilder } from './graph/GraphBuilder';
 import { GraphData } from './graph/types';
+import { GraphDiffer, GraphDiff } from './graph/GraphDiffer';
 import { VectorRepository } from '../data/Database/VectorRepository';
+import { GraphCacheRepository } from '../data/Database/GraphCacheRepository';
 import { ProviderResolver } from './embeddings/ProviderResolver';
 import { EmbeddingOrchestrator } from './embeddings/Orchestrator';
 import { EmbeddedNote, EmbeddingProvider, BatchProgress } from './embeddings/Types';
@@ -22,12 +24,53 @@ export interface SemanticBuildResult {
 export class AnalysisController {
 	private lastNotes: Note[] | null = null;
 	private lastEmbeddedNotes: EmbeddedNote[] | null = null;
+	private lastGraphData: GraphData | null = null;
+	private lastDiff: GraphDiff | null = null;
 	private runToken = 0;
+	private lastDeltaSkippedForRetry = false;
 
-	public constructor(private readonly builder = new GraphBuilder()) {}
+	public constructor(
+		private readonly builder = new GraphBuilder(),
+		private readonly graphCache: GraphCacheRepository = new GraphCacheRepository(),
+		private readonly graphDiffer: GraphDiffer = new GraphDiffer()
+	) {}
+
+	public getLastDiff(): GraphDiff | null {
+		return this.lastDiff;
+	}
+
+	public wasLastDeltaSkippedForRetry(): boolean {
+		return this.lastDeltaSkippedForRetry;
+	}
+
+	public hasNotes(): boolean {
+		return this.lastNotes !== null;
+	}
+
+	public getCurrentNotes(): Note[] {
+		return this.lastNotes ?? [];
+	}
+
+	public async loadFromCache(): Promise<GraphData | null> {
+		try {
+			const cached = await this.graphCache.loadGraph();
+			if (!cached) return null;
+			this.lastNotes = cached.notes;
+			this.lastGraphData = cached.graphData;
+			return cached.graphData;
+		} catch (e) {
+			console.error('Failed to load cached graph, starting fresh:', e);
+			return null;
+		}
+	}
 
 	public buildStructural(notes: Note[]): GraphData {
-		return this.builder.build(notes);
+		++this.runToken;
+		this.lastNotes = notes;
+		this.lastEmbeddedNotes = null;
+		const graphData = this.builder.build(notes);
+		this.commitGraphData(graphData);
+		return graphData;
 	}
 
 	/**
@@ -47,18 +90,40 @@ export class AnalysisController {
 	): Promise<SemanticBuildResult | null> {
 		const token = ++this.runToken;
 		const guardedProgress = onProgress ? this.guardStaleProgress(token, onProgress) : undefined;
-		const { embeddedNotes, reason } = await this.tryEmbed(notes, guardedProgress);
+		return this.buildFrom(notes, token, { onProgress: guardedProgress, commitNotes: true });
+	}
 
+	private async buildFrom(
+		notes: Note[],
+		token: number,
+		options: {
+			onProgress?: (progress: BatchProgress) => void;
+			avoidSemanticDowngrade?: boolean;
+			commitNotes?: boolean;
+		}
+	): Promise<SemanticBuildResult | null> {
+		const hadSemanticGraph = this.hasSemanticEdges();
+		const { embeddedNotes, reason, aiWasEnabled } = await this.tryEmbed(notes, options.onProgress);
 		if (token !== this.runToken) {
+			if (options.avoidSemanticDowngrade) this.lastDeltaSkippedForRetry = true;
 			return null;
 		}
 
 		if (!embeddedNotes) {
-			return { graphData: this.builder.build(notes), usedAi: false, fallbackReason: reason };
+			if (options.avoidSemanticDowngrade && hadSemanticGraph && aiWasEnabled) {
+				console.info(
+					'Incremental update: AI re-embed failed; keeping the existing semantic graph instead of downgrading it.',
+					reason
+				);
+				this.lastDeltaSkippedForRetry = true;
+				return null;
+			}
+			const graphData = this.builder.build(notes);
+			if (options.commitNotes) this.lastNotes = notes;
+			this.lastEmbeddedNotes = null;
+			this.commitGraphData(graphData);
+			return { graphData, usedAi: false, fallbackReason: reason };
 		}
-
-		this.lastNotes = notes;
-		this.lastEmbeddedNotes = embeddedNotes;
 
 		console.info(
 			`AI analysis: ${embeddedNotes.length}/${notes.length} notes embedded, building semantic graph.`
@@ -70,6 +135,14 @@ export class AnalysisController {
 			threshold,
 			topK
 		);
+
+		if (token !== this.runToken) {
+			if (options.avoidSemanticDowngrade) this.lastDeltaSkippedForRetry = true;
+			return null;
+		}
+		if (options.commitNotes) this.lastNotes = notes;
+		this.lastEmbeddedNotes = embeddedNotes;
+		this.commitGraphData(graphData);
 		return { graphData, usedAi: true };
 	}
 
@@ -78,16 +151,91 @@ export class AnalysisController {
 		if (!this.lastNotes || !this.lastEmbeddedNotes) {
 			return null;
 		}
+		const token = ++this.runToken;
 		const { threshold, topK } = await getSimilaritySettings();
 		console.info(
 			`Recomputing graph: threshold=${threshold}, topK=${topK}, ${this.lastEmbeddedNotes.length} cached vectors.`
 		);
-		return this.builder.buildWithSimilarity(
+		const graphData = await this.builder.buildWithSimilarity(
 			this.lastNotes,
 			this.lastEmbeddedNotes,
 			threshold,
 			topK
 		);
+
+		if (token !== this.runToken) return null;
+		this.commitGraphData(graphData);
+		return graphData;
+	}
+
+	public async applyDelta(upserts: Note[], removedIds: string[]): Promise<GraphData | null> {
+		this.lastDeltaSkippedForRetry = false;
+		if (!this.lastNotes) return null;
+
+		const { merged, changed } = this.mergeNotes(this.lastNotes, upserts, removedIds);
+		if (!changed) return null;
+
+		const token = ++this.runToken;
+		const result = await this.buildFrom(merged, token, {
+			avoidSemanticDowngrade: true,
+			commitNotes: true,
+		});
+		return result ? result.graphData : null;
+	}
+
+	private hasSemanticEdges(): boolean {
+		return !!this.lastGraphData?.edges.some((e) => e.data.type === 'semantic');
+	}
+
+	private commitGraphData(graphData: GraphData): void {
+		this.lastDiff = this.graphDiffer.computeDiff(this.lastGraphData, graphData);
+		this.lastGraphData = graphData;
+		this.persistCache();
+	}
+
+	private persistCache(): void {
+		if (!this.lastNotes || !this.lastGraphData) return;
+		this.graphCache.saveGraph(this.lastNotes, this.lastGraphData).catch((e) => {
+			console.error('Failed to persist graph cache:', e);
+		});
+	}
+
+	private mergeNotes(
+		current: Note[],
+		upserts: Note[],
+		removedIds: string[]
+	): { merged: Note[]; changed: boolean } {
+		const byId = new Map(current.map((n) => [n.id, n]));
+		let changed = false;
+
+		for (const id of removedIds) {
+			if (byId.delete(id)) changed = true;
+		}
+		for (const note of upserts) {
+			const existing = byId.get(note.id);
+			if (!existing || !this.notesEqual(existing, note)) {
+				changed = true;
+			}
+			byId.set(note.id, note);
+		}
+
+		return { merged: changed ? Array.from(byId.values()) : current, changed };
+	}
+
+	private notesEqual(a: Note, b: Note): boolean {
+		return (
+			a.updated_time === b.updated_time &&
+			this.sameStringSet(a.tags, b.tags) &&
+			this.sameStringSet(a.links, b.links)
+		);
+	}
+
+	private sameStringSet(a: string[] | undefined, b: string[] | undefined): boolean {
+		const aValues = a ?? [];
+		const bValues = b ?? [];
+		if (aValues.length !== bValues.length) return false;
+		const bSet = new Set(bValues);
+		return aValues.every((value) => bSet.has(value));
 	}
 
 	/** Wraps a progress callback so it stops firing once a newer run supersedes `token` — otherwise a slow, superseded run could re-show the progress bar after a newer run already hid it by posting its finished graph. */
@@ -106,9 +254,9 @@ export class AnalysisController {
 	private async tryEmbed(
 		notes: Note[],
 		onProgress?: (progress: BatchProgress) => void
-	): Promise<{ embeddedNotes: EmbeddedNote[] | null; reason?: string }> {
+	): Promise<{ embeddedNotes: EmbeddedNote[] | null; reason?: string; aiWasEnabled: boolean }> {
 		if (!(await isAiAnalysisEnabled())) {
-			return { embeddedNotes: null };
+			return { embeddedNotes: null, aiWasEnabled: false };
 		}
 
 		let provider: EmbeddingProvider;
@@ -117,7 +265,7 @@ export class AnalysisController {
 		} catch (e) {
 			const reason = e instanceof Error ? e.message : String(e);
 			console.error('AI analysis unavailable, falling back to structural graph:', e);
-			return { embeddedNotes: null, reason };
+			return { embeddedNotes: null, reason, aiWasEnabled: true };
 		}
 
 		const orchestrator = new EmbeddingOrchestrator();
@@ -133,9 +281,9 @@ export class AnalysisController {
 				'AI analysis produced no embeddings, falling back to structural graph:',
 				errors
 			);
-			return { embeddedNotes: null, reason: errors[0]?.error };
+			return { embeddedNotes: null, reason: errors[0]?.error, aiWasEnabled: true };
 		}
 
-		return { embeddedNotes };
+		return { embeddedNotes, aiWasEnabled: true };
 	}
 }

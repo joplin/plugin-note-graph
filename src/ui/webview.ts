@@ -2,6 +2,7 @@ import joplin from 'api';
 import { ViewHandle } from 'api/types';
 import { renderPanelHtml } from './App';
 import { GraphData } from '../services/graph/types';
+import { GraphDiff } from '../services/graph/GraphDiffer';
 
 const PANEL_ID = 'aiNoteGraphPanel';
 const PANEL_HTML = renderPanelHtml();
@@ -9,22 +10,26 @@ const PANEL_SCRIPTS = ['./ui/styles/panel.css', './ui/setup.js', './ui/graph-vie
 
 let panelHandle: ViewHandle;
 let currentGraphData: GraphData | null = null;
+let currentVersion = 0;
 
 const createPanel = async (): Promise<ViewHandle> => {
 	const handle = await joplin.views.panels.create(PANEL_ID);
 	await joplin.views.panels.setHtml(handle, PANEL_HTML);
 	await joplin.views.panels.onMessage(
 		handle,
-		async (message: { type?: string; nodeId?: string; nodeLabel?: string }) => {
+		async (message: { type?: string; nodeId?: string; nodeLabel?: string; version?: number }) => {
 			if (message?.type === 'close-note-graph') {
 				await joplin.views.panels.hide(handle);
 				return { done: true };
 			}
 			if (message?.type === 'request-data') {
-				if (currentGraphData) {
-					return { type: 'graph-data', ...currentGraphData };
+				if (!currentGraphData) {
+					return { type: 'no-data' };
 				}
-				return { type: 'no-data' };
+				if (message.version === currentVersion) {
+					return { type: 'no-change' };
+				}
+				return { type: 'graph-data', ...currentGraphData, version: currentVersion };
 			}
 			if (message?.type === 'node-clicked' && message?.nodeId) {
 				try {
@@ -78,10 +83,30 @@ export const showAiNoteGraphPanel = async (): Promise<void> => {
 export const postGraphData = async (graphData: GraphData): Promise<void> => {
 	const hadData = currentGraphData !== null;
 	currentGraphData = graphData;
+	currentVersion++;
 
 	if (hadData) {
 		const handle = getPanel();
-		joplin.views.panels.postMessage(handle, { type: 'graph-data', ...graphData });
+		joplin.views.panels.postMessage(handle, {
+			type: 'graph-data',
+			...graphData,
+			version: currentVersion,
+		});
+	}
+};
+
+export const postGraphPatch = async (diff: GraphDiff, fullGraphData: GraphData): Promise<void> => {
+	const hadData = currentGraphData !== null;
+	currentGraphData = fullGraphData;
+	currentVersion++;
+
+	if (hadData) {
+		const handle = getPanel();
+		joplin.views.panels.postMessage(handle, {
+			type: 'graph-patch',
+			...diff,
+			version: currentVersion,
+		});
 	}
 };
 
