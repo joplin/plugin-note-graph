@@ -70,7 +70,7 @@ export class SimilarityEngine {
 			return [];
 		}
 
-		const normalized = this.normalize(aboveFloor);
+		const normalized = this.normalize(aboveFloor, SEMANTIC_FLOOR);
 		const enriched = this.addBonusPoints(normalized);
 		const aboveThreshold = this.filterBelowThreshold(enriched, threshold);
 		const topPairs = this.selectTopK(aboveThreshold, topK);
@@ -194,14 +194,19 @@ export class SimilarityEngine {
 		return sum;
 	}
 
-	/** Min-max normalizes scores to [0, 1]. Skips if spread is too narrow. */
-	private normalize(pairs: SimilarityPair[]): SimilarityPair[] {
+	/** Min-max normalizes scores to [0, 1], using only pairs that clear `floor` on their own to compute the range (excludes link-kept sub-floor outliers, see `filterBelowFloor`). */
+	private normalize(pairs: SimilarityPair[], floor: number): SimilarityPair[] {
 		let min = Infinity;
 		let max = -Infinity;
 
 		for (const p of pairs) {
+			if (p.score < floor) continue;
 			if (p.score < min) min = p.score;
 			if (p.score > max) max = p.score;
+		}
+
+		if (min === Infinity) {
+			return pairs;
 		}
 
 		const spread = max - min;

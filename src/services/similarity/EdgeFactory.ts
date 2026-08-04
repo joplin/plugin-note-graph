@@ -2,6 +2,9 @@ import { Note } from '../../data/Types';
 import { GraphEdge } from '../graph/types';
 import { SimilarityPair } from './SimilarityEngine';
 
+/** Tags shared by more notes than this are skipped entirely, to avoid a combinatorial blowup of pairs (a clique on n notes is n*(n-1)/2 edges). */
+const MAX_NOTES_PER_TAG = 20;
+
 export class EdgeFactory {
 	/**
 	 * Creates graph edges from explicit note links and shared tags.
@@ -12,25 +15,29 @@ export class EdgeFactory {
 		return [...this.createLinkEdges(notes), ...this.createTagEdges(notes)];
 	}
 
-	/** Builds one deduplicated edge per explicit `:/noteId` link between two notes in scope. */
+	/**
+	 * Builds one deduplicated edge per explicit `:/noteId` link between two notes
+	 * in scope. Direction-agnostic, same as `createTagEdges`: a mutual A<->B link
+	 * is one edge, not two, and its `source`/`target` are normalized to id order
+	 * rather than kept in authored order.
+	 */
 	private createLinkEdges(notes: Note[]): GraphEdge[] {
 		const noteIdSet = new Set(notes.map((n) => n.id));
-		const edges: GraphEdge[] = [];
-		const linkKeySet = new Set<string>();
+		const linkEdgeMap = new Map<string, GraphEdge>();
 
 		for (const note of notes) {
 			for (const link of note.links ?? []) {
 				if (noteIdSet.has(link) && link !== note.id) {
-					const key = `${note.id}::${link}::link`;
-					if (!linkKeySet.has(key)) {
-						linkKeySet.add(key);
-						edges.push({ source: note.id, target: link, type: 'link' });
+					const [a, b] = note.id < link ? [note.id, link] : [link, note.id];
+					const pairKey = `${a}::${b}`;
+					if (!linkEdgeMap.has(pairKey)) {
+						linkEdgeMap.set(pairKey, { source: a, target: b, type: 'link' });
 					}
 				}
 			}
 		}
 
-		return edges;
+		return Array.from(linkEdgeMap.values());
 	}
 
 	/**
@@ -43,7 +50,7 @@ export class EdgeFactory {
 		const tagEdgeMap = new Map<string, GraphEdge>();
 
 		for (const [tagName, noteIds] of tagToNotes) {
-			if (noteIds.length > 20) continue;
+			if (noteIds.length > MAX_NOTES_PER_TAG) continue;
 
 			for (let i = 0; i < noteIds.length; i++) {
 				for (let j = i + 1; j < noteIds.length; j++) {

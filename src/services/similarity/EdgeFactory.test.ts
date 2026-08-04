@@ -39,11 +39,14 @@ describe('EdgeFactory', () => {
 		expect(edges).toEqual([{ source: 'a', target: 'b', type: 'link' }]);
 	});
 
-	it('creates bidirectional links when notes reference each other', () => {
+	it('collapses a mutual link into a single edge', () => {
 		const edges = factory.createEdges([note('a', 'A', ['b']), note('b', 'B', ['a'])]);
-		expect(edges).toHaveLength(2);
-		expect(edges).toContainEqual({ source: 'a', target: 'b', type: 'link' });
-		expect(edges).toContainEqual({ source: 'b', target: 'a', type: 'link' });
+		expect(edges).toEqual([{ source: 'a', target: 'b', type: 'link' }]);
+	});
+
+	it('normalizes link edges to id order regardless of authored direction', () => {
+		const edges = factory.createEdges([note('z', 'Z', ['a']), note('a', 'A', [])]);
+		expect(edges).toEqual([{ source: 'a', target: 'z', type: 'link' }]);
 	});
 
 	it('creates tag edge with tagName for shared tags', () => {

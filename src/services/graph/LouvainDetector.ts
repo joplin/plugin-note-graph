@@ -304,7 +304,11 @@ export class LouvainDetector {
 		return bestWord ?? `note:${note.id}`;
 	}
 
-	/** Latin-script words only; other scripts fall through to the per-note key above. */
+	/**
+	 * Latin-script words only; other scripts fall through to the per-note key above.
+	 * TODO: extend the regex (or use a script-aware tokenizer) to support non-Latin
+	 * scripts as a post-GSoC enhancement.
+	 */
 	private tokenize(text: string): string[] {
 		return text.toLowerCase().match(/[a-z]{2,}/g) ?? [];
 	}
