@@ -6,6 +6,8 @@ export interface GraphNode {
 	label: string;
 	noteId: string;
 	degree: number;
+	community: number;
+	size: number;
 }
 
 export interface GraphEdge {

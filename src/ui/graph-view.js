@@ -1,7 +1,9 @@
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
+import svg from 'cytoscape-svg';
 
 cytoscape.use(fcose);
+cytoscape.use(svg);
 
 var FCOSE_OPTIONS = {
 	name: 'fcose',
@@ -32,6 +34,9 @@ var statusEl;
 var pollTimer;
 var tooltipEl;
 var nodeStats;
+var progressEl;
+var progressFillEl;
+var progressLabelEl;
 
 function showStatus(text) {
 	if (statusEl) {
@@ -44,6 +49,50 @@ function hideStatus() {
 	if (statusEl) {
 		statusEl.style.display = 'none';
 	}
+}
+
+/** Updates the progress bar below the stats bar with an "embedding N/M notes" state. */
+function showProgress(current, total) {
+	if (!progressEl || !progressFillEl || !progressLabelEl) return;
+	progressEl.style.display = '';
+	var pct = total > 0 ? Math.round((current / total) * 100) : 0;
+	progressFillEl.style.width = pct + '%';
+	progressLabelEl.textContent = 'Embedding notes: ' + current + '/' + total;
+}
+
+function hideProgress() {
+	if (progressEl) {
+		progressEl.style.display = 'none';
+	}
+}
+
+/** Colors for community groups, ordered largest cluster first. First 7 are the Okabe-Ito colorblind-safe palette, 3 more added to reach 10. */
+var COMMUNITY_COLORS = [
+	'#e69f00', // orange
+	'#56b4e9', // sky blue
+	'#009e73', // bluish green
+	'#f0e442', // yellow
+	'#0072b2', // blue
+	'#d55e00', // vermillion
+	'#cc79a7', // reddish purple
+	'#332288', // indigo
+	'#44aa99', // teal
+	'#aa4499', // purple
+];
+
+/** Neutral color for communities past the palette. A long tail of small groups isn't worth giving each one its own color. */
+var COMMUNITY_OVERFLOW_COLOR = '#9aa0a6';
+
+function communityColor(ele) {
+	var community = ele.data('community') || 0;
+	if (community >= COMMUNITY_COLORS.length) return COMMUNITY_OVERFLOW_COLOR;
+	return COMMUNITY_COLORS[community];
+}
+
+/** Maps the 1-10 centrality score to a pixel diameter. */
+function nodeDiameter(ele) {
+	var size = ele.data('size') || 1;
+	return 18 + (size - 1) * 3;
 }
 
 /** Detect whether the current Joplin theme is dark by computing luminance of --joplin-background-color. */
@@ -66,7 +115,7 @@ function buildStylesheet() {
 		{
 			selector: 'node',
 			style: {
-				'background-color': '#5b9bd5',
+				'background-color': communityColor,
 				label: 'data(label)',
 				color: dark ? '#ddd' : '#222',
 				'font-size': '9px',
@@ -75,10 +124,10 @@ function buildStylesheet() {
 				'text-margin-y': -4,
 				'text-wrap': 'ellipsis',
 				'text-max-width': '100px',
-				width: 28,
-				height: 28,
+				width: nodeDiameter,
+				height: nodeDiameter,
 				'border-width': 1.5,
-				'border-color': '#4a8cc4',
+				'border-color': dark ? '#1e1e1e' : '#ffffff',
 			},
 		},
 		{
@@ -225,7 +274,7 @@ function updateStats(notes, explicit, semantic, tags) {
 function createExportMenu(btn) {
 	var menu = document.createElement('div');
 	menu.className = 'export-menu';
-	menu.innerHTML = '<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
+	menu.innerHTML = '<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="svg"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>SVG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
 	document.body.appendChild(menu);
 
 	btn.addEventListener('click', function (e) {
@@ -248,6 +297,10 @@ function createExportMenu(btn) {
 		var bg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim() || '#1e1e1e';
 		if (format === 'png') {
 			downloadFile(cy.png({ full: true, bg: bg }), 'note-graph.png');
+		} else if (format === 'svg') {
+			var svgString = cy.svg({ full: true, bg: bg });
+			var svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+			downloadFile(URL.createObjectURL(svgBlob), 'note-graph.svg');
 		} else if (format === 'json') {
 			var blob = new Blob([JSON.stringify(cy.json().elements, null, 2)], { type: 'application/json' });
 			downloadFile(URL.createObjectURL(blob), 'note-graph.json');
@@ -316,6 +369,10 @@ function init() {
 		statusEl.style.display = '';
 	}
 
+	progressEl = document.getElementById('analysis-progress');
+	progressFillEl = document.getElementById('analysis-progress-fill');
+	progressLabelEl = document.getElementById('analysis-progress-label');
+
 	tooltipEl = document.createElement('div');
 	tooltipEl.className = 'graph-tooltip';
 	document.body.appendChild(tooltipEl);
@@ -376,12 +433,14 @@ function init() {
 			var label = node.data('label') || '(untitled)';
 			var id = node.id();
 			var degree = node.data('degree') || 0;
+			var community = node.data('community') || 0;
 			var stats = nodeStats && nodeStats[id] ? nodeStats[id] : { linkCount: 0, tagCount: 0 };
 			var safeLabel = label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 			tooltipEl.innerHTML = '<div class="graph-tooltip__title">' + safeLabel + '</div>'
 				+ '<div class="graph-tooltip__row"><span>Degree</span><strong>' + degree + '</strong></div>'
 				+ '<div class="graph-tooltip__row"><span>Links</span><strong>' + stats.linkCount + '</strong></div>'
-				+ '<div class="graph-tooltip__row"><span>Tags</span><strong>' + stats.tagCount + '</strong></div>';
+				+ '<div class="graph-tooltip__row"><span>Tags</span><strong>' + stats.tagCount + '</strong></div>'
+				+ '<div class="graph-tooltip__row"><span>Community</span><strong>' + community + '</strong></div>';
 			tooltipEl.style.display = 'block';
 		});
 
@@ -456,8 +515,7 @@ function init() {
 				var q = this.value.trim().toLowerCase();
 				if (searchTimer) clearTimeout(searchTimer);
 				cy.nodes().style('opacity', 1);
-				cy.nodes().style('border-width', 1.5);
-				cy.nodes().style('border-color', '#4a8cc4');
+				cy.nodes().removeStyle('border-width border-color');
 				cy.nodes().stop(true, false);
 				if (!q) return;
 				cy.nodes().style('opacity', 0.15);
@@ -469,8 +527,7 @@ function init() {
 					matches.style('border-width', 3);
 					matches.style('border-color', '#ffa500');
 					searchTimer = setTimeout(function () {
-						matches.style('border-width', 1.5);
-						matches.style('border-color', '#4a8cc4');
+						matches.removeStyle('border-width border-color');
 					}, 800);
 					cy.animate({ fit: { eles: matches, padding: 50 }, duration: 400 });
 				}
@@ -506,11 +563,22 @@ function init() {
 		if (typeof webviewApi !== 'undefined') {
 			webviewApi.onMessage(function (message) {
 				if (message && message.type === 'graph-data') {
-					clearInterval(pollTimer);
+					if (pollTimer) {
+						clearInterval(pollTimer);
+						pollTimer = null;
+					}
+					hideProgress();
 					renderGraph(message);
 				}
 				if (message && message.type === 'fit-to-screen') {
 					cy.fit(undefined, 30);
+				}
+				if (message && message.type === 'status' && message.text) {
+					hideProgress();
+					showStatus(message.text);
+				}
+				if (message && message.type === 'progress') {
+					showProgress(message.current, message.total);
 				}
 			});
 		}
