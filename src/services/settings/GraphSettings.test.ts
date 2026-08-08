@@ -39,6 +39,12 @@ describe('GraphSettings', () => {
 						public: true,
 						section: 'noteGraph',
 					}),
+					'noteGraph.retryEnrichment': expect.objectContaining({
+						type: SettingItemType.Bool,
+						value: false,
+						public: true,
+						section: 'noteGraph',
+					}),
 				})
 			);
 		});

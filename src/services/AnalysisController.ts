@@ -1,13 +1,16 @@
 import { Note } from '../data/Types';
 import { GraphBuilder } from './graph/GraphBuilder';
-import { GraphData } from './graph/types';
+import { GraphData, GraphNode, RenderedEdge } from './graph/types';
 import { GraphDiffer, GraphDiff } from './graph/GraphDiffer';
+import { clampSize } from './graph/CentralityScorer';
 import { VectorRepository } from '../data/Database/VectorRepository';
 import { GraphCacheRepository } from '../data/Database/GraphCacheRepository';
 import { ProviderResolver } from './embeddings/ProviderResolver';
 import { EmbeddingOrchestrator } from './embeddings/Orchestrator';
 import { EmbeddedNote, EmbeddingProvider, BatchProgress } from './embeddings/Types';
-import { isAiAnalysisEnabled, getSimilaritySettings } from './settings/GraphSettings';
+import { LLMEnricher, EnrichmentNodeInput, EnrichmentEdgeInput, EnrichmentProgress, CacheSeed } from './llm/LLMEnricher';
+import { NodeEnrichment, EdgeEnrichment } from './llm/ResponseParser';
+import { isAiAnalysisEnabled, isLlmEnrichmentEnabled, getSimilaritySettings } from './settings/GraphSettings';
 
 export interface SemanticBuildResult {
 	graphData: GraphData;
@@ -32,11 +35,16 @@ export class AnalysisController {
 	public constructor(
 		private readonly builder = new GraphBuilder(),
 		private readonly graphCache: GraphCacheRepository = new GraphCacheRepository(),
-		private readonly graphDiffer: GraphDiffer = new GraphDiffer()
+		private readonly graphDiffer: GraphDiffer = new GraphDiffer(),
+		private readonly enrichmentService: LLMEnricher = new LLMEnricher()
 	) {}
 
 	public getLastDiff(): GraphDiff | null {
 		return this.lastDiff;
+	}
+
+	public getLastGraphData(): GraphData | null {
+		return this.lastGraphData;
 	}
 
 	public wasLastDeltaSkippedForRetry(): boolean {
@@ -45,6 +53,10 @@ export class AnalysisController {
 
 	public hasNotes(): boolean {
 		return this.lastNotes !== null;
+	}
+
+	public hasEmbeddedNotes(): boolean {
+		return this.lastEmbeddedNotes !== null;
 	}
 
 	public getCurrentNotes(): Note[] {
@@ -57,11 +69,39 @@ export class AnalysisController {
 			if (!cached) return null;
 			this.lastNotes = cached.notes;
 			this.lastGraphData = cached.graphData;
+			this.seedEnrichmentCache(cached.notes, cached.graphData);
 			return cached.graphData;
 		} catch (e) {
 			console.error('Failed to load cached graph, starting fresh:', e);
 			return null;
 		}
+	}
+
+	private seedEnrichmentCache(notes: Note[], graphData: GraphData): void {
+		const noteById = new Map(notes.map((note) => [note.id, note]));
+
+		const nodeSeeds: CacheSeed<NodeEnrichment>[] = [];
+		for (const node of graphData.nodes) {
+			if (node.data.category === undefined) continue;
+			const note = noteById.get(node.data.id);
+			if (!note) continue;
+			nodeSeeds.push({ id: node.data.id, updatedTime: note.updated_time, enrichment: { category: node.data.category } });
+		}
+
+		const edgeSeeds: CacheSeed<EdgeEnrichment>[] = [];
+		for (const edge of graphData.edges) {
+			if (edge.data.type !== 'semantic' || edge.data.relationshipLabel === undefined) continue;
+			const source = noteById.get(edge.data.source);
+			const target = noteById.get(edge.data.target);
+			if (!source || !target) continue;
+			edgeSeeds.push({
+				id: edge.data.id,
+				updatedTime: Math.max(source.updated_time, target.updated_time),
+				enrichment: { relationshipLabel: edge.data.relationshipLabel },
+			});
+		}
+
+		this.enrichmentService.seedCache(nodeSeeds, edgeSeeds);
 	}
 
 	public buildStructural(notes: Note[]): GraphData {
@@ -86,11 +126,19 @@ export class AnalysisController {
 	 */
 	public async embedAndBuildSemantic(
 		notes: Note[],
-		onProgress?: (progress: BatchProgress) => void
+		onProgress?: (progress: BatchProgress) => void,
+		onEnrichmentProgress?: (progress: EnrichmentProgress) => void
 	): Promise<SemanticBuildResult | null> {
 		const token = ++this.runToken;
 		const guardedProgress = onProgress ? this.guardStaleProgress(token, onProgress) : undefined;
-		return this.buildFrom(notes, token, { onProgress: guardedProgress, commitNotes: true });
+		const guardedEnrichmentProgress = onEnrichmentProgress
+			? this.guardStaleProgress(token, onEnrichmentProgress)
+			: undefined;
+		return this.buildFrom(notes, token, {
+			onProgress: guardedProgress,
+			onEnrichmentProgress: guardedEnrichmentProgress,
+			commitNotes: true,
+		});
 	}
 
 	private async buildFrom(
@@ -98,16 +146,14 @@ export class AnalysisController {
 		token: number,
 		options: {
 			onProgress?: (progress: BatchProgress) => void;
+			onEnrichmentProgress?: (progress: EnrichmentProgress) => void;
 			avoidSemanticDowngrade?: boolean;
 			commitNotes?: boolean;
 		}
 	): Promise<SemanticBuildResult | null> {
 		const hadSemanticGraph = this.hasSemanticEdges();
 		const { embeddedNotes, reason, aiWasEnabled } = await this.tryEmbed(notes, options.onProgress);
-		if (token !== this.runToken) {
-			if (options.avoidSemanticDowngrade) this.lastDeltaSkippedForRetry = true;
-			return null;
-		}
+		if (this.isStale(token, options.avoidSemanticDowngrade)) return null;
 
 		if (!embeddedNotes) {
 			if (options.avoidSemanticDowngrade && hadSemanticGraph && aiWasEnabled) {
@@ -136,18 +182,24 @@ export class AnalysisController {
 			topK
 		);
 
-		if (token !== this.runToken) {
-			if (options.avoidSemanticDowngrade) this.lastDeltaSkippedForRetry = true;
-			return null;
-		}
+		if (this.isStale(token, options.avoidSemanticDowngrade)) return null;
+
+		const enrichedGraphData = await this.applyEnrichment(
+			graphData,
+			notes,
+			token,
+			options.onEnrichmentProgress
+		);
+
+		if (this.isStale(token, options.avoidSemanticDowngrade)) return null;
 		if (options.commitNotes) this.lastNotes = notes;
 		this.lastEmbeddedNotes = embeddedNotes;
-		this.commitGraphData(graphData);
-		return { graphData, usedAi: true };
+		this.commitGraphData(enrichedGraphData);
+		return { graphData: enrichedGraphData, usedAi: true };
 	}
 
 	/** Rebuilds the graph from the last successful embedding using the current threshold/top-K settings. */
-	public async recompute(): Promise<GraphData | null> {
+	public async recompute(onEnrichmentProgress?: (progress: EnrichmentProgress) => void): Promise<GraphData | null> {
 		if (!this.lastNotes || !this.lastEmbeddedNotes) {
 			return null;
 		}
@@ -164,8 +216,20 @@ export class AnalysisController {
 		);
 
 		if (token !== this.runToken) return null;
-		this.commitGraphData(graphData);
-		return graphData;
+
+		const guardedEnrichmentProgress = onEnrichmentProgress
+			? this.guardStaleProgress(token, onEnrichmentProgress)
+			: undefined;
+		const enrichedGraphData = await this.applyEnrichment(
+			graphData,
+			this.lastNotes,
+			token,
+			guardedEnrichmentProgress
+		);
+
+		if (token !== this.runToken) return null;
+		this.commitGraphData(enrichedGraphData);
+		return enrichedGraphData;
 	}
 
 	public async applyDelta(upserts: Note[], removedIds: string[]): Promise<GraphData | null> {
@@ -185,6 +249,12 @@ export class AnalysisController {
 
 	private hasSemanticEdges(): boolean {
 		return !!this.lastGraphData?.edges.some((e) => e.data.type === 'semantic');
+	}
+
+	private isStale(token: number, avoidSemanticDowngrade?: boolean): boolean {
+		if (token === this.runToken) return false;
+		if (avoidSemanticDowngrade) this.lastDeltaSkippedForRetry = true;
+		return true;
 	}
 
 	private commitGraphData(graphData: GraphData): void {
@@ -239,15 +309,96 @@ export class AnalysisController {
 	}
 
 	/** Wraps a progress callback so it stops firing once a newer run supersedes `token` — otherwise a slow, superseded run could re-show the progress bar after a newer run already hid it by posting its finished graph. */
-	private guardStaleProgress(
-		token: number,
-		onProgress: (progress: BatchProgress) => void
-	): (progress: BatchProgress) => void {
+	private guardStaleProgress<T>(token: number, onProgress: (progress: T) => void): (progress: T) => void {
 		return (progress) => {
 			if (token === this.runToken) {
 				onProgress(progress);
 			}
 		};
+	}
+
+	private async applyEnrichment(
+		graphData: GraphData,
+		notes: Note[],
+		token: number,
+		onProgress?: (progress: EnrichmentProgress) => void
+	): Promise<GraphData> {
+		try {
+			if (!(await isLlmEnrichmentEnabled())) return graphData;
+
+			const noteById = new Map(notes.map((note) => [note.id, note]));
+			const semanticEdges = graphData.edges.filter((edge) => edge.data.type === 'semantic');
+
+			const nodeInputs = new Map<string, EnrichmentNodeInput>();
+			const edgeInputs: EnrichmentEdgeInput[] = [];
+			for (const edge of semanticEdges) {
+				const source = noteById.get(edge.data.source);
+				const target = noteById.get(edge.data.target);
+				if (!source || !target) {
+					const missing = [!source && 'source', !target && 'target'].filter(Boolean).join(' and ');
+					console.error(`LLM enrichment: semantic edge is missing its ${missing} note; skipping it.`, edge.data);
+					continue;
+				}
+				for (const note of [source, target]) {
+					if (!nodeInputs.has(note.id)) {
+						nodeInputs.set(note.id, {
+							title: note.title,
+							body: typeof note.body === 'string' ? note.body : '',
+							updatedTime: note.updated_time,
+						});
+					}
+				}
+				edgeInputs.push({
+					id: edge.data.id,
+					source: edge.data.source,
+					target: edge.data.target,
+					updatedTime: Math.max(source.updated_time, target.updated_time),
+				});
+			}
+
+			const enrichment = await this.enrichmentService.enrich(
+				{ nodes: nodeInputs, edges: edgeInputs },
+				() => token !== this.runToken,
+				onProgress
+			);
+			if (enrichment.nodeEnrichments.size === 0 && enrichment.edgeEnrichments.size === 0) {
+				return graphData;
+			}
+
+			return {
+				nodes: graphData.nodes.map((node) =>
+					this.applyNodeEnrichment(node, enrichment.nodeEnrichments.get(node.data.id))
+				),
+				edges: graphData.edges.map((edge) =>
+					this.applyEdgeEnrichment(edge, enrichment.edgeEnrichments.get(edge.data.id))
+				),
+			};
+		} catch (e) {
+			console.error('LLM enrichment failed; rendering the graph without it.', e);
+			return graphData;
+		}
+	}
+
+	private applyNodeEnrichment(
+		node: { data: GraphNode },
+		enrichment: NodeEnrichment | undefined
+	): { data: GraphNode } {
+		if (!enrichment) return node;
+		return {
+			data: {
+				...node.data,
+				...(enrichment.category !== undefined ? { category: enrichment.category } : {}),
+				size: clampSize(node.data.size + (enrichment.centralityAdjustment ?? 0)),
+			},
+		};
+	}
+
+	private applyEdgeEnrichment(
+		edge: { data: RenderedEdge },
+		enrichment: EdgeEnrichment | undefined
+	): { data: RenderedEdge } {
+		if (!enrichment) return edge;
+		return { data: { ...edge.data, relationshipLabel: enrichment.relationshipLabel } };
 	}
 
 	/** Never throws — returns `embeddedNotes: null` on any failure (setting off, provider unavailable, nothing embedded), with `reason` set to a user-facing explanation where one is available, so the caller can always fall back to the structural graph. */

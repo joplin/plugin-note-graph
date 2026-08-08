@@ -6,12 +6,16 @@ const SECTION_NAME = 'noteGraph';
 export const AI_ANALYSIS_ENABLED_KEY = 'noteGraph.aiAnalysisEnabled';
 const SIMILARITY_THRESHOLD_KEY = 'noteGraph.similarityThreshold';
 const MAX_EDGES_PER_NOTE_KEY = 'noteGraph.maxEdgesPerNote';
+export const LLM_ENRICHMENT_ENABLED_KEY = 'noteGraph.llmEnrichmentEnabled';
+export const RETRY_ENRICHMENT_KEY = 'noteGraph.retryEnrichment';
 
 /** All Note Graph setting keys — the single source of truth for anything that needs to check "did one of our settings change?" */
 export const NOTE_GRAPH_SETTING_KEYS = [
 	AI_ANALYSIS_ENABLED_KEY,
 	SIMILARITY_THRESHOLD_KEY,
 	MAX_EDGES_PER_NOTE_KEY,
+	LLM_ENRICHMENT_ENABLED_KEY,
+	RETRY_ENRICHMENT_KEY,
 ];
 
 /**
@@ -55,11 +59,33 @@ export async function registerGraphSettings(): Promise<void> {
 			label: 'Max semantic edges per note (top-K)',
 			description: 'Only applies when AI analysis is enabled.',
 		},
+		[LLM_ENRICHMENT_ENABLED_KEY]: {
+			value: false,
+			type: SettingItemType.Bool,
+			public: true,
+			section: SECTION_NAME,
+			label: 'Enable LLM analysis',
+			description:
+				'Uses Joplin AI chat to add category labels and relationship descriptions to notes/edges already flagged as related by AI analysis. Requires AI-based semantic analysis to be enabled.',
+		},
+		[RETRY_ENRICHMENT_KEY]: {
+			value: false,
+			type: SettingItemType.Bool,
+			public: true,
+			section: SECTION_NAME,
+			label: 'Retry AI labels',
+			description:
+				'Tick to immediately retry LLM analysis for any note/edge still missing a label. Unticks itself once the retry starts. No-op if the graph panel has not been opened yet.',
+		},
 	});
 }
 
 export async function isAiAnalysisEnabled(): Promise<boolean> {
 	return await joplin.settings.value(AI_ANALYSIS_ENABLED_KEY);
+}
+
+export async function isLlmEnrichmentEnabled(): Promise<boolean> {
+	return await joplin.settings.value(LLM_ENRICHMENT_ENABLED_KEY);
 }
 
 /**

@@ -47,6 +47,7 @@ describe('IncrementalUpdater', () => {
 	let onGraphPatch: jest.Mock;
 	let onFullReloadNeeded: jest.Mock;
 	let checkAiEnabled: jest.Mock<Promise<boolean>, []>;
+	let onRetriesExhausted: jest.Mock;
 	let ai: { getIndexStatus: jest.Mock; getEmbeddings: jest.Mock };
 	let updater: IncrementalUpdater;
 
@@ -82,6 +83,7 @@ describe('IncrementalUpdater', () => {
 		onGraphPatch = jest.fn();
 		onFullReloadNeeded = jest.fn().mockResolvedValue(undefined);
 		checkAiEnabled = jest.fn().mockResolvedValue(false);
+		onRetriesExhausted = jest.fn();
 
 		ai = joplin.ai as unknown as { getIndexStatus: jest.Mock; getEmbeddings: jest.Mock };
 		ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' });
@@ -101,7 +103,8 @@ describe('IncrementalUpdater', () => {
 			eventsRepository,
 			graphCache,
 			COALESCE_WINDOW_MS,
-			checkAiEnabled
+			checkAiEnabled,
+			onRetriesExhausted
 		);
 	});
 
@@ -224,6 +227,7 @@ describe('IncrementalUpdater', () => {
 			expect(consoleInfoSpy).toHaveBeenCalledWith(
 				expect.stringContaining('Giving up automatic retry after 5 consecutive')
 			);
+			expect(onRetriesExhausted).toHaveBeenCalledTimes(1);
 
 			analysisController.applyDelta.mockResolvedValue({ nodes: [], edges: [] });
 			analysisController.wasLastDeltaSkippedForRetry.mockReturnValue(false);
@@ -235,6 +239,21 @@ describe('IncrementalUpdater', () => {
 				[]
 			);
 			consoleInfoSpy.mockRestore();
+		});
+
+		it('does not report retries exhausted when a retryable skip succeeds within the retry budget', async () => {
+			noteRepository.getNote.mockImplementation(async (id) => note(id));
+			analysisController.applyDelta.mockResolvedValueOnce(null);
+			analysisController.wasLastDeltaSkippedForRetry.mockReturnValueOnce(true);
+
+			updater.handleNoteChange({ id: 'a', event: 2 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			analysisController.applyDelta.mockResolvedValue({ nodes: [], edges: [] });
+			analysisController.wasLastDeltaSkippedForRetry.mockReturnValue(false);
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(onRetriesExhausted).not.toHaveBeenCalled();
 		});
 
 		it('folds a note edited again while its retryable skip is still pending into the same retry', async () => {

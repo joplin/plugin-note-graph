@@ -8,6 +8,7 @@ export interface GraphNode {
 	degree: number;
 	community: number;
 	size: number;
+	category?: string;
 }
 
 export interface GraphEdge {
@@ -16,6 +17,7 @@ export interface GraphEdge {
 	type: EdgeType;
 	/** Comma-separated tag names when type === 'tag'. */
 	tagName?: string;
+	relationshipLabel?: string;
 }
 
 export interface RenderedEdge extends GraphEdge {

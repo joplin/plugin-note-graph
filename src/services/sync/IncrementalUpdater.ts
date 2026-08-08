@@ -33,7 +33,8 @@ export class IncrementalUpdater {
 		private readonly eventsRepository = new EventsRepository(),
 		private readonly graphCache = new GraphCacheRepository(),
 		private readonly coalesceWindowMs = DEFAULT_COALESCE_WINDOW_MS,
-		private readonly checkAiEnabled: () => Promise<boolean> = isAiAnalysisEnabled
+		private readonly checkAiEnabled: () => Promise<boolean> = isAiAnalysisEnabled,
+		private readonly onRetriesExhausted: () => void = () => {}
 	) {}
 
 	public handleNoteChange(event: { id: string; event: number }): void {
@@ -215,6 +216,7 @@ export class IncrementalUpdater {
 						console.info(
 							`Giving up automatic retry after ${this.consecutiveRetrySkips} consecutive skipped updates; will retry on the next edit or sync.`
 						);
+						this.onRetriesExhausted();
 					}
 				} else {
 					this.consecutiveRetrySkips = 0;

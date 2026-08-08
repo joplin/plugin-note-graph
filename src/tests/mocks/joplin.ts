@@ -28,6 +28,7 @@ const joplinViewsPanels = {
 	show: jest.fn(),
 	hide: jest.fn(),
 	postMessage: jest.fn(),
+	visible: jest.fn(),
 };
 
 const joplinCommands = {

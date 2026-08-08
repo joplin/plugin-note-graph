@@ -7,14 +7,16 @@ export interface GraphDiff {
 	removedEdgeIds: string[];
 }
 
+function definedKeys(record: Record<string, unknown>): string[] {
+	return Object.keys(record).filter((key) => record[key] !== undefined);
+}
+
 function dataEqual<T extends object>(a: T | undefined, b: T): boolean {
 	if (!a) return false;
 	const aRecord = a as unknown as Record<string, unknown>;
 	const bRecord = b as unknown as Record<string, unknown>;
-	const aKeys = Object.keys(aRecord);
-	const bKeys = Object.keys(bRecord);
-	if (aKeys.length !== bKeys.length) return false;
-	return aKeys.every((key) => aRecord[key] === bRecord[key]);
+	const keys = new Set([...definedKeys(aRecord), ...definedKeys(bRecord)]);
+	return Array.from(keys).every((key) => aRecord[key] === bRecord[key]);
 }
 
 export class GraphDiffer {

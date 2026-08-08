@@ -103,6 +103,24 @@ describe('GraphDiffer', () => {
 		expect(diff.upsertedEdges).toEqual([]);
 	});
 
+	it('treats a key explicitly set to undefined the same as the key being absent', () => {
+		const previous: GraphData = { nodes: [node('a', { category: undefined })], edges: [] };
+		const current: GraphData = { nodes: [node('a')], edges: [] };
+
+		const diff = differ.computeDiff(previous, current);
+
+		expect(diff.upsertedNodes).toEqual([]);
+	});
+
+	it('reports a node as upserted when it gains a real (non-undefined) optional field', () => {
+		const previous: GraphData = { nodes: [node('a')], edges: [] };
+		const current: GraphData = { nodes: [node('a', { category: 'Gardening' })], edges: [] };
+
+		const diff = differ.computeDiff(previous, current);
+
+		expect(diff.upsertedNodes).toEqual([node('a', { category: 'Gardening' })]);
+	});
+
 	it('distinguishes edges of different types between the same two notes', () => {
 		const previous: GraphData = {
 			nodes: [node('a'), node('b')],

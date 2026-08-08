@@ -1,3 +1,5 @@
+import { renderPipelineProgress } from './PipelineProgress';
+
 const renderStatsBar = (): string => {
 	return `
 		<div id="stats-bar" class="stats-bar">
@@ -20,6 +22,7 @@ const renderStatsBar = (): string => {
 				<span id="stat-semantic" class="stats-bar__count">0</span>
 				<span class="stats-bar__label">semantic edges</span>
 			</span>
+			${renderPipelineProgress()}
 		</div>
 	`;
 };
