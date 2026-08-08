@@ -67,6 +67,38 @@ describe('EdgeFactory', () => {
 		expect(edges[0].tagName).toBe('t1, t2');
 	});
 
+	it('keeps the same source/target for a tag edge regardless of note iteration order', () => {
+		const forward = factory.createEdges([
+			note('a', 'A', [], ['shared']),
+			note('b', 'B', [], ['shared']),
+		]);
+		const reversed = factory.createEdges([
+			note('b', 'B', [], ['shared']),
+			note('a', 'A', [], ['shared']),
+		]);
+
+		expect(forward).toEqual([{ source: 'a', target: 'b', type: 'tag', tagName: 'shared' }]);
+		expect(reversed).toEqual([{ source: 'a', target: 'b', type: 'tag', tagName: 'shared' }]);
+	});
+
+	it('keeps the same tagName text regardless of note iteration order, for a pair sharing multiple tags', () => {
+		const forward = factory.createEdges([
+			note('x', 'X', [], ['t2']),
+			note('a', 'A', [], ['t1', 't2']),
+			note('b', 'B', [], ['t1', 't2']),
+		]);
+		const reversed = factory.createEdges([
+			note('a', 'A', [], ['t1', 't2']),
+			note('b', 'B', [], ['t1', 't2']),
+			note('x', 'X', [], ['t2']),
+		]);
+
+		const forwardEdge = forward.find((e) => e.type === 'tag' && e.source === 'a' && e.target === 'b');
+		const reversedEdge = reversed.find((e) => e.type === 'tag' && e.source === 'a' && e.target === 'b');
+
+		expect(forwardEdge?.tagName).toBe(reversedEdge?.tagName);
+	});
+
 	it('creates separate tag edges for different pairs', () => {
 		const edges = factory.createEdges([
 			note('a', 'A', [], ['t1']),

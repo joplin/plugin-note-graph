@@ -2,7 +2,7 @@ import { Note } from '../../data/Types';
 import { EdgeFactory } from '../similarity/EdgeFactory';
 import { SimilarityEngine } from '../similarity/SimilarityEngine';
 import { EmbeddedNote } from '../embeddings/Types';
-import { GraphData, GraphEdge, GraphNode } from './types';
+import { GraphData, GraphEdge, GraphNode, RenderedEdge } from './types';
 import { LouvainDetector } from './LouvainDetector';
 import { CentralityScorer } from './CentralityScorer';
 
@@ -62,7 +62,11 @@ export class GraphBuilder {
 
 		this.logGraphStats(nodes, visibleEdges, degreeMap, communities);
 
-		return { nodes, edges: visibleEdges.map((e) => ({ data: e })) };
+		return { nodes, edges: visibleEdges.map((e) => ({ data: this.toRenderedEdge(e) })) };
+	}
+
+	private toRenderedEdge(edge: GraphEdge): RenderedEdge {
+		return { ...edge, id: `${edge.source}::${edge.target}::${edge.type}` };
 	}
 
 	/** Counts each note's connections, including notes an edge references that aren't in `notes`. */

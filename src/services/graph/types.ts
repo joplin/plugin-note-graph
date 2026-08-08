@@ -18,7 +18,11 @@ export interface GraphEdge {
 	tagName?: string;
 }
 
+export interface RenderedEdge extends GraphEdge {
+	id: string;
+}
+
 export interface GraphData {
 	nodes: Array<{ data: GraphNode }>;
-	edges: Array<{ data: GraphEdge }>;
+	edges: Array<{ data: RenderedEdge }>;
 }

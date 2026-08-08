@@ -1,6 +1,12 @@
 import joplin from 'api';
 import { Note } from './Types';
 
+const NOTE_FIELDS = ['id', 'parent_id', 'title', 'body', 'created_time', 'updated_time', 'deleted_time'];
+
+interface NoteResponse extends Note {
+	deleted_time: number;
+}
+
 export class NoteRepository {
 	/**
 	 * Fetches all notes from the Joplin API with pagination.
@@ -19,12 +25,13 @@ export class NoteRepository {
 
 			try {
 				const response = await joplin.data.get(['notes'], {
-					fields: ['id', 'parent_id', 'title', 'body', 'created_time', 'updated_time'],
+					fields: NOTE_FIELDS,
 					limit: Math.min(remaining, 100),
 					page,
 				});
-				const items = (response.items ?? []).slice(0, remaining);
-				notes.push(...items);
+				const items: NoteResponse[] = response.items ?? [];
+				const active = items.filter((n) => !n.deleted_time).slice(0, remaining);
+				notes.push(...active);
 				hasMore = response.has_more === true;
 				page++;
 			} catch (error) {
@@ -34,5 +41,25 @@ export class NoteRepository {
 		}
 		console.info(`Fetched ${notes.length} notes.`);
 		return { notes, truncated: false };
+	}
+
+	public async getNote(id: string): Promise<Note | null> {
+		try {
+			const note: NoteResponse = await joplin.data.get(['notes', id], {
+				fields: NOTE_FIELDS,
+			});
+			if (note.deleted_time) {
+				console.info(`Note ${id} is in the trash.`);
+				return null;
+			}
+			return note;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (!message.includes('Not Found')) {
+				throw error;
+			}
+			console.info(`Note ${id} no longer exists.`);
+			return null;
+		}
 	}
 }

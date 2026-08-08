@@ -59,7 +59,7 @@ describe('GraphBuilder', () => {
 		expect(result.nodes[0].data.degree).toBe(1);
 		expect(result.nodes[1].data.degree).toBe(1);
 		expect(result.edges).toHaveLength(1);
-		expect(result.edges[0].data).toEqual({ source: 'a', target: 'b', type: 'link' });
+		expect(result.edges[0].data).toEqual({ id: 'a::b::link', source: 'a', target: 'b', type: 'link' });
 	});
 
 	it('truncates long note labels to 64 chars', () => {
@@ -84,7 +84,7 @@ describe('GraphBuilder', () => {
 		const notes = [note('a', 'A'), note('b', 'B')];
 		const result = builder.build(notes);
 		expect(result.edges).toHaveLength(1);
-		expect(result.edges[0].data).toEqual({ source: 'a', target: 'b', type: 'link' });
+		expect(result.edges[0].data).toEqual({ id: 'a::b::link', source: 'a', target: 'b', type: 'link' });
 	});
 
 	it('applies the detected community and centrality size to each node', () => {
@@ -148,10 +148,10 @@ describe('GraphBuilder', () => {
 				{ source: 'a', target: 'b', score: 0.8 },
 			]);
 			expect(result.edges).toContainEqual({
-				data: { source: 'a', target: 'b', type: 'semantic' },
+				data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' },
 			});
 			expect(result.edges).toContainEqual({
-				data: { source: 'a', target: 'c', type: 'link' },
+				data: { id: 'a::c::link', source: 'a', target: 'c', type: 'link' },
 			});
 			expect(result.edges).toHaveLength(2);
 		});

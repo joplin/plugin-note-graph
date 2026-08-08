@@ -47,7 +47,7 @@ export class EdgeFactory {
 	 */
 	private createTagEdges(notes: Note[]): GraphEdge[] {
 		const tagToNotes = this.groupNoteIdsByTag(notes);
-		const tagEdgeMap = new Map<string, GraphEdge>();
+		const tagEdgeMap = new Map<string, { source: string; target: string; tagNames: string[] }>();
 
 		for (const [tagName, noteIds] of tagToNotes) {
 			if (noteIds.length > MAX_NOTES_PER_TAG) continue;
@@ -56,24 +56,25 @@ export class EdgeFactory {
 				for (let j = i + 1; j < noteIds.length; j++) {
 					const a = noteIds[i];
 					const b = noteIds[j];
-					const pairKey = a < b ? `${a}::${b}` : `${b}::${a}`;
+					const [source, target] = a < b ? [a, b] : [b, a];
+					const pairKey = `${source}::${target}`;
 
 					const existing = tagEdgeMap.get(pairKey);
 					if (existing) {
-						existing.tagName = existing.tagName + ', ' + tagName;
+						existing.tagNames.push(tagName);
 					} else {
-						tagEdgeMap.set(pairKey, {
-							source: a,
-							target: b,
-							type: 'tag',
-							tagName: tagName,
-						});
+						tagEdgeMap.set(pairKey, { source, target, tagNames: [tagName] });
 					}
 				}
 			}
 		}
 
-		return Array.from(tagEdgeMap.values());
+		return Array.from(tagEdgeMap.values()).map((edge) => ({
+			source: edge.source,
+			target: edge.target,
+			type: 'tag',
+			tagName: edge.tagNames.slice().sort().join(', '),
+		}));
 	}
 
 	private groupNoteIdsByTag(notes: Note[]): Map<string, string[]> {

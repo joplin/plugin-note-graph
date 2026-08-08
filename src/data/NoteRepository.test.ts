@@ -75,10 +75,25 @@ describe('NoteRepository', () => {
 		await repo.getAllNotes();
 
 		expect(mockGet).toHaveBeenCalledWith(['notes'], {
-			fields: ['id', 'parent_id', 'title', 'body', 'created_time', 'updated_time'],
+			fields: ['id', 'parent_id', 'title', 'body', 'created_time', 'updated_time', 'deleted_time'],
 			limit: 100,
 			page: 1,
 		});
+	});
+
+	it('filters out notes that are in the trash', async () => {
+		mockGet.mockResolvedValueOnce({
+			items: [
+				{ id: '1', deleted_time: 0 },
+				{ id: '2', deleted_time: 1700000000000 },
+				{ id: '3', deleted_time: 0 },
+			],
+			has_more: false,
+		});
+
+		const { notes } = await repo.getAllNotes();
+
+		expect(notes.map((n) => n.id)).toEqual(['1', '3']);
 	});
 
 	it('handles missing items in response gracefully', async () => {
@@ -144,5 +159,48 @@ describe('NoteRepository', () => {
 		expect(truncated).toBe(true);
 		expect(notes).toHaveLength(2);
 		expect(mockGet).toHaveBeenCalledTimes(1);
+	});
+
+	describe('getNote', () => {
+		it('fetches a single note by ID with the standard fields', async () => {
+			mockGet.mockResolvedValueOnce({
+				id: '1',
+				parent_id: 'p1',
+				title: 'Note 1',
+				body: 'Body',
+				created_time: 100,
+				updated_time: 200,
+				deleted_time: 0,
+			});
+
+			const note = await repo.getNote('1');
+
+			expect(note).toMatchObject({ id: '1', title: 'Note 1' });
+			expect(mockGet).toHaveBeenCalledWith(['notes', '1'], {
+				fields: ['id', 'parent_id', 'title', 'body', 'created_time', 'updated_time', 'deleted_time'],
+			});
+		});
+
+		it('returns null when the note no longer exists', async () => {
+			mockGet.mockRejectedValueOnce(new Error('Not Found'));
+
+			const note = await repo.getNote('missing');
+
+			expect(note).toBeNull();
+		});
+
+		it('returns null when the note has been moved to the trash', async () => {
+			mockGet.mockResolvedValueOnce({ id: '1', deleted_time: 1700000000000 });
+
+			const note = await repo.getNote('1');
+
+			expect(note).toBeNull();
+		});
+
+		it('rethrows when the fetch fails for a reason other than the note being deleted', async () => {
+			mockGet.mockRejectedValueOnce(new Error('network error'));
+
+			await expect(repo.getNote('1')).rejects.toThrow('network error');
+		});
 	});
 });
