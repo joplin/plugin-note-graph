@@ -429,15 +429,22 @@ body {
 }
 
 .graph-tooltip__badge {
-	display: inline-flex;
+	display: inline-block;
+	max-width: 100%;
+	box-sizing: border-box;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-size: 10px;
 	font-weight: 600;
 	padding: 2px 8px;
-	border-radius: 8px;
-	background: rgba(128, 128, 128, 0.08);
-	background: color-mix(in srgb, var(--joplin-color, #888) 8%, transparent);
-	color: var(--joplin-color-faded, #aaa);
-	white-space: nowrap;
+	border-radius: 6px;
+	background: rgba(155, 107, 213, 0.14);
+	background: color-mix(in srgb, #9b6bd5 14%, transparent);
+	border: 1px solid rgba(155, 107, 213, 0.32);
+	border-color: color-mix(in srgb, #9b6bd5 32%, transparent);
+	color: #9b6bd5;
+	color: color-mix(in srgb, #9b6bd5 78%, var(--joplin-color, #ddd));
 	margin-bottom: 6px;
 }
 
