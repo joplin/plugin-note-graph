@@ -31,6 +31,8 @@ export class AnalysisController {
 	private lastDiff: GraphDiff | null = null;
 	private runToken = 0;
 	private lastDeltaSkippedForRetry = false;
+	private currentOrchestrator: EmbeddingOrchestrator | null = null;
+	private enrichmentInFlight = false;
 
 	public constructor(
 		private readonly builder = new GraphBuilder(),
@@ -57,6 +59,16 @@ export class AnalysisController {
 
 	public hasEmbeddedNotes(): boolean {
 		return this.lastEmbeddedNotes !== null;
+	}
+
+	public cancelCurrentRun(): void {
+		if (this.enrichmentInFlight) {
+			console.info('LLM enrichment: cancelled by user.');
+		} else if (this.currentOrchestrator) {
+			console.info('AI analysis: cancelled by user.');
+		}
+		this.currentOrchestrator?.cancel();
+		++this.runToken;
 	}
 
 	public getCurrentNotes(): Note[] {
@@ -126,17 +138,12 @@ export class AnalysisController {
 	 */
 	public async embedAndBuildSemantic(
 		notes: Note[],
-		onProgress?: (progress: BatchProgress) => void,
-		onEnrichmentProgress?: (progress: EnrichmentProgress) => void
+		onProgress?: (progress: BatchProgress) => void
 	): Promise<SemanticBuildResult | null> {
 		const token = ++this.runToken;
 		const guardedProgress = onProgress ? this.guardStaleProgress(token, onProgress) : undefined;
-		const guardedEnrichmentProgress = onEnrichmentProgress
-			? this.guardStaleProgress(token, onEnrichmentProgress)
-			: undefined;
 		return this.buildFrom(notes, token, {
 			onProgress: guardedProgress,
-			onEnrichmentProgress: guardedEnrichmentProgress,
 			commitNotes: true,
 		});
 	}
@@ -146,7 +153,6 @@ export class AnalysisController {
 		token: number,
 		options: {
 			onProgress?: (progress: BatchProgress) => void;
-			onEnrichmentProgress?: (progress: EnrichmentProgress) => void;
 			avoidSemanticDowngrade?: boolean;
 			commitNotes?: boolean;
 		}
@@ -184,22 +190,18 @@ export class AnalysisController {
 
 		if (this.isStale(token, options.avoidSemanticDowngrade)) return null;
 
-		const enrichedGraphData = await this.applyEnrichment(
-			graphData,
-			notes,
-			token,
-			options.onEnrichmentProgress
-		);
-
-		if (this.isStale(token, options.avoidSemanticDowngrade)) return null;
 		if (options.commitNotes) this.lastNotes = notes;
 		this.lastEmbeddedNotes = embeddedNotes;
-		this.commitGraphData(enrichedGraphData);
-		return { graphData: enrichedGraphData, usedAi: true };
+		this.commitGraphData(graphData);
+		return { graphData, usedAi: true };
 	}
 
-	/** Rebuilds the graph from the last successful embedding using the current threshold/top-K settings. */
-	public async recompute(onEnrichmentProgress?: (progress: EnrichmentProgress) => void): Promise<GraphData | null> {
+	/**
+	 * Rebuilds the graph from the last successful embedding using the current
+	 * threshold/top-K settings. Like `embedAndBuildSemantic`, does not run
+	 * LLM enrichment itself — call `enrichCurrentGraph()` afterward.
+	 */
+	public async recompute(): Promise<GraphData | null> {
 		if (!this.lastNotes || !this.lastEmbeddedNotes) {
 			return null;
 		}
@@ -217,19 +219,34 @@ export class AnalysisController {
 
 		if (token !== this.runToken) return null;
 
-		const guardedEnrichmentProgress = onEnrichmentProgress
-			? this.guardStaleProgress(token, onEnrichmentProgress)
-			: undefined;
-		const enrichedGraphData = await this.applyEnrichment(
-			graphData,
-			this.lastNotes,
-			token,
-			guardedEnrichmentProgress
-		);
+		this.commitGraphData(graphData);
+		return graphData;
+	}
 
-		if (token !== this.runToken) return null;
-		this.commitGraphData(enrichedGraphData);
-		return enrichedGraphData;
+	public async enrichCurrentGraph(
+		onProgress?: (progress: EnrichmentProgress) => void
+	): Promise<GraphData | null> {
+		if (!this.lastGraphData || !this.lastNotes) return null;
+
+		const token = this.runToken;
+		const graphData = this.lastGraphData;
+		const notes = this.lastNotes;
+		const guardedProgress = onProgress ? this.guardStaleProgress(token, onProgress) : undefined;
+
+		this.enrichmentInFlight = true;
+		let enriched: GraphData;
+		try {
+			enriched = await this.applyEnrichment(graphData, notes, token, guardedProgress);
+		} finally {
+			this.enrichmentInFlight = false;
+		}
+
+		if (this.isStale(token) || enriched === graphData) {
+			return null;
+		}
+
+		this.commitGraphData(enriched);
+		return enriched;
 	}
 
 	public async applyDelta(upserts: Note[], removedIds: string[]): Promise<GraphData | null> {
@@ -426,7 +443,15 @@ export class AnalysisController {
 			orchestrator.setOnProgress(onProgress);
 		}
 
-		const { embeddedNotes, errors } = await orchestrator.embedNotes(notes);
+		this.currentOrchestrator = orchestrator;
+		let embeddedNotes: EmbeddedNote[];
+		let errors: Array<{ noteId: string; error: string }>;
+		try {
+			({ embeddedNotes, errors } = await orchestrator.embedNotes(notes));
+		} finally {
+			this.currentOrchestrator = null;
+		}
+
 		if (embeddedNotes.length === 0) {
 			console.error(
 				'AI analysis produced no embeddings, falling back to structural graph:',

@@ -232,6 +232,8 @@ export class IncrementalUpdater {
 			if (diff) {
 				this.onGraphPatch(diff, graphData);
 			}
+
+			await this.runEnrichmentFollowUp();
 		} catch (e) {
 			this.consecutiveRetrySkips = 0;
 			console.error('Incremental flush failed, falling back to a full reload:', e);
@@ -242,6 +244,22 @@ export class IncrementalUpdater {
 				for (const id of upsertIds) this.pendingUpsertIds.add(id);
 				for (const id of removedIds) this.pendingRemovedIds.add(id);
 			}
+		}
+	}
+
+	/**
+	 * Runs LLM enrichment (Pass B) against the graph `applyDelta` just
+	 * committed and pushes a further patch if it changed anything. Kept
+	 * separate from `applyDelta` itself so the structural/semantic patch
+	 * reaches the panel immediately, before the much slower LLM pass runs.
+	 */
+	private async runEnrichmentFollowUp(): Promise<void> {
+		const enriched = await this.analysisController.enrichCurrentGraph();
+		if (!enriched) return;
+
+		const diff = this.analysisController.getLastDiff();
+		if (diff) {
+			this.onGraphPatch(diff, enriched);
 		}
 	}
 

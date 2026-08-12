@@ -64,6 +64,7 @@ var nodeStats;
 var pipelineProgressEl;
 var pipelineProgressFillEl;
 var pipelineProgressLabelEl;
+var pipelineProgressCancelEl;
 var hasRenderedOnce = false;
 var lastSeenVersion = 0;
 
@@ -86,6 +87,9 @@ function showPipelineProgress(label, current, total) {
 	var pct = total > 0 ? Math.round((current / total) * 100) : 0;
 	pipelineProgressFillEl.style.width = pct + '%';
 	pipelineProgressLabelEl.textContent = label;
+	if (pipelineProgressCancelEl) {
+		pipelineProgressCancelEl.disabled = false;
+	}
 }
 
 function hidePipelineProgress() {
@@ -280,11 +284,21 @@ function recomputeStats() {
 	updateStats(cy.nodes().length, explicitCount, semanticCount, totalTags);
 }
 
+/** Mirrors LouvainDetector.MIN_NOTES_FOR_LOUVAIN — below this, the graph has too few notes for meaningful structure. */
+var NEAR_EMPTY_NOTE_THRESHOLD = 3;
+
+function noteCountLabel(count) {
+	return count + (count === 1 ? ' note' : ' notes');
+}
+
 function refreshEmptyStateStatus() {
-	if (cy.nodes().length === 0) {
+	var noteCount = cy.nodes().length;
+	if (noteCount === 0) {
 		showStatus('No graph data received');
+	} else if (noteCount < NEAR_EMPTY_NOTE_THRESHOLD) {
+		showStatus('Only ' + noteCountLabel(noteCount) + ' found. Add more notes to see a meaningful graph.');
 	} else if (cy.edges().length === 0) {
-		showStatus(cy.nodes().length + ' notes, 0 connections');
+		showStatus(noteCountLabel(noteCount) + ', 0 connections');
 	} else {
 		hideStatus();
 	}
@@ -577,6 +591,15 @@ function init() {
 	pipelineProgressEl = document.getElementById('pipeline-progress');
 	pipelineProgressFillEl = document.getElementById('pipeline-progress-fill');
 	pipelineProgressLabelEl = document.getElementById('pipeline-progress-label');
+	pipelineProgressCancelEl = document.getElementById('pipeline-progress-cancel');
+	if (pipelineProgressCancelEl) {
+		pipelineProgressCancelEl.addEventListener('click', function () {
+			pipelineProgressCancelEl.disabled = true;
+			if (typeof webviewApi !== 'undefined') {
+				webviewApi.postMessage({ type: 'cancel-analysis' });
+			}
+		});
+	}
 
 	tooltipEl = document.createElement('div');
 	tooltipEl.className = 'graph-tooltip';

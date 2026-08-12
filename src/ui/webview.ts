@@ -19,7 +19,7 @@ let currentGraphData: GraphData | null = null;
 let currentVersion = 0;
 let currentProgress: ProgressState | null = null;
 
-const createPanel = async (onNoData: () => void): Promise<ViewHandle> => {
+const createPanel = async (onNoData: () => void, onCancel: () => void): Promise<ViewHandle> => {
 	const handle = await joplin.views.panels.create(PANEL_ID);
 	await joplin.views.panels.setHtml(handle, PANEL_HTML);
 	await joplin.views.panels.onMessage(
@@ -27,6 +27,10 @@ const createPanel = async (onNoData: () => void): Promise<ViewHandle> => {
 		async (message: { type?: string; nodeId?: string; nodeLabel?: string; version?: number }) => {
 			if (message?.type === 'close-note-graph') {
 				await joplin.views.panels.hide(handle);
+				return { done: true };
+			}
+			if (message?.type === 'cancel-analysis') {
+				onCancel();
 				return { done: true };
 			}
 			if (message?.type === 'request-data') {
@@ -75,11 +79,14 @@ const getPanel = (): ViewHandle => {
 /**
  * Initializes the note graph panel. Safe to call multiple times (no-op after first).
  */
-export const initializeAiNoteGraphPanel = async (onNoData: () => void): Promise<void> => {
+export const initializeAiNoteGraphPanel = async (
+	onNoData: () => void,
+	onCancel: () => void
+): Promise<void> => {
 	if (panelHandle) {
 		return;
 	}
-	panelHandle = await createPanel(onNoData);
+	panelHandle = await createPanel(onNoData, onCancel);
 };
 
 /**

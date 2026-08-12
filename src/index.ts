@@ -24,6 +24,7 @@ import {
 	isAiAnalysisEnabled,
 	isLlmEnrichmentEnabled,
 	AI_ANALYSIS_ENABLED_KEY,
+	RETRY_EMBEDDING_KEY,
 	RETRY_ENRICHMENT_KEY,
 	NOTE_GRAPH_SETTING_KEYS,
 } from './services/settings/GraphSettings';
@@ -52,20 +53,34 @@ const logProgressPostFailure = (e: unknown): void => {
 };
 
 /**
+ * Runs LLM enrichment (Pass B) against whichever graph is currently
+ * committed and pushes a patch if it changed anything. Deliberately separate
+ * from `runSemanticAnalysis`/`recomputeAndPost` so Pass A's graph reaches the
+ * panel immediately instead of waiting on the much slower LLM pass — this
+ * also means cancelling Pass B can never discard an already-good Pass A
+ * graph, since it was already posted.
+ */
+const runEnrichmentFollowUp = async (): Promise<void> => {
+	const enriched = await analysisController.enrichCurrentGraph((progress) => {
+		postEnrichmentProgress(progress.current, progress.total).catch(logProgressPostFailure);
+	});
+	if (!enriched) return;
+
+	const diff = analysisController.getLastDiff();
+	if (diff) {
+		await postGraphPatch(diff, enriched);
+	}
+};
+
+/**
  * Embeds notes (if AI analysis is on and ready) and pushes whichever graph results.
  * A `null` result means a newer call started before this one finished — its
  * data is stale, so it's dropped instead of overwriting the newer graph.
  */
 const runSemanticAnalysis = async (notes: Note[]): Promise<void> => {
-	const result = await analysisController.embedAndBuildSemantic(
-		notes,
-		(progress) => {
-			postProgress(progress.current, progress.total).catch(logProgressPostFailure);
-		},
-		(progress) => {
-			postEnrichmentProgress(progress.current, progress.total).catch(logProgressPostFailure);
-		}
-	);
+	const result = await analysisController.embedAndBuildSemantic(notes, (progress) => {
+		postProgress(progress.current, progress.total).catch(logProgressPostFailure);
+	});
 	if (!result) {
 		return;
 	}
@@ -75,6 +90,8 @@ const runSemanticAnalysis = async (notes: Note[]): Promise<void> => {
 	if (!usedAi && (await isAiAnalysisEnabled())) {
 		await postStatus(fallbackReason ?? 'AI analysis unavailable - showing structural graph.');
 	}
+
+	await runEnrichmentFollowUp();
 };
 
 const countUnlabeledSemanticEdges = (graphData: GraphData): { total: number; unlabeled: number } => {
@@ -96,7 +113,7 @@ const reportAndBackfillEnrichment = async (graphData: GraphData): Promise<void> 
 	console.info(
 		`LLM enrichment: cached graph is missing labels for ${unlabeled}/${total} semantic edge(s); backfilling in the background.`
 	);
-	await runSemanticAnalysis(analysisController.getCurrentNotes());
+	await runEnrichmentFollowUp();
 };
 
 const runPostCacheLoadFollowUps = async (cached: GraphData): Promise<void> => {
@@ -192,12 +209,11 @@ const noteGraphCommand = {
 };
 
 const recomputeAndPost = async (): Promise<void> => {
-	const graphData = await analysisController.recompute((progress) => {
-		postEnrichmentProgress(progress.current, progress.total).catch(logProgressPostFailure);
-	});
-	if (graphData) {
-		await postGraphData(graphData);
-	}
+	const graphData = await analysisController.recompute();
+	if (!graphData) return;
+
+	await postGraphData(graphData);
+	await runEnrichmentFollowUp();
 };
 
 const handleSettingsChange = async (event: { keys: string[] }): Promise<void> => {
@@ -209,6 +225,14 @@ const handleSettingsChange = async (event: { keys: string[] }): Promise<void> =>
 	}
 
 	try {
+		if (event.keys.includes(RETRY_EMBEDDING_KEY)) {
+			if (await joplin.settings.value(RETRY_EMBEDDING_KEY)) {
+				await joplin.settings.setValue(RETRY_EMBEDDING_KEY, false);
+				await retryEmbedding();
+			}
+			return;
+		}
+
 		if (event.keys.includes(RETRY_ENRICHMENT_KEY)) {
 			if (await joplin.settings.value(RETRY_ENRICHMENT_KEY)) {
 				await joplin.settings.setValue(RETRY_ENRICHMENT_KEY, false);
@@ -234,6 +258,14 @@ const handleSettingsChange = async (event: { keys: string[] }): Promise<void> =>
 		await recomputeAndPost();
 	} catch (error) {
 		console.error('Failed to handle note graph settings change:', error);
+	}
+};
+
+const retryEmbedding = async (): Promise<void> => {
+	try {
+		await runSemanticAnalysis(analysisController.getCurrentNotes());
+	} catch (error) {
+		console.error('Failed to retry AI embedding:', error);
 	}
 };
 
@@ -266,10 +298,16 @@ joplin.plugins.register({
 		console.info('Note Graph plugin started.');
 		await registerGraphSettings();
 		await joplin.settings.onChange(handleSettingsChange);
-		await initializeAiNoteGraphPanel(() => {
-			if (Date.now() - lastLoadFailureTime < LOAD_RETRY_COOLDOWN_MS) return;
-			void ensureGraphLoaded();
-		});
+		await initializeAiNoteGraphPanel(
+			() => {
+				if (Date.now() - lastLoadFailureTime < LOAD_RETRY_COOLDOWN_MS) return;
+				void ensureGraphLoaded();
+			},
+			() => {
+				analysisController.cancelCurrentRun();
+				postStatus('Analysis cancelled.').catch(logProgressPostFailure);
+			}
+		);
 		await registerCommands();
 		await registerMenuItems();
 		await workspaceListener.register();

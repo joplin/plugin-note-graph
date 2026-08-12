@@ -22,6 +22,9 @@ export interface SimilarityPair {
 }
 
 export class SimilarityEngine {
+	private static readonly MAX_SEARCH_ATTEMPTS = 2;
+	private static readonly SEARCH_RETRY_DELAY_MS = 500;
+
 	private readonly noteIds: string[];
 	private readonly vectors: Map<string, number[]>;
 	private readonly tagMap: Map<string, Set<string>>;
@@ -119,11 +122,11 @@ export class SimilarityEngine {
 	 * similarity scores and flow through the same floor → normalize pipeline
 	 * as cosine scores.
 	 *
-	 * Failure handling: individual per-note search failures are skipped (a
-	 * partial candidate set is still useful), but if *every* call fails —
-	 * e.g. joplin.ai exists but search doesn't on this Joplin version — we
-	 * fall back to O(n²) cosine instead of silently returning zero pairs.
-	 * Retry/backoff and progress/cancel for this path are ANG-012.
+	 * Failure handling: each note's search call is retried on transient
+	 * failures before being skipped; a partial candidate set is still
+	 * useful. If *every* note's search ultimately fails — e.g. joplin.ai
+	 * exists but search doesn't on this Joplin version — we fall back to
+	 * O(n²) cosine instead of silently returning zero pairs.
 	 */
 	private async computeSearchPairs(): Promise<SimilarityPair[]> {
 		const joplinAi = joplin.ai as unknown as
@@ -138,39 +141,38 @@ export class SimilarityEngine {
 		let firstError: unknown = null;
 
 		for (const noteId of this.noteIds) {
+			let results: SearchResult[];
 			try {
-				const results = await joplinAi.search({
-					query: { noteId },
-					relevance: 'normal',
-				});
-				successCount++;
-
-				for (const r of results) {
-					if (!this.vectors.has(r.noteId) || r.noteId === noteId) {
-						continue;
-					}
-
-					const key = this.makePairKey(noteId, r.noteId);
-					const existing = pairs.get(key);
-					if (existing) {
-						existing.score = Math.max(existing.score, r.score);
-						continue;
-					}
-
-					const [source, target] =
-						noteId < r.noteId ? [noteId, r.noteId] : [r.noteId, noteId];
-
-					pairs.set(key, { source, target, score: r.score });
-				}
+				results = await this.searchWithRetry(joplinAi, noteId);
 			} catch (e) {
 				if (firstError === null) {
 					firstError = e;
 					console.warn(
-						'joplin.ai.search failed for a note; skipping it. First error:',
+						'joplin.ai.search failed for a note after retrying; skipping it. First error:',
 						e
 					);
 				}
 				continue;
+			}
+
+			successCount++;
+
+			for (const r of results) {
+				if (!this.vectors.has(r.noteId) || r.noteId === noteId) {
+					continue;
+				}
+
+				const key = this.makePairKey(noteId, r.noteId);
+				const existing = pairs.get(key);
+				if (existing) {
+					existing.score = Math.max(existing.score, r.score);
+					continue;
+				}
+
+				const [source, target] =
+					noteId < r.noteId ? [noteId, r.noteId] : [r.noteId, noteId];
+
+				pairs.set(key, { source, target, score: r.score });
 			}
 		}
 
@@ -183,6 +185,32 @@ export class SimilarityEngine {
 		}
 
 		return Array.from(pairs.values());
+	}
+
+	/** Retries a single note's search call on transient failures before giving up on it. */
+	private async searchWithRetry(
+		joplinAi: { search: (options: SearchOptions) => Promise<SearchResult[]> },
+		noteId: string
+	): Promise<SearchResult[]> {
+		let lastError: unknown;
+
+		for (let attempt = 1; attempt <= SimilarityEngine.MAX_SEARCH_ATTEMPTS; attempt++) {
+			if (attempt > 1) {
+				await this.delay(SimilarityEngine.SEARCH_RETRY_DELAY_MS);
+			}
+
+			try {
+				return await joplinAi.search({ query: { noteId }, relevance: 'normal' });
+			} catch (e) {
+				lastError = e;
+			}
+		}
+
+		throw lastError;
+	}
+
+	private delay(ms: number): Promise<void> {
+		return new Promise((resolve) => setTimeout(resolve, ms));
 	}
 
 	/** Dot product of two same-length vectors. */

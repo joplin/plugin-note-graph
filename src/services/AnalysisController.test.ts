@@ -74,6 +74,7 @@ describe('AnalysisController', () => {
 		setCache: jest.Mock;
 		setOnProgress: jest.Mock;
 		embedNotes: jest.Mock;
+		cancel: jest.Mock;
 	};
 
 	beforeEach(() => {
@@ -94,6 +95,7 @@ describe('AnalysisController', () => {
 			setCache: jest.fn(),
 			setOnProgress: jest.fn(),
 			embedNotes: jest.fn().mockResolvedValue({ embeddedNotes: [], errors: [] }),
+			cancel: jest.fn(),
 		};
 		MockOrchestrator.mockImplementation(
 			() => mockOrchestratorInstance as unknown as EmbeddingOrchestrator
@@ -391,11 +393,12 @@ describe('AnalysisController', () => {
 
 		it('does not call the enrichment service when the setting is off', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(false);
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
-			const result = await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			const result = await controller.enrichCurrentGraph();
 
 			expect(mockEnricher.enrich).not.toHaveBeenCalled();
-			expect(result?.graphData).toBe(semanticGraphData);
+			expect(result).toBeNull();
 		});
 
 		it('removes category and relationship labels on recompute() after the setting is turned off', async () => {
@@ -405,6 +408,7 @@ describe('AnalysisController', () => {
 				edgeEnrichments: new Map([['a::b::semantic', { relationshipLabel: 'inspired by' }]]),
 			});
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			await controller.enrichCurrentGraph();
 
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(false);
 			const result = await controller.recompute();
@@ -419,13 +423,14 @@ describe('AnalysisController', () => {
 				nodeEnrichments: new Map([['a', { category: 'Gardening', centralityAdjustment: 2 }]]),
 				edgeEnrichments: new Map([['a::b::semantic', { relationshipLabel: 'inspired by' }]]),
 			});
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
-			const result = await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			const result = await controller.enrichCurrentGraph();
 
-			const nodeA = result?.graphData.nodes.find((n) => n.data.id === 'a');
+			const nodeA = result?.nodes.find((n) => n.data.id === 'a');
 			expect(nodeA?.data.category).toBe('Gardening');
 			expect(nodeA?.data.size).toBe(7);
-			expect(result?.graphData.edges[0].data.relationshipLabel).toBe('inspired by');
+			expect(result?.edges[0].data.relationshipLabel).toBe('inspired by');
 		});
 
 		it('does not add a category key when the enrichment only carries a centrality adjustment', async () => {
@@ -434,10 +439,11 @@ describe('AnalysisController', () => {
 				nodeEnrichments: new Map([['a', { centralityAdjustment: 2 }]]),
 				edgeEnrichments: new Map(),
 			});
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
-			const result = await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			const result = await controller.enrichCurrentGraph();
 
-			const nodeA = result?.graphData.nodes.find((n) => n.data.id === 'a');
+			const nodeA = result?.nodes.find((n) => n.data.id === 'a');
 			expect(nodeA?.data.size).toBe(7);
 			expect('category' in (nodeA?.data ?? {})).toBe(false);
 		});
@@ -448,10 +454,11 @@ describe('AnalysisController', () => {
 				nodeEnrichments: new Map([['a', { centralityAdjustment: 20 }]]),
 				edgeEnrichments: new Map(),
 			});
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
-			const result = await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			const result = await controller.enrichCurrentGraph();
 
-			expect(result?.graphData.nodes.find((n) => n.data.id === 'a')?.data.size).toBe(10);
+			expect(result?.nodes.find((n) => n.data.id === 'a')?.data.size).toBe(10);
 		});
 
 		it('clamps an adjusted size to the 1-10 range on the lower bound', async () => {
@@ -460,19 +467,22 @@ describe('AnalysisController', () => {
 				nodeEnrichments: new Map([['a', { centralityAdjustment: -20 }]]),
 				edgeEnrichments: new Map(),
 			});
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
-			const result = await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			const result = await controller.enrichCurrentGraph();
 
-			expect(result?.graphData.nodes.find((n) => n.data.id === 'a')?.data.size).toBe(1);
+			expect(result?.nodes.find((n) => n.data.id === 'a')?.data.size).toBe(1);
 		});
 
-		it('never throws out of buildFrom when the enrichment service itself fails', async () => {
+		it('never throws when the enrichment service itself fails, leaving the Pass A graph committed', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			mockEnricher.enrich.mockRejectedValue(new Error('unexpected enrichment failure'));
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
-			const result = await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			const result = await controller.enrichCurrentGraph();
 
-			expect(result?.graphData).toEqual(semanticGraphData);
+			expect(result).toBeNull();
+			expect(controller.getLastGraphData()).toEqual(semanticGraphData);
 		});
 
 		it('skips a semantic edge whose endpoint note is missing from the current note set, without throwing', async () => {
@@ -481,15 +491,16 @@ describe('AnalysisController', () => {
 				nodes: semanticGraphData.nodes,
 				edges: [{ data: { id: 'a::c::semantic', source: 'a', target: 'c', type: 'semantic' as const } }],
 			});
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
-			const result = await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			await controller.enrichCurrentGraph();
 
 			expect(mockEnricher.enrich).toHaveBeenCalledWith(
 				{ nodes: new Map(), edges: [] },
 				expect.any(Function),
 				undefined
 			);
-			expect(result?.graphData.edges[0].data.id).toBe('a::c::semantic');
+			expect(controller.getLastGraphData()?.edges[0].data.id).toBe('a::c::semantic');
 		});
 
 		it('sends the full note title and body, not the graph node label or a pre-truncated body', async () => {
@@ -500,8 +511,9 @@ describe('AnalysisController', () => {
 				{ ...note('a'), title: longTitle, body: longBody },
 				{ ...note('b'), title: 'b', body: '' },
 			];
-
 			await controller.embedAndBuildSemantic(notes);
+
+			await controller.enrichCurrentGraph();
 
 			const input = mockEnricher.enrich.mock.calls[0][0];
 			expect(input.nodes.get('a')).toEqual({
@@ -517,8 +529,9 @@ describe('AnalysisController', () => {
 				{ ...note('a'), body: null as unknown as string },
 				{ ...note('b'), body: '' },
 			];
-
 			await controller.embedAndBuildSemantic(notes);
+
+			await controller.enrichCurrentGraph();
 
 			const input = mockEnricher.enrich.mock.calls[0][0];
 			expect(input.nodes.get('a')?.body).toBe('');
@@ -533,8 +546,9 @@ describe('AnalysisController', () => {
 					{ data: { id: 'a::b::link', source: 'a', target: 'b', type: 'link' as const } },
 				],
 			});
-
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
+
+			await controller.enrichCurrentGraph();
 
 			const input = mockEnricher.enrich.mock.calls[0][0];
 			expect(input.edges).toEqual([
@@ -545,8 +559,9 @@ describe('AnalysisController', () => {
 		it('keys an edge enrichment cache entry on the newer of its two endpoints, not the source alone', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			const notes = [{ ...note('a'), updated_time: 100 }, { ...note('b'), updated_time: 200 }];
-
 			await controller.embedAndBuildSemantic(notes);
+
+			await controller.enrichCurrentGraph();
 
 			const input = mockEnricher.enrich.mock.calls[0][0];
 			expect(input.edges).toEqual([{ id: 'a::b::semantic', source: 'a', target: 'b', updatedTime: 200 }]);
@@ -554,8 +569,9 @@ describe('AnalysisController', () => {
 
 		it('passes an isStale predicate that reflects a newer run superseding this one', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
-
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
+
+			await controller.enrichCurrentGraph();
 
 			const isStale = mockEnricher.enrich.mock.calls[0][1];
 			expect(isStale()).toBe(false);
@@ -566,53 +582,53 @@ describe('AnalysisController', () => {
 		it('runs enrichment again on recompute(), not just on the initial embed', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			await controller.enrichCurrentGraph();
 			mockEnricher.enrich.mockClear();
 			mockEnricher.enrich.mockResolvedValue({
 				nodeEnrichments: new Map([['a', { category: 'Gardening' }]]),
 				edgeEnrichments: new Map(),
 			});
 
-			const result = await controller.recompute();
+			await controller.recompute();
+			const result = await controller.enrichCurrentGraph();
 
 			expect(mockEnricher.enrich).toHaveBeenCalledTimes(1);
 			expect(result?.nodes.find((n) => n.data.id === 'a')?.data.category).toBe('Gardening');
 		});
 
-		it('forwards an onEnrichmentProgress callback from embedAndBuildSemantic through to the enrichment service', async () => {
+		it('forwards an onProgress callback from enrichCurrentGraph through to the enrichment service', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			const onEnrichmentProgress = jest.fn();
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
-			await controller.embedAndBuildSemantic([note('a'), note('b')], undefined, onEnrichmentProgress);
+			await controller.enrichCurrentGraph(onEnrichmentProgress);
 
 			const forwarded = mockEnricher.enrich.mock.calls[0][2];
 			forwarded({ current: 1, total: 3 });
 			expect(onEnrichmentProgress).toHaveBeenCalledWith({ current: 1, total: 3 });
 		});
 
-		it('forwards an onEnrichmentProgress callback from recompute() through to the enrichment service', async () => {
-			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
-			await controller.embedAndBuildSemantic([note('a'), note('b')]);
-			mockEnricher.enrich.mockClear();
-			const onEnrichmentProgress = jest.fn();
-
-			await controller.recompute(onEnrichmentProgress);
-
-			const forwarded = mockEnricher.enrich.mock.calls[0][2];
-			forwarded({ current: 2, total: 4 });
-			expect(onEnrichmentProgress).toHaveBeenCalledWith({ current: 2, total: 4 });
-		});
-
 		it('stops forwarding enrichment progress once a newer run supersedes it', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			const onEnrichmentProgress = jest.fn();
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
-			await controller.embedAndBuildSemantic([note('a'), note('b')], undefined, onEnrichmentProgress);
+			await controller.enrichCurrentGraph(onEnrichmentProgress);
 			const forwarded = mockEnricher.enrich.mock.calls[0][2];
 
 			controller.buildStructural([note('a')]);
 			forwarded({ current: 1, total: 1 });
 
 			expect(onEnrichmentProgress).not.toHaveBeenCalled();
+		});
+
+		it('is a no-op when there is no graph yet', async () => {
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+
+			const result = await controller.enrichCurrentGraph();
+
+			expect(mockEnricher.enrich).not.toHaveBeenCalled();
+			expect(result).toBeNull();
 		});
 	});
 
@@ -663,6 +679,91 @@ describe('AnalysisController', () => {
 			await controller.embedAndBuildSemantic([note('a')]);
 
 			expect(controller.hasEmbeddedNotes()).toBe(true);
+		});
+	});
+
+	describe('cancelCurrentRun', () => {
+		it('is a no-op when nothing is in flight', () => {
+			const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+
+			expect(() => controller.cancelCurrentRun()).not.toThrow();
+
+			expect(infoSpy).not.toHaveBeenCalled();
+			infoSpy.mockRestore();
+		});
+
+		it('cancels the orchestrator driving an in-flight Pass A embedding fetch, logging under "AI analysis"', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			const deferred = deferredEmbedResult();
+			mockOrchestratorInstance.embedNotes.mockReturnValue(deferred.promise);
+			const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+
+			const inFlight = controller.embedAndBuildSemantic([note('a')]);
+			// Let the pending isAiAnalysisEnabled()/resolveWithValidation() microtasks
+			// resolve so tryEmbed reaches orchestrator.embedNotes() and sets
+			// currentOrchestrator before cancelCurrentRun() is called.
+			await new Promise((resolve) => setImmediate(resolve));
+			controller.cancelCurrentRun();
+
+			expect(mockOrchestratorInstance.cancel).toHaveBeenCalledTimes(1);
+			expect(infoSpy).toHaveBeenCalledWith('AI analysis: cancelled by user.');
+
+			deferred.resolve({ embeddedNotes: [], errors: [] });
+			await inFlight;
+			infoSpy.mockRestore();
+		});
+
+		it('no longer reaches the orchestrator once the run has finished', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+
+			await controller.embedAndBuildSemantic([note('a')]);
+			controller.cancelCurrentRun();
+
+			expect(mockOrchestratorInstance.cancel).not.toHaveBeenCalled();
+		});
+
+		it('stops an in-flight Pass B LLM enrichment run, discarding its result, logging under "LLM enrichment"', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
+				errors: [],
+			});
+			mockBuilder.buildWithSimilarity.mockResolvedValue({
+				nodes: [{ data: { id: 'a', label: 'a', noteId: 'a', degree: 0, community: 0, size: 5 } }],
+				edges: [],
+			});
+			// Pass A completes and commits first, same as production: Pass B only
+			// starts against an already-committed graph.
+			await controller.embedAndBuildSemantic([note('a')]);
+
+			let capturedIsStale: (() => boolean) | undefined;
+			let resolveEnrich!: (result: Awaited<ReturnType<typeof mockEnricher.enrich>>) => void;
+			mockEnricher.enrich.mockImplementation((_input, isStale) => {
+				capturedIsStale = isStale;
+				return new Promise((resolve) => {
+					resolveEnrich = resolve;
+				});
+			});
+			const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+
+			const inFlight = controller.enrichCurrentGraph();
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(capturedIsStale).toBeDefined();
+			expect(capturedIsStale!()).toBe(false);
+
+			controller.cancelCurrentRun();
+			expect(capturedIsStale!()).toBe(true);
+			expect(infoSpy).toHaveBeenCalledWith('LLM enrichment: cancelled by user.');
+
+			resolveEnrich({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
+			const result = await inFlight;
+
+			expect(result).toBeNull();
+			infoSpy.mockRestore();
 		});
 	});
 

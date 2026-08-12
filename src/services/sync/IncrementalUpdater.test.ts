@@ -364,6 +364,30 @@ describe('IncrementalUpdater', () => {
 			expect(analysisController.applyDelta).toHaveBeenCalledWith([note('a')], []);
 			consoleErrorSpy.mockRestore();
 		});
+
+		it('pushes a second patch for Pass B enrichment after the Pass A patch, when enrichCurrentGraph finds something to label', async () => {
+			noteRepository.getNote.mockResolvedValue(note('a'));
+			const enrichedGraphData = { nodes: [], edges: [] };
+			analysisController.enrichCurrentGraph.mockResolvedValue(enrichedGraphData);
+			analysisController.getLastDiff.mockReturnValueOnce(fakeDiff).mockReturnValueOnce(fakeDiff);
+
+			updater.handleNoteChange({ id: 'a', event: 1 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(onGraphPatch).toHaveBeenCalledTimes(2);
+			expect(onGraphPatch).toHaveBeenNthCalledWith(1, fakeDiff, { nodes: [], edges: [] });
+			expect(onGraphPatch).toHaveBeenNthCalledWith(2, fakeDiff, enrichedGraphData);
+		});
+
+		it('does not push a second patch when enrichCurrentGraph has nothing to label', async () => {
+			noteRepository.getNote.mockResolvedValue(note('a'));
+			analysisController.enrichCurrentGraph.mockResolvedValue(null);
+
+			updater.handleNoteChange({ id: 'a', event: 1 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(onGraphPatch).toHaveBeenCalledTimes(1);
+		});
 	});
 
 	describe('handleSelectionChange', () => {

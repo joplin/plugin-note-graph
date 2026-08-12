@@ -46,11 +46,79 @@ describe('JoplinNativeProvider', () => {
 		expect(provider.getFetchedModelId()).toBe('fresh-model');
 		expect(provider.getCachedVectors()).toEqual(new Map([['n1', [1, 0]]]));
 
+		jest.useFakeTimers();
 		ai.getEmbeddings.mockRejectedValue(new Error('network error'));
+		const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
-		await expect(provider.fetchVectorsByNoteIds(['n2'])).rejects.toThrow('network error');
+		const rejection = expect(provider.fetchVectorsByNoteIds(['n2'])).rejects.toThrow('network error');
+		await jest.advanceTimersByTimeAsync(2000);
+		await rejection;
+
 		expect(provider.getFetchedModelId()).toBeNull();
 		expect(provider.getCachedVectors()).toBeNull();
+		errorSpy.mockRestore();
+		jest.useRealTimers();
+	});
+
+	describe('retry on failure', () => {
+		beforeEach(() => {
+			jest.useFakeTimers();
+		});
+
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		it('retries a failed page fetch and succeeds without losing pagination state', async () => {
+			const provider = new JoplinNativeProvider();
+			const ai = joplin.ai as unknown as {
+				getIndexStatus: jest.Mock;
+				getEmbeddings: jest.Mock;
+			};
+
+			ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' });
+			let calls = 0;
+			ai.getEmbeddings.mockImplementation(async () => {
+				calls++;
+				if (calls === 1) throw new Error('network blip');
+				return {
+					modelId: 'test-model',
+					dimension: 2,
+					chunks: [{ noteId: 'n1', vector: [1, 0] }],
+					nextCursor: undefined,
+				};
+			});
+			const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+			const resultPromise = provider.fetchVectorsByNoteIds(['n1']);
+			await jest.advanceTimersByTimeAsync(1000);
+			const vectors = await resultPromise;
+
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(2);
+			expect(vectors.get('n1')).toEqual([1, 0]);
+			errorSpy.mockRestore();
+		});
+
+		it('gives up after exhausting every attempt for one page', async () => {
+			const provider = new JoplinNativeProvider();
+			const ai = joplin.ai as unknown as {
+				getIndexStatus: jest.Mock;
+				getEmbeddings: jest.Mock;
+			};
+
+			ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' });
+			ai.getEmbeddings.mockRejectedValue(new Error('network blip'));
+			const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+			const resultPromise = provider.fetchVectorsByNoteIds(['n1']);
+			const rejection = expect(resultPromise).rejects.toThrow('network blip');
+			await jest.advanceTimersByTimeAsync(2000);
+			await rejection;
+
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(3);
+			expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('giving up'), expect.anything());
+			errorSpy.mockRestore();
+		});
 	});
 
 	it('pools vectors across pages and normalizes the result', async () => {

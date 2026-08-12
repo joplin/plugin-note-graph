@@ -365,6 +365,37 @@ body {
 	white-space: nowrap;
 }
 
+.pipeline-progress__cancel-btn {
+	flex-shrink: 0;
+	background-color: transparent;
+	border: none;
+	border-radius: 6px;
+	color: var(--joplin-color);
+	cursor: pointer;
+	padding: 3px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	opacity: 0.65;
+	transition: opacity 0.15s, background 0.15s;
+}
+
+.pipeline-progress__cancel-btn:hover:not([disabled]) {
+	opacity: 1;
+	background: rgba(128, 128, 128, 0.12);
+}
+
+.pipeline-progress__cancel-btn svg {
+	width: 12px;
+	height: 12px;
+	display: block;
+}
+
+.pipeline-progress__cancel-btn[disabled] {
+	opacity: 0.35;
+	cursor: default;
+}
+
 /* Graph container */
 
 #graph-container {
@@ -382,6 +413,8 @@ body {
 	color: var(--joplin-color-faded, #888);
 	font-size: 13px;
 	z-index: 1;
+	max-width: 320px;
+	text-align: center;
 }
 
 /* Tooltip */

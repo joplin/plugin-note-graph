@@ -14,6 +14,7 @@ describe('webview', () => {
 	let mockPostMessage: jest.Mock;
 	let mockPanelsVisible: jest.Mock;
 	let onNoData: jest.Mock;
+	let onCancel: jest.Mock;
 	let onMessageHandler: (message: { type?: string; version?: number }) => Promise<unknown>;
 
 	beforeEach(async () => {
@@ -44,7 +45,15 @@ describe('webview', () => {
 		});
 
 		onNoData = jest.fn();
-		await webview.initializeAiNoteGraphPanel(onNoData);
+		onCancel = jest.fn();
+		await webview.initializeAiNoteGraphPanel(onNoData, onCancel);
+	});
+
+	it('calls onCancel and acknowledges a cancel-analysis message', async () => {
+		const response = await onMessageHandler({ type: 'cancel-analysis' });
+
+		expect(onCancel).toHaveBeenCalledTimes(1);
+		expect(response).toEqual({ done: true });
 	});
 
 	it('replies no-data to request-data before any graph has been loaded', async () => {

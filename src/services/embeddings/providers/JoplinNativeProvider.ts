@@ -59,6 +59,8 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 	private static readonly PAGE_SIZE = 1000;
 	private static readonly MAX_PAGES = 500;
 	private static readonly MAX_MODEL_CHANGE_RETRIES = 3;
+	private static readonly MAX_ATTEMPTS_PER_PAGE = 3;
+	private static readonly RETRY_DELAY_MS = 1000;
 
 	private _modelName: string;
 	private cachedVectors: Map<string, number[]> | null = null;
@@ -72,7 +74,10 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		return this._modelName;
 	}
 
-	public async fetchVectorsByNoteIds(noteIds: string[]): Promise<Map<string, number[]>> {
+	public async fetchVectorsByNoteIds(
+		noteIds: string[],
+		isCancelled: () => boolean = () => false
+	): Promise<Map<string, number[]>> {
 		if (noteIds.length === 0) {
 			return new Map();
 		}
@@ -81,7 +86,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		this.fetchedModelId = null;
 
 		const api = this.validateAiApi();
-		const grouped = await this.fetchAllPages(api, noteIds);
+		const grouped = await this.fetchAllPages(api, noteIds, isCancelled);
 
 		this.fetchedModelId = this._modelName;
 
@@ -120,10 +125,15 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 	/**
 	 * Pages through getEmbeddings collecting vectors per note.
 	 * Restarts pagination if the embedding model changes mid-fetch.
+	 * Stops before starting the next page if `isCancelled()` reports true,
+	 * returning whatever has been collected so far — there's no way to abort
+	 * an in-flight `getEmbeddings()` call itself, so cancellation only takes
+	 * effect between pages.
 	 */
 	private async fetchAllPages(
 		api: JoplinAiApi,
-		noteIds: string[]
+		noteIds: string[],
+		isCancelled: () => boolean
 	): Promise<Map<string, number[][]>> {
 		let trackedModelId = await this.requireUsableIndex(api);
 
@@ -133,6 +143,10 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		let pageCount = 0;
 
 		while (true) {
+			if (isCancelled()) {
+				break;
+			}
+
 			if (pageCount >= JoplinNativeProvider.MAX_PAGES) {
 				throw new Error(
 					'Too many pages. The embedding index may be in an unexpected state.'
@@ -140,7 +154,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 			}
 			pageCount++;
 
-			const page = await api.getEmbeddings({
+			const page = await this.fetchPageWithRetry(api, {
 				noteIds: noteIds,
 				cursor: cursor,
 				limit: JoplinNativeProvider.PAGE_SIZE,
@@ -173,6 +187,36 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 
 		this._modelName = trackedModelId ?? JoplinNativeProvider.DEFAULT_MODEL_ID;
 		return grouped;
+	}
+
+	private async fetchPageWithRetry(
+		api: JoplinAiApi,
+		options: GetEmbeddingsOptions
+	): Promise<EmbeddingsPage> {
+		let lastError: unknown;
+
+		for (let attempt = 1; attempt <= JoplinNativeProvider.MAX_ATTEMPTS_PER_PAGE; attempt++) {
+			if (attempt > 1) {
+				await this.delay(JoplinNativeProvider.RETRY_DELAY_MS);
+			}
+
+			try {
+				return await api.getEmbeddings(options);
+			} catch (e) {
+				lastError = e;
+				const willRetry = attempt < JoplinNativeProvider.MAX_ATTEMPTS_PER_PAGE;
+				console.error(
+					`Embedding fetch failed on attempt ${attempt}/${JoplinNativeProvider.MAX_ATTEMPTS_PER_PAGE}${willRetry ? '; retrying.' : '; giving up.'}`,
+					e
+				);
+			}
+		}
+
+		throw lastError;
+	}
+
+	private delay(ms: number): Promise<void> {
+		return new Promise((resolve) => setTimeout(resolve, ms));
 	}
 
 	/** Throws if the index isn't usable yet; otherwise returns the model ID it's currently indexed with. */

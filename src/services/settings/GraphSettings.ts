@@ -7,6 +7,7 @@ export const AI_ANALYSIS_ENABLED_KEY = 'noteGraph.aiAnalysisEnabled';
 const SIMILARITY_THRESHOLD_KEY = 'noteGraph.similarityThreshold';
 const MAX_EDGES_PER_NOTE_KEY = 'noteGraph.maxEdgesPerNote';
 export const LLM_ENRICHMENT_ENABLED_KEY = 'noteGraph.llmEnrichmentEnabled';
+export const RETRY_EMBEDDING_KEY = 'noteGraph.retryEmbedding';
 export const RETRY_ENRICHMENT_KEY = 'noteGraph.retryEnrichment';
 
 /** All Note Graph setting keys — the single source of truth for anything that needs to check "did one of our settings change?" */
@@ -15,6 +16,7 @@ export const NOTE_GRAPH_SETTING_KEYS = [
 	SIMILARITY_THRESHOLD_KEY,
 	MAX_EDGES_PER_NOTE_KEY,
 	LLM_ENRICHMENT_ENABLED_KEY,
+	RETRY_EMBEDDING_KEY,
 	RETRY_ENRICHMENT_KEY,
 ];
 
@@ -68,6 +70,15 @@ export async function registerGraphSettings(): Promise<void> {
 			description:
 				'Uses Joplin AI chat to add category labels and relationship descriptions to notes/edges already flagged as related by AI analysis. Requires AI-based semantic analysis to be enabled.',
 		},
+		[RETRY_EMBEDDING_KEY]: {
+			value: false,
+			type: SettingItemType.Bool,
+			public: true,
+			section: SECTION_NAME,
+			label: 'Retry AI embedding',
+			description:
+				'Tick to immediately retry AI-based semantic analysis (e.g. after cancelling it). Unticks itself once the retry starts. No-op if the graph panel has not been opened yet.',
+		},
 		[RETRY_ENRICHMENT_KEY]: {
 			value: false,
 			type: SettingItemType.Bool,
@@ -88,15 +99,39 @@ export async function isLlmEnrichmentEnabled(): Promise<boolean> {
 	return await joplin.settings.value(LLM_ENRICHMENT_ENABLED_KEY);
 }
 
+const THRESHOLD_MIN_PERCENT = 0;
+const THRESHOLD_MAX_PERCENT = 100;
+const TOP_K_MIN = 1;
+const TOP_K_MAX = 20;
+
+function sanitizeInRange(value: unknown, min: number, max: number, fallback: number): number {
+	const num = Number(value);
+	if (!Number.isFinite(num)) {
+		return fallback;
+	}
+	return Math.min(max, Math.max(min, num));
+}
+
 /**
  * Joplin settings have no float/slider type, only Int — the threshold is
  * stored as a 0-100 percentage and converted here to the 0-1 scale
- * SimilarityEngine expects.
+ * SimilarityEngine expects. Values are clamped defensively since Joplin's
+ * `minimum`/`maximum` on a registered setting only constrains the settings-
+ * screen spinner, not values arriving via other means (e.g. a direct
+ * settings.json edit).
  */
 export async function getSimilaritySettings(): Promise<{ threshold: number; topK: number }> {
 	const values = await joplin.settings.values([SIMILARITY_THRESHOLD_KEY, MAX_EDGES_PER_NOTE_KEY]);
+	const thresholdPercent = sanitizeInRange(
+		values[SIMILARITY_THRESHOLD_KEY],
+		THRESHOLD_MIN_PERCENT,
+		THRESHOLD_MAX_PERCENT,
+		Math.round(DEFAULT_THRESHOLD * 100)
+	);
+	const topK = sanitizeInRange(values[MAX_EDGES_PER_NOTE_KEY], TOP_K_MIN, TOP_K_MAX, TOP_K);
+
 	return {
-		threshold: values[SIMILARITY_THRESHOLD_KEY] / 100,
-		topK: values[MAX_EDGES_PER_NOTE_KEY],
+		threshold: thresholdPercent / 100,
+		topK,
 	};
 }
