@@ -232,6 +232,7 @@ function registerEdgeTooltip(selector, className, resolveText) {
 	cy.on('mouseover', selector, function (evt) {
 		var value = resolveText(evt.target);
 		if (!value || !tooltipEl) return;
+		tooltipEl.className = 'graph-tooltip';
 		tooltipEl.innerHTML = '<div class="graph-tooltip__value">' + escapeHtml(value) + '</div>';
 		tooltipEl.classList.add(className);
 		tooltipEl.classList.add('is-visible');
@@ -596,7 +597,9 @@ function init() {
 		pipelineProgressCancelEl.addEventListener('click', function () {
 			pipelineProgressCancelEl.disabled = true;
 			if (typeof webviewApi !== 'undefined') {
-				webviewApi.postMessage({ type: 'cancel-analysis' });
+				webviewApi.postMessage({ type: 'cancel-analysis' }).catch(function (e) {
+					console.error('Note Graph cancel failed:', e);
+				});
 			}
 		});
 	}
@@ -651,6 +654,7 @@ function init() {
 			var category = node.data('category');
 			var stats = nodeStats && nodeStats[id] ? nodeStats[id] : { linkCount: 0, tagCount: 0 };
 			var badge = category ? '<div class="graph-tooltip__badge">' + escapeHtml(category) + '</div>' : '';
+			tooltipEl.className = 'graph-tooltip';
 			tooltipEl.innerHTML = '<div class="graph-tooltip__title">' + escapeHtml(label) + '</div>'
 				+ badge
 				+ '<div class="graph-tooltip__stats">'

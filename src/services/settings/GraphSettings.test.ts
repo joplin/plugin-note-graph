@@ -131,5 +131,25 @@ describe('GraphSettings', () => {
 
 			expect(result).toEqual({ threshold: 0.5, topK: 5 });
 		});
+
+		it('falls back to defaults instead of clamping to the minimum when a value is null, empty, or a boolean', async () => {
+			(joplin.settings.values as jest.Mock).mockResolvedValue({
+				'noteGraph.similarityThreshold': null,
+				'noteGraph.maxEdgesPerNote': '',
+			});
+
+			const result = await getSimilaritySettings();
+
+			expect(result).toEqual({ threshold: 0.5, topK: 5 });
+
+			(joplin.settings.values as jest.Mock).mockResolvedValue({
+				'noteGraph.similarityThreshold': false,
+				'noteGraph.maxEdgesPerNote': true,
+			});
+
+			const secondResult = await getSimilaritySettings();
+
+			expect(secondResult).toEqual({ threshold: 0.5, topK: 5 });
+		});
 	});
 });

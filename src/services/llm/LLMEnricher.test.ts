@@ -423,6 +423,25 @@ describe('LLMEnricher', () => {
 			expect(getChatMock()).toHaveBeenCalledTimes(1);
 			expect(result.edgeEnrichments.size).toBe(0);
 		});
+
+		it('re-checks staleness after the retry delay before issuing another chat() call', async () => {
+			const enricher = createEnricher();
+			getChatMock().mockImplementation(async () => {
+				throw new Error('network blip');
+			});
+			let staleCheckCount = 0;
+			const isStale = () => {
+				staleCheckCount++;
+				return staleCheckCount > 2;
+			};
+
+			const resultPromise = enricher.enrich({ nodes: nodes('n1', 'n2'), edges: [edge('n1', 'n2')] }, isStale);
+			await jest.advanceTimersByTimeAsync(1000);
+			const result = await resultPromise;
+
+			expect(getChatMock()).toHaveBeenCalledTimes(1);
+			expect(result.edgeEnrichments.size).toBe(0);
+		});
 	});
 
 	it('calls chat() with no options, leaving temperature and max tokens up to the provider default', async () => {
@@ -502,6 +521,30 @@ describe('LLMEnricher', () => {
 
 		expect(getChatMock()).toHaveBeenCalledTimes(2);
 		expect(second.edgeEnrichments.get('n1::n2::semantic')).toEqual({ relationshipLabel: 'label-n1-n2' });
+	});
+
+	it('applies a fresh centralityAdjustment for an already-cached node pulled into a new batch by a new edge', async () => {
+		const enricher = createEnricher();
+		getChatMock().mockImplementation(async (messages) => respondValid(messages));
+
+		await enricher.enrich({ nodes: nodes('n1', 'n2'), edges: [edge('n1', 'n2', 100)] }, NOT_STALE);
+		expect(getChatMock()).toHaveBeenCalledTimes(1);
+
+		getChatMock().mockImplementation(async (messages) => {
+			const payload = readPayload(messages);
+			return JSON.stringify({
+				notes: payload.notes.map((n) => ({ id: n.id, category: `category-${n.id}`, centralityAdjustment: 2 })),
+				relationships: payload.pairs.map((p) => ({ from: p.from, to: p.to, label: `label-${p.from}-${p.to}` })),
+			});
+		});
+
+		const second = await enricher.enrich(
+			{ nodes: nodes('n1', 'n3'), edges: [edge('n1', 'n3', 1)] },
+			NOT_STALE
+		);
+
+		expect(getChatMock()).toHaveBeenCalledTimes(2);
+		expect(second.nodeEnrichments.get('n1')).toEqual({ category: 'category-n1', centralityAdjustment: 2 });
 	});
 
 	describe('clearCache', () => {

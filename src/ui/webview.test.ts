@@ -126,6 +126,15 @@ describe('webview', () => {
 		});
 	});
 
+	it('clears progress once enrichment progress reaches its total', async () => {
+		await webview.postGraphData({ nodes: [], edges: [] });
+		await webview.postEnrichmentProgress(4, 4);
+
+		const response = await onMessageHandler({ type: 'request-data', version: 1 });
+
+		expect(response).toMatchObject({ progress: null });
+	});
+
 	it('clears progress once a fresh graph is posted', async () => {
 		await webview.postProgress(3, 10);
 		await webview.postGraphData({ nodes: [], edges: [] });

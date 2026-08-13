@@ -48,8 +48,8 @@ export const loadNotes = async (): Promise<Note[]> => {
 	return enrichedNotes;
 };
 
-const logProgressPostFailure = (e: unknown): void => {
-	console.error('Failed to push progress to panel:', e);
+const logPanelPostFailure = (e: unknown): void => {
+	console.error('Failed to push update to panel:', e);
 };
 
 /**
@@ -62,7 +62,7 @@ const logProgressPostFailure = (e: unknown): void => {
  */
 const runEnrichmentFollowUp = async (): Promise<void> => {
 	const enriched = await analysisController.enrichCurrentGraph((progress) => {
-		postEnrichmentProgress(progress.current, progress.total).catch(logProgressPostFailure);
+		postEnrichmentProgress(progress.current, progress.total).catch(logPanelPostFailure);
 	});
 	if (!enriched) return;
 
@@ -79,7 +79,7 @@ const runEnrichmentFollowUp = async (): Promise<void> => {
  */
 const runSemanticAnalysis = async (notes: Note[]): Promise<void> => {
 	const result = await analysisController.embedAndBuildSemantic(notes, (progress) => {
-		postProgress(progress.current, progress.total).catch(logProgressPostFailure);
+		postProgress(progress.current, progress.total).catch(logPanelPostFailure);
 	});
 	if (!result) {
 		return;
@@ -154,7 +154,7 @@ const incrementalUpdater = new IncrementalUpdater(
 	undefined,
 	() => {
 		postStatus('Note graph update paused after repeated failures; will retry on your next edit.').catch(
-			logProgressPostFailure
+			logPanelPostFailure
 		);
 	}
 );
@@ -250,12 +250,7 @@ const handleSettingsChange = async (event: { keys: string[] }): Promise<void> =>
 			return;
 		}
 
-		if (!analysisController.hasEmbeddedNotes()) {
-			await runSemanticAnalysis(analysisController.getCurrentNotes());
-			return;
-		}
-
-		await recomputeAndPost();
+		await retryEnrichment();
 	} catch (error) {
 		console.error('Failed to handle note graph settings change:', error);
 	}
@@ -305,7 +300,7 @@ joplin.plugins.register({
 			},
 			() => {
 				analysisController.cancelCurrentRun();
-				postStatus('Analysis cancelled.').catch(logProgressPostFailure);
+				postStatus('Analysis cancelled.').catch(logPanelPostFailure);
 			}
 		);
 		await registerCommands();

@@ -641,5 +641,19 @@ describe('SimilarityEngine', () => {
 			);
 			warnSpy.mockRestore();
 		});
+
+		it('gives up after a handful of consecutive failures instead of retrying every note in a large vault', async () => {
+			const { notes, embedded } = makeLargeVault();
+			const search = (joplin.ai as unknown as { search: jest.Mock }).search;
+			search.mockRejectedValue(new Error('search unavailable'));
+			jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairsPromise = engine.compute();
+			await jest.advanceTimersByTimeAsync(3 * 500 + 1000);
+			await pairsPromise;
+
+			expect(search.mock.calls.length).toBeLessThan(notes.length);
+		});
 	});
 });

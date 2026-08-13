@@ -630,6 +630,29 @@ describe('AnalysisController', () => {
 			expect(mockEnricher.enrich).not.toHaveBeenCalled();
 			expect(result).toBeNull();
 		});
+
+		it('rejects a second enrichCurrentGraph call while one is already in flight', async () => {
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
+
+			let resolveEnrich!: (result: Awaited<ReturnType<typeof mockEnricher.enrich>>) => void;
+			mockEnricher.enrich.mockImplementation(
+				() =>
+					new Promise((resolve) => {
+						resolveEnrich = resolve;
+					})
+			);
+
+			const first = controller.enrichCurrentGraph();
+			await new Promise((resolve) => setImmediate(resolve));
+
+			const second = await controller.enrichCurrentGraph();
+			expect(second).toBeNull();
+			expect(mockEnricher.enrich).toHaveBeenCalledTimes(1);
+
+			resolveEnrich({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
+			await first;
+		});
 	});
 
 	describe('hasNotes / getCurrentNotes', () => {
@@ -764,6 +787,27 @@ describe('AnalysisController', () => {
 
 			expect(result).toBeNull();
 			infoSpy.mockRestore();
+		});
+
+		it('honors a cancel that lands between Pass A committing and Pass B starting', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
+				errors: [],
+			});
+			mockBuilder.buildWithSimilarity.mockResolvedValue({
+				nodes: [{ data: { id: 'a', label: 'a', noteId: 'a', degree: 0, community: 0, size: 5 } }],
+				edges: [],
+			});
+			await controller.embedAndBuildSemantic([note('a')]);
+
+			controller.cancelCurrentRun();
+			const result = await controller.enrichCurrentGraph();
+
+			expect(result).toBeNull();
+			expect(mockEnricher.enrich).not.toHaveBeenCalled();
 		});
 	});
 

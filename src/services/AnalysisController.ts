@@ -30,6 +30,7 @@ export class AnalysisController {
 	private lastGraphData: GraphData | null = null;
 	private lastDiff: GraphDiff | null = null;
 	private runToken = 0;
+	private cancelledAtToken: number | null = null;
 	private lastDeltaSkippedForRetry = false;
 	private currentOrchestrator: EmbeddingOrchestrator | null = null;
 	private enrichmentInFlight = false;
@@ -69,6 +70,7 @@ export class AnalysisController {
 		}
 		this.currentOrchestrator?.cancel();
 		++this.runToken;
+		this.cancelledAtToken = this.runToken;
 	}
 
 	public getCurrentNotes(): Note[] {
@@ -227,8 +229,10 @@ export class AnalysisController {
 		onProgress?: (progress: EnrichmentProgress) => void
 	): Promise<GraphData | null> {
 		if (!this.lastGraphData || !this.lastNotes) return null;
+		if (this.enrichmentInFlight) return null;
 
 		const token = this.runToken;
+		if (token === this.cancelledAtToken) return null;
 		const graphData = this.lastGraphData;
 		const notes = this.lastNotes;
 		const guardedProgress = onProgress ? this.guardStaleProgress(token, onProgress) : undefined;

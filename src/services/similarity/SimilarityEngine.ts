@@ -24,6 +24,7 @@ export interface SimilarityPair {
 export class SimilarityEngine {
 	private static readonly MAX_SEARCH_ATTEMPTS = 2;
 	private static readonly SEARCH_RETRY_DELAY_MS = 500;
+	private static readonly SEARCH_CIRCUIT_BREAKER_FAILURES = 3;
 
 	private readonly noteIds: string[];
 	private readonly vectors: Map<string, number[]>;
@@ -138,6 +139,7 @@ export class SimilarityEngine {
 
 		const pairs = new Map<string, SimilarityPair>();
 		let successCount = 0;
+		let consecutiveFailures = 0;
 		let firstError: unknown = null;
 
 		for (const noteId of this.noteIds) {
@@ -152,9 +154,18 @@ export class SimilarityEngine {
 						e
 					);
 				}
+				consecutiveFailures++;
+				if (successCount === 0 && consecutiveFailures >= SimilarityEngine.SEARCH_CIRCUIT_BREAKER_FAILURES) {
+					console.warn(
+						'joplin.ai.search has failed for every note attempted so far; giving up early and falling back to pairwise cosine similarity.',
+						firstError
+					);
+					return this.computeCosinePairs();
+				}
 				continue;
 			}
 
+			consecutiveFailures = 0;
 			successCount++;
 
 			for (const r of results) {
@@ -174,14 +185,6 @@ export class SimilarityEngine {
 
 				pairs.set(key, { source, target, score: r.score });
 			}
-		}
-
-		if (successCount === 0 && this.noteIds.length > 0) {
-			console.warn(
-				'All joplin.ai.search calls failed; falling back to pairwise cosine similarity.',
-				firstError
-			);
-			return this.computeCosinePairs();
 		}
 
 		return Array.from(pairs.values());

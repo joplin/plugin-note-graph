@@ -615,5 +615,35 @@ describe('IncrementalUpdater', () => {
 			expect(maxConcurrent).toBe(1);
 			expect(analysisController.applyDelta).toHaveBeenCalledTimes(2);
 		});
+
+		it('applies a second flush\'s Pass A patch without waiting for an earlier flush\'s slow Pass B enrichment', async () => {
+			noteRepository.getNote.mockImplementation(async (id) => note(id));
+			let resolveFirstEnrich: (value: unknown) => void = () => undefined;
+			let enrichCalls = 0;
+			analysisController.enrichCurrentGraph.mockImplementation(() => {
+				enrichCalls++;
+				if (enrichCalls === 1) {
+					return new Promise((resolve) => {
+						resolveFirstEnrich = resolve;
+					});
+				}
+				return Promise.resolve(null);
+			});
+
+			updater.handleNoteChange({ id: 'a', event: 1 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(onGraphPatch).toHaveBeenCalledTimes(1);
+			expect(enrichCalls).toBe(1);
+
+			updater.handleNoteChange({ id: 'b', event: 1 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(analysisController.applyDelta).toHaveBeenCalledTimes(2);
+			expect(onGraphPatch).toHaveBeenCalledTimes(2);
+
+			resolveFirstEnrich(null);
+			await flushMicrotasks();
+		});
 	});
 });

@@ -233,7 +233,9 @@ export class IncrementalUpdater {
 				this.onGraphPatch(diff, graphData);
 			}
 
-			await this.runEnrichmentFollowUp();
+			this.runEnrichmentFollowUp().catch((e) => {
+				console.error('LLM enrichment follow-up failed:', e);
+			});
 		} catch (e) {
 			this.consecutiveRetrySkips = 0;
 			console.error('Incremental flush failed, falling back to a full reload:', e);

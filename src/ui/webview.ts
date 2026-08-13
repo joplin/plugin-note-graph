@@ -148,5 +148,5 @@ export const postProgress = async (current: number, total: number): Promise<void
 
 /** Sets the LLM enrichment progress delivered to the panel on its next poll. */
 export const postEnrichmentProgress = async (current: number, total: number): Promise<void> => {
-	currentProgress = { stage: 'enrichment-progress', current, total };
+	currentProgress = current >= total ? null : { stage: 'enrichment-progress', current, total };
 };

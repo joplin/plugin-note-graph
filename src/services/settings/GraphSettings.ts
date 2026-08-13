@@ -105,6 +105,9 @@ const TOP_K_MIN = 1;
 const TOP_K_MAX = 20;
 
 function sanitizeInRange(value: unknown, min: number, max: number, fallback: number): number {
+	if (typeof value === 'boolean' || value === null || value === '') {
+		return fallback;
+	}
 	const num = Number(value);
 	if (!Number.isFinite(num)) {
 		return fallback;

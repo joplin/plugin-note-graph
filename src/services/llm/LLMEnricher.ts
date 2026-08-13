@@ -109,6 +109,7 @@ export class LLMEnricher {
 	): Promise<EnrichmentResult> {
 		let nodeEnrichments = new Map<string, NodeEnrichment>();
 		let edgeEnrichments = new Map<string, EdgeEnrichment>();
+		const nodesWrittenThisRun = new Set<string>();
 
 		try {
 			nodeEnrichments = this.seedCachedNodes(input.nodes);
@@ -142,7 +143,7 @@ export class LLMEnricher {
 				}
 
 				const outcome = await this.runBatch(api, chunks[i], i, chunks.length, this.capCategories(usedCategories), isStale);
-				this.mergeNodeResults(outcome.nodes, chunks[i].index.nodeUpdatedTimeById, nodeEnrichments);
+				this.mergeNodeResults(outcome.nodes, chunks[i].index.nodeUpdatedTimeById, nodeEnrichments, nodesWrittenThisRun);
 				this.mergeEdgeResults(outcome.edges, chunks[i].index.edgeUpdatedTimeById, edgeEnrichments);
 				for (const enrichment of outcome.nodes.values()) {
 					if (enrichment.category !== undefined) usedCategories.add(enrichment.category);
@@ -275,6 +276,9 @@ export class LLMEnricher {
 					return empty;
 				}
 				await this.delay(RETRY_DELAY_MS);
+				if (isStale()) {
+					return empty;
+				}
 			}
 
 			let response: unknown;
@@ -325,10 +329,11 @@ export class LLMEnricher {
 	private mergeNodeResults(
 		parsed: Map<string, NodeEnrichment>,
 		updatedTimeById: Map<string, number>,
-		into: Map<string, NodeEnrichment>
+		into: Map<string, NodeEnrichment>,
+		writtenThisRun: Set<string>
 	): void {
 		for (const [id, enrichment] of parsed) {
-			if (into.has(id)) continue;
+			if (writtenThisRun.has(id)) continue;
 
 			const updatedTime = updatedTimeById.get(id);
 			if (updatedTime === undefined) {
@@ -339,6 +344,7 @@ export class LLMEnricher {
 				this.nodeCache.set(id, { enrichment: { category: enrichment.category }, updatedTime });
 			}
 			into.set(id, enrichment);
+			writtenThisRun.add(id);
 		}
 	}
 
