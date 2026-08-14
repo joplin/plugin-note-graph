@@ -655,5 +655,17 @@ describe('SimilarityEngine', () => {
 
 			expect(search.mock.calls.length).toBeLessThan(notes.length);
 		});
+
+		it('stops before calling search when isCancelled() is already true', async () => {
+			const { notes, embedded } = makeLargeVault();
+			const search = (joplin.ai as unknown as { search: jest.Mock }).search;
+			search.mockResolvedValue([]);
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute(undefined, undefined, () => true);
+
+			expect(search).not.toHaveBeenCalled();
+			expect(pairs).toEqual([]);
+		});
 	});
 });

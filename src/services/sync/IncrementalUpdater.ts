@@ -34,7 +34,8 @@ export class IncrementalUpdater {
 		private readonly graphCache = new GraphCacheRepository(),
 		private readonly coalesceWindowMs = DEFAULT_COALESCE_WINDOW_MS,
 		private readonly checkAiEnabled: () => Promise<boolean> = isAiAnalysisEnabled,
-		private readonly onRetriesExhausted: () => void = () => {}
+		private readonly onRetriesExhausted: () => void = () => {},
+		private readonly onEnrichmentProgress: (progress: { current: number; total: number }) => void = () => {}
 	) {}
 
 	public handleNoteChange(event: { id: string; event: number }): void {
@@ -256,7 +257,7 @@ export class IncrementalUpdater {
 	 * reaches the panel immediately, before the much slower LLM pass runs.
 	 */
 	private async runEnrichmentFollowUp(): Promise<void> {
-		const enriched = await this.analysisController.enrichCurrentGraph();
+		const enriched = await this.analysisController.enrichCurrentGraph(this.onEnrichmentProgress);
 		if (!enriched) return;
 
 		const diff = this.analysisController.getLastDiff();

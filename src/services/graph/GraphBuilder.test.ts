@@ -184,7 +184,7 @@ describe('GraphBuilder', () => {
 			const notes = [note('a', 'A'), note('b', 'B')];
 			await builder.buildWithSimilarity(notes, [], 0.7, 3);
 
-			expect(computeMock).toHaveBeenCalledWith(0.7, 3);
+			expect(computeMock).toHaveBeenCalledWith(0.7, 3, undefined);
 		});
 	});
 });

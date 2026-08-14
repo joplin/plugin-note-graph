@@ -8,7 +8,7 @@ import { GraphCacheRepository } from '../data/Database/GraphCacheRepository';
 import { ProviderResolver } from './embeddings/ProviderResolver';
 import { EmbeddingOrchestrator } from './embeddings/Orchestrator';
 import { EmbeddedNote, EmbeddingProvider, BatchProgress } from './embeddings/Types';
-import { LLMEnricher, EnrichmentNodeInput, EnrichmentEdgeInput, EnrichmentProgress, CacheSeed } from './llm/LLMEnricher';
+import { LLMEnricher, EnrichmentNodeInput, EnrichmentEdgeInput, EnrichmentProgress, EnrichmentResult, CacheSeed } from './llm/LLMEnricher';
 import { NodeEnrichment, EdgeEnrichment } from './llm/ResponseParser';
 import { isAiAnalysisEnabled, isLlmEnrichmentEnabled, getSimilaritySettings } from './settings/GraphSettings';
 
@@ -71,6 +71,10 @@ export class AnalysisController {
 		this.currentOrchestrator?.cancel();
 		++this.runToken;
 		this.cancelledAtToken = this.runToken;
+	}
+
+	public clearCancellation(): void {
+		this.cancelledAtToken = null;
 	}
 
 	public getCurrentNotes(): Note[] {
@@ -183,19 +187,24 @@ export class AnalysisController {
 			`AI analysis: ${embeddedNotes.length}/${notes.length} notes embedded, building semantic graph.`
 		);
 		const { threshold, topK } = await getSimilaritySettings();
+		const enrichmentEnabled = await isLlmEnrichmentEnabled();
 		const graphData = await this.builder.buildWithSimilarity(
 			notes,
 			embeddedNotes,
 			threshold,
-			topK
+			topK,
+			() => token !== this.runToken
 		);
 
 		if (this.isStale(token, options.avoidSemanticDowngrade)) return null;
 
 		if (options.commitNotes) this.lastNotes = notes;
 		this.lastEmbeddedNotes = embeddedNotes;
-		this.commitGraphData(graphData);
-		return { graphData, usedAi: true };
+		const committedGraph = enrichmentEnabled
+			? this.replayCachedEnrichment(graphData, notes)
+			: graphData;
+		this.commitGraphData(committedGraph);
+		return { graphData: committedGraph, usedAi: true };
 	}
 
 	/**
@@ -212,17 +221,22 @@ export class AnalysisController {
 		console.info(
 			`Recomputing graph: threshold=${threshold}, topK=${topK}, ${this.lastEmbeddedNotes.length} cached vectors.`
 		);
+		const enrichmentEnabled = await isLlmEnrichmentEnabled();
 		const graphData = await this.builder.buildWithSimilarity(
 			this.lastNotes,
 			this.lastEmbeddedNotes,
 			threshold,
-			topK
+			topK,
+			() => token !== this.runToken
 		);
 
 		if (token !== this.runToken) return null;
 
-		this.commitGraphData(graphData);
-		return graphData;
+		const committedGraph = enrichmentEnabled
+			? this.replayCachedEnrichment(graphData, this.lastNotes)
+			: graphData;
+		this.commitGraphData(committedGraph);
+		return committedGraph;
 	}
 
 	public async enrichCurrentGraph(
@@ -347,55 +361,79 @@ export class AnalysisController {
 		try {
 			if (!(await isLlmEnrichmentEnabled())) return graphData;
 
-			const noteById = new Map(notes.map((note) => [note.id, note]));
-			const semanticEdges = graphData.edges.filter((edge) => edge.data.type === 'semantic');
-
-			const nodeInputs = new Map<string, EnrichmentNodeInput>();
-			const edgeInputs: EnrichmentEdgeInput[] = [];
-			for (const edge of semanticEdges) {
-				const source = noteById.get(edge.data.source);
-				const target = noteById.get(edge.data.target);
-				if (!source || !target) {
-					const missing = [!source && 'source', !target && 'target'].filter(Boolean).join(' and ');
-					console.error(`LLM enrichment: semantic edge is missing its ${missing} note; skipping it.`, edge.data);
-					continue;
-				}
-				for (const note of [source, target]) {
-					if (!nodeInputs.has(note.id)) {
-						nodeInputs.set(note.id, {
-							title: note.title,
-							body: typeof note.body === 'string' ? note.body : '',
-							updatedTime: note.updated_time,
-						});
-					}
-				}
-				edgeInputs.push({
-					id: edge.data.id,
-					source: edge.data.source,
-					target: edge.data.target,
-					updatedTime: Math.max(source.updated_time, target.updated_time),
-				});
-			}
-
+			const input = this.buildEnrichmentInput(graphData, notes);
 			const enrichment = await this.enrichmentService.enrich(
-				{ nodes: nodeInputs, edges: edgeInputs },
+				input,
 				() => token !== this.runToken,
 				onProgress
 			);
 			if (enrichment.nodeEnrichments.size === 0 && enrichment.edgeEnrichments.size === 0) {
 				return graphData;
 			}
-
-			return {
-				nodes: graphData.nodes.map((node) =>
-					this.applyNodeEnrichment(node, enrichment.nodeEnrichments.get(node.data.id))
-				),
-				edges: graphData.edges.map((edge) =>
-					this.applyEdgeEnrichment(edge, enrichment.edgeEnrichments.get(edge.data.id))
-				),
-			};
+			return this.applyEnrichmentResult(graphData, enrichment);
 		} catch (e) {
 			console.error('LLM enrichment failed; rendering the graph without it.', e);
+			return graphData;
+		}
+	}
+
+	private buildEnrichmentInput(
+		graphData: GraphData,
+		notes: Note[]
+	): { nodes: Map<string, EnrichmentNodeInput>; edges: EnrichmentEdgeInput[] } {
+		const noteById = new Map(notes.map((note) => [note.id, note]));
+		const semanticEdges = graphData.edges.filter((edge) => edge.data.type === 'semantic');
+
+		const nodeInputs = new Map<string, EnrichmentNodeInput>();
+		const edgeInputs: EnrichmentEdgeInput[] = [];
+		for (const edge of semanticEdges) {
+			const source = noteById.get(edge.data.source);
+			const target = noteById.get(edge.data.target);
+			if (!source || !target) {
+				const missing = [!source && 'source', !target && 'target'].filter(Boolean).join(' and ');
+				console.error(`LLM enrichment: semantic edge is missing its ${missing} note; skipping it.`, edge.data);
+				continue;
+			}
+			for (const note of [source, target]) {
+				if (!nodeInputs.has(note.id)) {
+					nodeInputs.set(note.id, {
+						title: note.title,
+						body: typeof note.body === 'string' ? note.body : '',
+						updatedTime: note.updated_time,
+					});
+				}
+			}
+			edgeInputs.push({
+				id: edge.data.id,
+				source: edge.data.source,
+				target: edge.data.target,
+				updatedTime: Math.max(source.updated_time, target.updated_time),
+			});
+		}
+		return { nodes: nodeInputs, edges: edgeInputs };
+	}
+
+	private applyEnrichmentResult(graphData: GraphData, enrichment: EnrichmentResult): GraphData {
+		return {
+			nodes: graphData.nodes.map((node) =>
+				this.applyNodeEnrichment(node, enrichment.nodeEnrichments.get(node.data.id))
+			),
+			edges: graphData.edges.map((edge) =>
+				this.applyEdgeEnrichment(edge, enrichment.edgeEnrichments.get(edge.data.id))
+			),
+		};
+	}
+
+	private replayCachedEnrichment(graphData: GraphData, notes: Note[]): GraphData {
+		try {
+			const input = this.buildEnrichmentInput(graphData, notes);
+			const enrichment = this.enrichmentService.replayCached(input);
+			if (enrichment.nodeEnrichments.size === 0 && enrichment.edgeEnrichments.size === 0) {
+				return graphData;
+			}
+			return this.applyEnrichmentResult(graphData, enrichment);
+		} catch (e) {
+			console.error('LLM enrichment cache replay failed; keeping the graph without it.', e);
 			return graphData;
 		}
 	}

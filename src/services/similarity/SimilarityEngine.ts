@@ -56,13 +56,14 @@ export class SimilarityEngine {
 	 */
 	public async compute(
 		threshold: number = DEFAULT_THRESHOLD,
-		topK: number = TOP_K
+		topK: number = TOP_K,
+		isCancelled?: () => boolean
 	): Promise<SimilarityPair[]> {
 		if (this.noteIds.length <= 1) {
 			return [];
 		}
 
-		const rawPairs = await this.computeRawPairs();
+		const rawPairs = await this.computeRawPairs(isCancelled);
 
 		if (rawPairs.length === 0) {
 			return [];
@@ -83,19 +84,20 @@ export class SimilarityEngine {
 	}
 
 	/** Picks the appropriate similarity strategy based on vault size. */
-	private computeRawPairs(): Promise<SimilarityPair[]> {
+	private computeRawPairs(isCancelled?: () => boolean): Promise<SimilarityPair[]> {
 		if (this.noteIds.length <= LARGE_VAULT_THRESHOLD) {
-			return Promise.resolve(this.computeCosinePairs());
+			return Promise.resolve(this.computeCosinePairs(isCancelled));
 		}
-		return this.computeSearchPairs();
+		return this.computeSearchPairs(isCancelled);
 	}
 
 	/** O(n²) pairwise cosine similarity via dot product on unit-norm vectors. */
-	private computeCosinePairs(): SimilarityPair[] {
+	private computeCosinePairs(isCancelled?: () => boolean): SimilarityPair[] {
 		const pairs: SimilarityPair[] = [];
 		const n = this.noteIds.length;
 
 		for (let i = 0; i < n; i++) {
+			if (isCancelled?.()) break;
 			const a = this.noteIds[i];
 			const vecA = this.vectors.get(a);
 			if (!vecA) continue;
@@ -129,12 +131,12 @@ export class SimilarityEngine {
 	 * exists but search doesn't on this Joplin version — we fall back to
 	 * O(n²) cosine instead of silently returning zero pairs.
 	 */
-	private async computeSearchPairs(): Promise<SimilarityPair[]> {
+	private async computeSearchPairs(isCancelled?: () => boolean): Promise<SimilarityPair[]> {
 		const joplinAi = joplin.ai as unknown as
 			| { search: (options: SearchOptions) => Promise<SearchResult[]> }
 			| undefined;
 		if (!joplinAi) {
-			return this.computeCosinePairs();
+			return this.computeCosinePairs(isCancelled);
 		}
 
 		const pairs = new Map<string, SimilarityPair>();
@@ -143,9 +145,10 @@ export class SimilarityEngine {
 		let firstError: unknown = null;
 
 		for (const noteId of this.noteIds) {
+			if (isCancelled?.()) break;
 			let results: SearchResult[];
 			try {
-				results = await this.searchWithRetry(joplinAi, noteId);
+				results = await this.searchWithRetry(joplinAi, noteId, isCancelled);
 			} catch (e) {
 				if (firstError === null) {
 					firstError = e;
@@ -160,7 +163,7 @@ export class SimilarityEngine {
 						'joplin.ai.search has failed for every note attempted so far; giving up early and falling back to pairwise cosine similarity.',
 						firstError
 					);
-					return this.computeCosinePairs();
+					return this.computeCosinePairs(isCancelled);
 				}
 				continue;
 			}
@@ -193,13 +196,16 @@ export class SimilarityEngine {
 	/** Retries a single note's search call on transient failures before giving up on it. */
 	private async searchWithRetry(
 		joplinAi: { search: (options: SearchOptions) => Promise<SearchResult[]> },
-		noteId: string
+		noteId: string,
+		isCancelled?: () => boolean
 	): Promise<SearchResult[]> {
 		let lastError: unknown;
 
 		for (let attempt = 1; attempt <= SimilarityEngine.MAX_SEARCH_ATTEMPTS; attempt++) {
+			if (isCancelled?.()) return [];
 			if (attempt > 1) {
 				await this.delay(SimilarityEngine.SEARCH_RETRY_DELAY_MS);
+				if (isCancelled?.()) return [];
 			}
 
 			try {

@@ -802,6 +802,10 @@ function init() {
 					hidePipelineProgress();
 					showStatus(message.text);
 				}
+				if (message && message.type === 'progress') {
+					var label = message.stage === 'enrichment-progress' ? 'Enriching notes' : 'Building graph';
+					showPipelineProgress(label, message.current, message.total);
+				}
 			});
 		}
 	} catch (e) {

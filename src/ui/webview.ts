@@ -141,12 +141,21 @@ export const postStatus = async (text: string): Promise<void> => {
 	await joplin.views.panels.postMessage(handle, { type: 'status', text });
 };
 
-/** Sets the embedding progress delivered to the panel on its next poll. */
+/** Sets the embedding progress and pushes it to the panel immediately. */
 export const postProgress = async (current: number, total: number): Promise<void> => {
 	currentProgress = { stage: 'progress', current, total };
+	const handle = getPanel();
+	await joplin.views.panels.postMessage(handle, { type: 'progress', stage: 'progress', current, total });
 };
 
-/** Sets the LLM enrichment progress delivered to the panel on its next poll. */
+/** Sets the LLM enrichment progress and pushes it to the panel immediately. */
 export const postEnrichmentProgress = async (current: number, total: number): Promise<void> => {
 	currentProgress = current >= total ? null : { stage: 'enrichment-progress', current, total };
+	const handle = getPanel();
+	await joplin.views.panels.postMessage(handle, {
+		type: 'progress',
+		stage: 'enrichment-progress',
+		current,
+		total,
+	});
 };

@@ -102,6 +102,12 @@ export class LLMEnricher {
 		}
 	}
 
+	public replayCached(input: EnrichmentInput): EnrichmentResult {
+		const nodeEnrichments = this.seedCachedNodes(input.nodes);
+		const { hits } = this.partitionEdges(input.edges);
+		return { nodeEnrichments, edgeEnrichments: hits };
+	}
+
 	public async enrich(
 		input: EnrichmentInput,
 		isStale: () => boolean,

@@ -156,6 +156,9 @@ const incrementalUpdater = new IncrementalUpdater(
 		postStatus('Note graph update paused after repeated failures; will retry on your next edit.').catch(
 			logPanelPostFailure
 		);
+	},
+	(progress) => {
+		postEnrichmentProgress(progress.current, progress.total).catch(logPanelPostFailure);
 	}
 );
 const workspaceListener = new WorkspaceListener(incrementalUpdater);
@@ -250,7 +253,7 @@ const handleSettingsChange = async (event: { keys: string[] }): Promise<void> =>
 			return;
 		}
 
-		await retryEnrichment();
+		await recomputeGraph();
 	} catch (error) {
 		console.error('Failed to handle note graph settings change:', error);
 	}
@@ -266,14 +269,19 @@ const retryEmbedding = async (): Promise<void> => {
 
 const retryEnrichment = async (): Promise<void> => {
 	try {
-		if (!analysisController.hasEmbeddedNotes()) {
-			await runSemanticAnalysis(analysisController.getCurrentNotes());
-			return;
-		}
-		await recomputeAndPost();
+		analysisController.clearCancellation();
+		await runEnrichmentFollowUp();
 	} catch (error) {
 		console.error('Failed to retry AI enrichment:', error);
 	}
+};
+
+const recomputeGraph = async (): Promise<void> => {
+	if (!analysisController.hasEmbeddedNotes()) {
+		await runSemanticAnalysis(analysisController.getCurrentNotes());
+		return;
+	}
+	await recomputeAndPost();
 };
 
 const registerCommands = async (): Promise<void> => {
