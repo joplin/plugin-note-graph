@@ -39,12 +39,13 @@ export class GraphBuilder {
 		notes: Note[],
 		embeddedNotes: EmbeddedNote[],
 		threshold?: number,
-		topK?: number
+		topK?: number,
+		isCancelled?: () => boolean
 	): Promise<GraphData> {
 		const structuralEdges = this.edgeFactory.createEdges(notes);
 
 		const engine = new SimilarityEngine(notes, embeddedNotes);
-		const pairs = await engine.compute(threshold, topK);
+		const pairs = await engine.compute(threshold, topK, isCancelled);
 		const semanticEdges = this.edgeFactory.createSemanticEdges(pairs);
 
 		const allEdges = [...structuralEdges, ...semanticEdges];

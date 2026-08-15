@@ -47,6 +47,7 @@ describe('IncrementalUpdater', () => {
 	let onGraphPatch: jest.Mock;
 	let onFullReloadNeeded: jest.Mock;
 	let checkAiEnabled: jest.Mock<Promise<boolean>, []>;
+	let onRetriesExhausted: jest.Mock;
 	let ai: { getIndexStatus: jest.Mock; getEmbeddings: jest.Mock };
 	let updater: IncrementalUpdater;
 
@@ -82,6 +83,7 @@ describe('IncrementalUpdater', () => {
 		onGraphPatch = jest.fn();
 		onFullReloadNeeded = jest.fn().mockResolvedValue(undefined);
 		checkAiEnabled = jest.fn().mockResolvedValue(false);
+		onRetriesExhausted = jest.fn();
 
 		ai = joplin.ai as unknown as { getIndexStatus: jest.Mock; getEmbeddings: jest.Mock };
 		ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' });
@@ -101,7 +103,8 @@ describe('IncrementalUpdater', () => {
 			eventsRepository,
 			graphCache,
 			COALESCE_WINDOW_MS,
-			checkAiEnabled
+			checkAiEnabled,
+			onRetriesExhausted
 		);
 	});
 
@@ -224,6 +227,7 @@ describe('IncrementalUpdater', () => {
 			expect(consoleInfoSpy).toHaveBeenCalledWith(
 				expect.stringContaining('Giving up automatic retry after 5 consecutive')
 			);
+			expect(onRetriesExhausted).toHaveBeenCalledTimes(1);
 
 			analysisController.applyDelta.mockResolvedValue({ nodes: [], edges: [] });
 			analysisController.wasLastDeltaSkippedForRetry.mockReturnValue(false);
@@ -235,6 +239,21 @@ describe('IncrementalUpdater', () => {
 				[]
 			);
 			consoleInfoSpy.mockRestore();
+		});
+
+		it('does not report retries exhausted when a retryable skip succeeds within the retry budget', async () => {
+			noteRepository.getNote.mockImplementation(async (id) => note(id));
+			analysisController.applyDelta.mockResolvedValueOnce(null);
+			analysisController.wasLastDeltaSkippedForRetry.mockReturnValueOnce(true);
+
+			updater.handleNoteChange({ id: 'a', event: 2 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			analysisController.applyDelta.mockResolvedValue({ nodes: [], edges: [] });
+			analysisController.wasLastDeltaSkippedForRetry.mockReturnValue(false);
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(onRetriesExhausted).not.toHaveBeenCalled();
 		});
 
 		it('folds a note edited again while its retryable skip is still pending into the same retry', async () => {
@@ -344,6 +363,30 @@ describe('IncrementalUpdater', () => {
 
 			expect(analysisController.applyDelta).toHaveBeenCalledWith([note('a')], []);
 			consoleErrorSpy.mockRestore();
+		});
+
+		it('pushes a second patch for Pass B enrichment after the Pass A patch, when enrichCurrentGraph finds something to label', async () => {
+			noteRepository.getNote.mockResolvedValue(note('a'));
+			const enrichedGraphData = { nodes: [], edges: [] };
+			analysisController.enrichCurrentGraph.mockResolvedValue(enrichedGraphData);
+			analysisController.getLastDiff.mockReturnValueOnce(fakeDiff).mockReturnValueOnce(fakeDiff);
+
+			updater.handleNoteChange({ id: 'a', event: 1 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(onGraphPatch).toHaveBeenCalledTimes(2);
+			expect(onGraphPatch).toHaveBeenNthCalledWith(1, fakeDiff, { nodes: [], edges: [] });
+			expect(onGraphPatch).toHaveBeenNthCalledWith(2, fakeDiff, enrichedGraphData);
+		});
+
+		it('does not push a second patch when enrichCurrentGraph has nothing to label', async () => {
+			noteRepository.getNote.mockResolvedValue(note('a'));
+			analysisController.enrichCurrentGraph.mockResolvedValue(null);
+
+			updater.handleNoteChange({ id: 'a', event: 1 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(onGraphPatch).toHaveBeenCalledTimes(1);
 		});
 	});
 
@@ -571,6 +614,36 @@ describe('IncrementalUpdater', () => {
 
 			expect(maxConcurrent).toBe(1);
 			expect(analysisController.applyDelta).toHaveBeenCalledTimes(2);
+		});
+
+		it('applies a second flush\'s Pass A patch without waiting for an earlier flush\'s slow Pass B enrichment', async () => {
+			noteRepository.getNote.mockImplementation(async (id) => note(id));
+			let resolveFirstEnrich: (value: unknown) => void = () => undefined;
+			let enrichCalls = 0;
+			analysisController.enrichCurrentGraph.mockImplementation(() => {
+				enrichCalls++;
+				if (enrichCalls === 1) {
+					return new Promise((resolve) => {
+						resolveFirstEnrich = resolve;
+					});
+				}
+				return Promise.resolve(null);
+			});
+
+			updater.handleNoteChange({ id: 'a', event: 1 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(onGraphPatch).toHaveBeenCalledTimes(1);
+			expect(enrichCalls).toBe(1);
+
+			updater.handleNoteChange({ id: 'b', event: 1 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(analysisController.applyDelta).toHaveBeenCalledTimes(2);
+			expect(onGraphPatch).toHaveBeenCalledTimes(2);
+
+			resolveFirstEnrich(null);
+			await flushMicrotasks();
 		});
 	});
 });

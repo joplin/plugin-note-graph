@@ -33,7 +33,9 @@ export class IncrementalUpdater {
 		private readonly eventsRepository = new EventsRepository(),
 		private readonly graphCache = new GraphCacheRepository(),
 		private readonly coalesceWindowMs = DEFAULT_COALESCE_WINDOW_MS,
-		private readonly checkAiEnabled: () => Promise<boolean> = isAiAnalysisEnabled
+		private readonly checkAiEnabled: () => Promise<boolean> = isAiAnalysisEnabled,
+		private readonly onRetriesExhausted: () => void = () => {},
+		private readonly onEnrichmentProgress: (progress: { current: number; total: number }) => void = () => {}
 	) {}
 
 	public handleNoteChange(event: { id: string; event: number }): void {
@@ -215,6 +217,7 @@ export class IncrementalUpdater {
 						console.info(
 							`Giving up automatic retry after ${this.consecutiveRetrySkips} consecutive skipped updates; will retry on the next edit or sync.`
 						);
+						this.onRetriesExhausted();
 					}
 				} else {
 					this.consecutiveRetrySkips = 0;
@@ -230,6 +233,10 @@ export class IncrementalUpdater {
 			if (diff) {
 				this.onGraphPatch(diff, graphData);
 			}
+
+			this.runEnrichmentFollowUp().catch((e) => {
+				console.error('LLM enrichment follow-up failed:', e);
+			});
 		} catch (e) {
 			this.consecutiveRetrySkips = 0;
 			console.error('Incremental flush failed, falling back to a full reload:', e);
@@ -240,6 +247,22 @@ export class IncrementalUpdater {
 				for (const id of upsertIds) this.pendingUpsertIds.add(id);
 				for (const id of removedIds) this.pendingRemovedIds.add(id);
 			}
+		}
+	}
+
+	/**
+	 * Runs LLM enrichment (Pass B) against the graph `applyDelta` just
+	 * committed and pushes a further patch if it changed anything. Kept
+	 * separate from `applyDelta` itself so the structural/semantic patch
+	 * reaches the panel immediately, before the much slower LLM pass runs.
+	 */
+	private async runEnrichmentFollowUp(): Promise<void> {
+		const enriched = await this.analysisController.enrichCurrentGraph(this.onEnrichmentProgress);
+		if (!enriched) return;
+
+		const diff = this.analysisController.getLastDiff();
+		if (diff) {
+			this.onGraphPatch(diff, enriched);
 		}
 	}
 

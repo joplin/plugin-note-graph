@@ -39,6 +39,24 @@ describe('GraphSettings', () => {
 						public: true,
 						section: 'noteGraph',
 					}),
+					'noteGraph.llmEnrichmentEnabled': expect.objectContaining({
+						type: SettingItemType.Bool,
+						value: false,
+						public: true,
+						section: 'noteGraph',
+					}),
+					'noteGraph.retryEmbedding': expect.objectContaining({
+						type: SettingItemType.Bool,
+						value: false,
+						public: true,
+						section: 'noteGraph',
+					}),
+					'noteGraph.retryEnrichment': expect.objectContaining({
+						type: SettingItemType.Bool,
+						value: false,
+						public: true,
+						section: 'noteGraph',
+					}),
 				})
 			);
 		});
@@ -77,6 +95,61 @@ describe('GraphSettings', () => {
 				'noteGraph.maxEdgesPerNote',
 			]);
 			expect(result).toEqual({ threshold: 0.7, topK: 8 });
+		});
+
+		it('falls back to defaults when a value is undefined instead of propagating NaN', async () => {
+			(joplin.settings.values as jest.Mock).mockResolvedValue({
+				'noteGraph.similarityThreshold': undefined,
+				'noteGraph.maxEdgesPerNote': undefined,
+			});
+
+			const result = await getSimilaritySettings();
+
+			expect(result.threshold).not.toBeNaN();
+			expect(result.topK).not.toBeNaN();
+			expect(result).toEqual({ threshold: 0.5, topK: 5 });
+		});
+
+		it('clamps an out-of-range threshold and topK to the registered min/max', async () => {
+			(joplin.settings.values as jest.Mock).mockResolvedValue({
+				'noteGraph.similarityThreshold': 250,
+				'noteGraph.maxEdgesPerNote': -3,
+			});
+
+			const result = await getSimilaritySettings();
+
+			expect(result).toEqual({ threshold: 1, topK: 1 });
+		});
+
+		it('falls back to defaults when a value is not a number', async () => {
+			(joplin.settings.values as jest.Mock).mockResolvedValue({
+				'noteGraph.similarityThreshold': 'not-a-number',
+				'noteGraph.maxEdgesPerNote': NaN,
+			});
+
+			const result = await getSimilaritySettings();
+
+			expect(result).toEqual({ threshold: 0.5, topK: 5 });
+		});
+
+		it('falls back to defaults instead of clamping to the minimum when a value is null, empty, or a boolean', async () => {
+			(joplin.settings.values as jest.Mock).mockResolvedValue({
+				'noteGraph.similarityThreshold': null,
+				'noteGraph.maxEdgesPerNote': '',
+			});
+
+			const result = await getSimilaritySettings();
+
+			expect(result).toEqual({ threshold: 0.5, topK: 5 });
+
+			(joplin.settings.values as jest.Mock).mockResolvedValue({
+				'noteGraph.similarityThreshold': false,
+				'noteGraph.maxEdgesPerNote': true,
+			});
+
+			const secondResult = await getSimilaritySettings();
+
+			expect(secondResult).toEqual({ threshold: 0.5, topK: 5 });
 		});
 	});
 });

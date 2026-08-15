@@ -36,13 +36,35 @@ var INCREMENTAL_FCOSE_OVERRIDES = {
 	packComponents: false,
 };
 
+function escapeHtml(value) {
+	return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function positionTooltip(clientX, clientY, offset) {
+	if (!tooltipEl) return;
+	var width = tooltipEl.offsetWidth;
+	var height = tooltipEl.offsetHeight;
+	var vw = window.innerWidth;
+	var vh = window.innerHeight;
+
+	var left = clientX + offset;
+	if (left + width > vw) left = clientX - width - offset;
+
+	var top = clientY + offset;
+	if (top + height > vh) top = clientY - height - offset;
+
+	tooltipEl.style.left = Math.max(4, Math.min(left, vw - width - 4)) + 'px';
+	tooltipEl.style.top = Math.max(4, Math.min(top, vh - height - 4)) + 'px';
+}
+
 var cy;
 var statusEl;
 var tooltipEl;
 var nodeStats;
-var progressEl;
-var progressFillEl;
-var progressLabelEl;
+var pipelineProgressEl;
+var pipelineProgressFillEl;
+var pipelineProgressLabelEl;
+var pipelineProgressCancelEl;
 var hasRenderedOnce = false;
 var lastSeenVersion = 0;
 
@@ -59,18 +81,20 @@ function hideStatus() {
 	}
 }
 
-/** Updates the progress bar below the stats bar with an "embedding N/M notes" state. */
-function showProgress(current, total) {
-	if (!progressEl || !progressFillEl || !progressLabelEl) return;
-	progressEl.style.display = '';
+function showPipelineProgress(label, current, total) {
+	if (!pipelineProgressEl || !pipelineProgressFillEl || !pipelineProgressLabelEl) return;
+	pipelineProgressEl.style.display = 'inline-flex';
 	var pct = total > 0 ? Math.round((current / total) * 100) : 0;
-	progressFillEl.style.width = pct + '%';
-	progressLabelEl.textContent = 'Embedding notes: ' + current + '/' + total;
+	pipelineProgressFillEl.style.width = pct + '%';
+	pipelineProgressLabelEl.textContent = label;
+	if (pipelineProgressCancelEl) {
+		pipelineProgressCancelEl.disabled = false;
+	}
 }
 
-function hideProgress() {
-	if (progressEl) {
-		progressEl.style.display = 'none';
+function hidePipelineProgress() {
+	if (pipelineProgressEl) {
+		pipelineProgressEl.style.display = 'none';
 	}
 }
 
@@ -204,6 +228,28 @@ function onNodeDblClick(evt) {
 	});
 }
 
+function registerEdgeTooltip(selector, className, resolveText) {
+	cy.on('mouseover', selector, function (evt) {
+		var value = resolveText(evt.target);
+		if (!value || !tooltipEl) return;
+		tooltipEl.className = 'graph-tooltip';
+		tooltipEl.innerHTML = '<div class="graph-tooltip__value">' + escapeHtml(value) + '</div>';
+		tooltipEl.classList.add(className);
+		tooltipEl.classList.add('is-visible');
+		positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 12);
+	});
+
+	cy.on('mousemove', selector, function (evt) {
+		positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 12);
+	});
+
+	cy.on('mouseout', selector, function () {
+		if (!tooltipEl) return;
+		tooltipEl.classList.remove('is-visible');
+		tooltipEl.classList.remove(className);
+	});
+}
+
 function recomputeStats() {
 	nodeStats = {};
 	var explicitCount = 0;
@@ -239,11 +285,21 @@ function recomputeStats() {
 	updateStats(cy.nodes().length, explicitCount, semanticCount, totalTags);
 }
 
+/** Mirrors LouvainDetector.MIN_NOTES_FOR_LOUVAIN — below this, the graph has too few notes for meaningful structure. */
+var NEAR_EMPTY_NOTE_THRESHOLD = 3;
+
+function noteCountLabel(count) {
+	return count + (count === 1 ? ' note' : ' notes');
+}
+
 function refreshEmptyStateStatus() {
-	if (cy.nodes().length === 0) {
+	var noteCount = cy.nodes().length;
+	if (noteCount === 0) {
 		showStatus('No graph data received');
+	} else if (noteCount < NEAR_EMPTY_NOTE_THRESHOLD) {
+		showStatus('Only ' + noteCountLabel(noteCount) + ' found. Add more notes to see a meaningful graph.');
 	} else if (cy.edges().length === 0) {
-		showStatus(cy.nodes().length + ' notes, 0 connections');
+		showStatus(noteCountLabel(noteCount) + ', 0 connections');
 	} else {
 		hideStatus();
 	}
@@ -275,6 +331,7 @@ function renderGraph(message) {
 function upsertElement(data) {
 	var existing = cy.getElementById(data.id);
 	if (existing && existing.length) {
+		existing.removeData();
 		existing.data(data);
 	} else {
 		cy.add({ data: data });
@@ -338,13 +395,19 @@ function applyGraphPatch(patch) {
 	refreshEmptyStateStatus();
 }
 
+function definedKeys(obj) {
+	return Object.keys(obj).filter(function (key) {
+		return obj[key] !== undefined;
+	});
+}
+
 function dataEqual(existingEle, data) {
 	if (!existingEle || !existingEle.length) return false;
 	var existing = existingEle.data();
-	var existingKeys = Object.keys(existing);
-	var newKeys = Object.keys(data);
-	if (existingKeys.length !== newKeys.length) return false;
-	return existingKeys.every(function (key) {
+	var keys = {};
+	definedKeys(existing).forEach(function (key) { keys[key] = true; });
+	definedKeys(data).forEach(function (key) { keys[key] = true; });
+	return Object.keys(keys).every(function (key) {
 		return existing[key] === data[key];
 	});
 }
@@ -473,8 +536,13 @@ function requestData() {
 		.postMessage({ type: 'request-data', version: lastSeenVersion })
 		.then(function (response) {
 			if (response && response.type === 'graph-data') {
-				hideProgress();
 				handleGraphUpdate('graph-data', response);
+			}
+			if (response && response.progress) {
+				var label = response.progress.stage === 'enrichment-progress' ? 'Enriching notes' : 'Building graph';
+				showPipelineProgress(label, response.progress.current, response.progress.total);
+			} else {
+				hidePipelineProgress();
 			}
 		})
 		.catch(function (e) {
@@ -521,9 +589,20 @@ function init() {
 		statusEl.style.display = '';
 	}
 
-	progressEl = document.getElementById('analysis-progress');
-	progressFillEl = document.getElementById('analysis-progress-fill');
-	progressLabelEl = document.getElementById('analysis-progress-label');
+	pipelineProgressEl = document.getElementById('pipeline-progress');
+	pipelineProgressFillEl = document.getElementById('pipeline-progress-fill');
+	pipelineProgressLabelEl = document.getElementById('pipeline-progress-label');
+	pipelineProgressCancelEl = document.getElementById('pipeline-progress-cancel');
+	if (pipelineProgressCancelEl) {
+		pipelineProgressCancelEl.addEventListener('click', function () {
+			pipelineProgressCancelEl.disabled = true;
+			if (typeof webviewApi !== 'undefined') {
+				webviewApi.postMessage({ type: 'cancel-analysis' }).catch(function (e) {
+					console.error('Note Graph cancel failed:', e);
+				});
+			}
+		});
+	}
 
 	tooltipEl = document.createElement('div');
 	tooltipEl.className = 'graph-tooltip';
@@ -559,25 +638,11 @@ function init() {
 			});
 		}
 
-		cy.on('mouseover', 'edge[type="tag"]', function (evt) {
-			var edge = evt.target;
-			var tagName = edge.data('tagName');
-			if (!tagName || !tooltipEl) return;
-			tooltipEl.textContent = tagName;
-			tooltipEl.classList.add('graph-tooltip--tag');
-			tooltipEl.style.display = 'block';
+		registerEdgeTooltip('edge[type="tag"]', 'graph-tooltip--tag', function (edge) {
+			return edge.data('tagName');
 		});
-
-		cy.on('mousemove', 'edge[type="tag"]', function (evt) {
-			if (!tooltipEl) return;
-			tooltipEl.style.left = (evt.originalEvent.clientX + 12) + 'px';
-			tooltipEl.style.top = (evt.originalEvent.clientY + 12) + 'px';
-		});
-
-		cy.on('mouseout', 'edge[type="tag"]', function () {
-			if (!tooltipEl) return;
-			tooltipEl.style.display = 'none';
-			tooltipEl.classList.remove('graph-tooltip--tag');
+		registerEdgeTooltip('edge[type="semantic"]', 'graph-tooltip--relationship', function (edge) {
+			return edge.data('relationshipLabel');
 		});
 
 		cy.on('mouseover', 'node', function (evt) {
@@ -586,25 +651,33 @@ function init() {
 			var id = node.id();
 			var degree = node.data('degree') || 0;
 			var community = node.data('community') || 0;
+			var category = node.data('category');
 			var stats = nodeStats && nodeStats[id] ? nodeStats[id] : { linkCount: 0, tagCount: 0 };
-			var safeLabel = label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-			tooltipEl.innerHTML = '<div class="graph-tooltip__title">' + safeLabel + '</div>'
-				+ '<div class="graph-tooltip__row"><span>Degree</span><strong>' + degree + '</strong></div>'
-				+ '<div class="graph-tooltip__row"><span>Links</span><strong>' + stats.linkCount + '</strong></div>'
-				+ '<div class="graph-tooltip__row"><span>Tags</span><strong>' + stats.tagCount + '</strong></div>'
-				+ '<div class="graph-tooltip__row"><span>Community</span><strong>' + community + '</strong></div>';
-			tooltipEl.style.display = 'block';
+			var badge = category ? '<div class="graph-tooltip__badge">' + escapeHtml(category) + '</div>' : '';
+			tooltipEl.className = 'graph-tooltip';
+			tooltipEl.innerHTML = '<div class="graph-tooltip__title">' + escapeHtml(label) + '</div>'
+				+ badge
+				+ '<div class="graph-tooltip__stats">'
+				+ '<span class="graph-tooltip__stat">degree <strong>' + degree + '</strong></span>'
+				+ '<span class="graph-tooltip__sep"></span>'
+				+ '<span class="graph-tooltip__stat">links <strong>' + stats.linkCount + '</strong></span>'
+				+ '</div>'
+				+ '<div class="graph-tooltip__stats">'
+				+ '<span class="graph-tooltip__stat">tags <strong>' + stats.tagCount + '</strong></span>'
+				+ '<span class="graph-tooltip__sep"></span>'
+				+ '<span class="graph-tooltip__stat">community <strong>' + community + '</strong></span>'
+				+ '</div>';
+			tooltipEl.classList.add('is-visible');
+			positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 14);
 		});
 
 		cy.on('mousemove', 'node', function (evt) {
-			if (!tooltipEl) return;
-			tooltipEl.style.left = (evt.originalEvent.clientX + 14) + 'px';
-			tooltipEl.style.top = (evt.originalEvent.clientY + 14) + 'px';
+			positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 14);
 		});
 
 		cy.on('mouseout', 'node', function () {
 			if (!tooltipEl) return;
-			tooltipEl.style.display = 'none';
+			tooltipEl.classList.remove('is-visible');
 		});
 
 		cy.on('tap', function (evt) {
@@ -715,22 +788,23 @@ function init() {
 		if (typeof webviewApi !== 'undefined') {
 			webviewApi.onMessage(function (message) {
 				if (message && message.type === 'graph-data') {
-					hideProgress();
+					hidePipelineProgress();
 					handleGraphUpdate('graph-data', message);
 				}
 				if (message && message.type === 'graph-patch') {
-					hideProgress();
+					hidePipelineProgress();
 					handleGraphUpdate('graph-patch', message);
 				}
 				if (message && message.type === 'fit-to-screen') {
 					cy.fit(undefined, 30);
 				}
 				if (message && message.type === 'status' && message.text) {
-					hideProgress();
+					hidePipelineProgress();
 					showStatus(message.text);
 				}
 				if (message && message.type === 'progress') {
-					showProgress(message.current, message.total);
+					var label = message.stage === 'enrichment-progress' ? 'Enriching notes' : 'Building graph';
+					showPipelineProgress(label, message.current, message.total);
 				}
 			});
 		}

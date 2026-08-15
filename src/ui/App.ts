@@ -2,7 +2,6 @@ import { renderHeader } from './components/Header';
 import { renderLegend } from './components/Legend';
 import { renderStatsBar } from './components/StatsBar';
 import { renderGraphControls } from './components/GraphControls';
-import { renderAnalysisProgress } from './components/AnalysisProgress';
 
 const renderPanelHtml = (): string => {
 	return `
@@ -10,7 +9,6 @@ const renderPanelHtml = (): string => {
 			${renderHeader()}
 			${renderLegend()}
 			${renderStatsBar()}
-			${renderAnalysisProgress()}
 			<div id="graph-container">
 				${renderGraphControls()}
 				<span id="graph-status">Loading graph...</span>

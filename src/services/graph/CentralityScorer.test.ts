@@ -1,4 +1,18 @@
-import { CentralityScorer } from './CentralityScorer';
+import { CentralityScorer, clampSize } from './CentralityScorer';
+
+describe('clampSize', () => {
+	it('leaves an in-range size unchanged', () => {
+		expect(clampSize(5)).toBe(5);
+	});
+
+	it('clamps a size above the maximum down to 10', () => {
+		expect(clampSize(999)).toBe(10);
+	});
+
+	it('clamps a size below the minimum up to 1', () => {
+		expect(clampSize(-5)).toBe(1);
+	});
+});
 
 describe('CentralityScorer', () => {
 	let scorer: CentralityScorer;

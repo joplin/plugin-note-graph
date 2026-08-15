@@ -105,6 +105,7 @@ body {
 
 .legend-panel__row {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	justify-content: space-between;
 	gap: 10px;
@@ -279,8 +280,9 @@ body {
 
 .stats-bar {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 8px;
+	gap: 8px 8px;
 	padding: 5px 16px;
 	width: 100%;
 	box-sizing: border-box;
@@ -314,41 +316,84 @@ body {
 	flex-shrink: 0;
 }
 
-/* Analysis progress bar */
-
-.analysis-progress {
-	display: flex;
+.pipeline-progress {
+	display: inline-flex;
 	align-items: center;
-	gap: 10px;
-	padding: 6px 16px;
-	width: 100%;
-	box-sizing: border-box;
-	flex-shrink: 0;
-	background: rgba(91, 155, 213, 0.07);
-	border-bottom: 1px solid rgba(128, 128, 128, 0.10);
-	font-size: 11px;
-	color: var(--joplin-color-faded, #888);
+	gap: 6px;
+	margin-left: auto;
+	padding-left: 10px;
 }
 
-.analysis-progress__track {
-	flex: 1 1 auto;
+.pipeline-progress__spinner {
+	width: 9px;
+	height: 9px;
+	flex-shrink: 0;
+	border-radius: 50%;
+	border: 1.5px solid rgba(91, 155, 213, 0.25);
+	border-top-color: #5b9bd5;
+	animation: pipeline-progress-spin 0.7s linear infinite;
+}
+
+@keyframes pipeline-progress-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+.pipeline-progress__track {
+	width: 90px;
 	height: 5px;
+	flex-shrink: 0;
 	border-radius: 3px;
-	background: rgba(128, 128, 128, 0.2);
+	background: rgba(91, 155, 213, 0.18);
 	overflow: hidden;
 }
 
-.analysis-progress__fill {
+.pipeline-progress__fill {
+	display: block;
 	height: 100%;
 	width: 0%;
 	background: #5b9bd5;
 	border-radius: 3px;
-	transition: width 0.2s ease-out;
+	transition: width 0.25s ease-out;
 }
 
-.analysis-progress__label {
+.pipeline-progress__label {
 	flex-shrink: 0;
-	font-variant-numeric: tabular-nums;
+	color: var(--joplin-color, #333);
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.pipeline-progress__cancel-btn {
+	flex-shrink: 0;
+	background-color: transparent;
+	border: none;
+	border-radius: 6px;
+	color: var(--joplin-color);
+	cursor: pointer;
+	padding: 3px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	opacity: 0.65;
+	transition: opacity 0.15s, background 0.15s;
+}
+
+.pipeline-progress__cancel-btn:hover:not([disabled]) {
+	opacity: 1;
+	background: rgba(128, 128, 128, 0.12);
+}
+
+.pipeline-progress__cancel-btn svg {
+	width: 12px;
+	height: 12px;
+	display: block;
+}
+
+.pipeline-progress__cancel-btn[disabled] {
+	opacity: 0.35;
+	cursor: default;
 }
 
 /* Graph container */
@@ -368,57 +413,139 @@ body {
 	color: var(--joplin-color-faded, #888);
 	font-size: 13px;
 	z-index: 1;
+	max-width: 320px;
+	text-align: center;
 }
 
 /* Tooltip */
 
 .graph-tooltip {
-	display: none;
 	position: fixed;
+	opacity: 0;
+	visibility: hidden;
+	transform: translateY(3px) scale(0.97);
+	transition: opacity 0.12s ease, transform 0.12s ease;
 	background: var(--joplin-background-color, #1e1e1e);
+	background: color-mix(in srgb, var(--joplin-background-color, #1e1e1e) 90%, transparent);
 	color: var(--joplin-color, #ddd);
-	padding: 10px 14px;
-	border-radius: 6px;
+	padding: 8px 12px;
+	border-radius: 10px;
 	font-size: 12px;
 	pointer-events: none;
 	z-index: 1000;
-	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 16px 32px -12px rgba(0, 0, 0, 0.32);
 	font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-	border: 1px solid rgba(128, 128, 128, 0.25);
-	line-height: 1.6;
-	max-width: 240px;
+	border: 1px solid rgba(128, 128, 128, 0.22);
+	border-color: color-mix(in srgb, var(--joplin-color, #888) 14%, transparent);
+	line-height: 1.35;
+	max-width: 220px;
 	white-space: normal;
-	backdrop-filter: blur(12px);
+	backdrop-filter: blur(16px);
+	-webkit-backdrop-filter: blur(16px);
+}
+
+.graph-tooltip.is-visible {
+	opacity: 1;
+	visibility: visible;
+	transform: translateY(0) scale(1);
 }
 
 .graph-tooltip__title {
 	font-weight: 600;
-	font-size: 12px;
-	margin-bottom: 6px;
+	font-size: 12.5px;
 	color: var(--joplin-color, #ddd);
+	letter-spacing: -0.01em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	margin-bottom: 4px;
 }
 
-.graph-tooltip__row {
+.graph-tooltip__badge {
+	display: inline-block;
+	max-width: 100%;
+	box-sizing: border-box;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 10px;
+	font-weight: 600;
+	padding: 2px 8px;
+	border-radius: 6px;
+	background: rgba(155, 107, 213, 0.14);
+	background: color-mix(in srgb, #9b6bd5 14%, transparent);
+	border: 1px solid rgba(155, 107, 213, 0.32);
+	border-color: color-mix(in srgb, #9b6bd5 32%, transparent);
+	color: #9b6bd5;
+	color: color-mix(in srgb, #9b6bd5 78%, var(--joplin-color, #ddd));
+	margin-bottom: 6px;
+}
+
+.graph-tooltip__stats {
 	display: flex;
-	justify-content: space-between;
-	gap: 14px;
-	color: var(--joplin-color-faded, #aaa);
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
 	font-size: 11px;
+	color: var(--joplin-color-faded, #aaa);
 }
 
-.graph-tooltip__row strong {
+.graph-tooltip__stats + .graph-tooltip__stats {
+	margin-top: 3px;
+}
+
+.graph-tooltip__stat {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	white-space: nowrap;
+}
+
+.graph-tooltip__stat strong {
 	color: var(--joplin-color, #ddd);
 	font-weight: 600;
 }
 
-.graph-tooltip--tag {
-	padding: 5px 10px;
+.graph-tooltip__sep {
+	width: 1px;
+	height: 9px;
+	background: rgba(128, 128, 128, 0.25);
+	flex-shrink: 0;
+}
+
+.graph-tooltip--tag,
+.graph-tooltip--relationship {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 3px;
+	padding: 7px 12px;
 	font-size: 11px;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.10);
-	border-color: rgba(128, 128, 128, 0.08);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 10px 24px -12px rgba(0, 0, 0, 0.28);
 	line-height: 1.3;
-	max-width: 160px;
-	color: var(--joplin-color-faded, #aaa);
+	border-left-width: 3px;
+	border-left-style: solid;
+}
+
+.graph-tooltip--tag {
+	max-width: 200px;
+}
+
+.graph-tooltip--relationship {
+	max-width: 280px;
+}
+
+.graph-tooltip__value {
+	font-size: 12px;
+	color: var(--joplin-color, #ddd);
+}
+
+.graph-tooltip--tag {
+	border-left-color: #4caf7d;
+}
+
+.graph-tooltip--relationship {
+	border-left-color: #9b6bd5;
 }
 
 /* Zoom controls */
