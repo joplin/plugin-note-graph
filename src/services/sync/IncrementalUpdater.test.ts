@@ -6,6 +6,7 @@ import { NotePreprocessor } from '../../data/NotePreprocessor';
 import { EventsRepository } from '../../data/EventsRepository';
 import { GraphCacheRepository } from '../../data/Database/GraphCacheRepository';
 import { Note } from '../../data/Types';
+import { ResolvedScope } from '../settings/NoteScopeResolver';
 
 jest.mock('../AnalysisController');
 jest.mock('../../data/NoteRepository');
@@ -17,7 +18,9 @@ const MockAnalysisController = AnalysisController as jest.MockedClass<typeof Ana
 const MockNoteRepository = NoteRepository as jest.MockedClass<typeof NoteRepository>;
 const MockPreprocessor = NotePreprocessor as jest.MockedClass<typeof NotePreprocessor>;
 const MockEventsRepository = EventsRepository as jest.MockedClass<typeof EventsRepository>;
-const MockGraphCacheRepository = GraphCacheRepository as jest.MockedClass<typeof GraphCacheRepository>;
+const MockGraphCacheRepository = GraphCacheRepository as jest.MockedClass<
+	typeof GraphCacheRepository
+>;
 
 const COALESCE_WINDOW_MS = 1000;
 
@@ -48,6 +51,7 @@ describe('IncrementalUpdater', () => {
 	let onFullReloadNeeded: jest.Mock;
 	let checkAiEnabled: jest.Mock<Promise<boolean>, []>;
 	let onRetriesExhausted: jest.Mock;
+	let getCurrentScope: jest.Mock<ResolvedScope, []>;
 	let ai: { getIndexStatus: jest.Mock; getEmbeddings: jest.Mock };
 	let updater: IncrementalUpdater;
 
@@ -84,6 +88,7 @@ describe('IncrementalUpdater', () => {
 		onFullReloadNeeded = jest.fn().mockResolvedValue(undefined);
 		checkAiEnabled = jest.fn().mockResolvedValue(false);
 		onRetriesExhausted = jest.fn();
+		getCurrentScope = jest.fn().mockReturnValue({ folderIds: null, scopeKey: 'all' });
 
 		ai = joplin.ai as unknown as { getIndexStatus: jest.Mock; getEmbeddings: jest.Mock };
 		ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' });
@@ -104,7 +109,9 @@ describe('IncrementalUpdater', () => {
 			graphCache,
 			COALESCE_WINDOW_MS,
 			checkAiEnabled,
-			onRetriesExhausted
+			onRetriesExhausted,
+			Date.now,
+			getCurrentScope
 		);
 	});
 
@@ -134,7 +141,9 @@ describe('IncrementalUpdater', () => {
 			updater.handleNoteChange({ id: 'a', event: 1 });
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
-			expect(consoleInfoSpy).toHaveBeenCalledWith('Incremental update applied: 1 upserted, 0 removed.');
+			expect(consoleInfoSpy).toHaveBeenCalledWith(
+				'Incremental update applied: 1 upserted, 0 removed.'
+			);
 			consoleInfoSpy.mockRestore();
 		});
 
@@ -189,7 +198,9 @@ describe('IncrementalUpdater', () => {
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
 			expect(onGraphPatch).not.toHaveBeenCalled();
-			expect(consoleInfoSpy).not.toHaveBeenCalledWith(expect.stringContaining('Incremental update applied'));
+			expect(consoleInfoSpy).not.toHaveBeenCalledWith(
+				expect.stringContaining('Incremental update applied')
+			);
 			consoleInfoSpy.mockRestore();
 		});
 
@@ -310,6 +321,36 @@ describe('IncrementalUpdater', () => {
 			expect(analysisController.applyDelta).toHaveBeenCalledWith([], ['a']);
 		});
 
+		it('treats an edited note outside the configured scope as a removal instead of leaking it in', async () => {
+			getCurrentScope.mockReturnValue({
+				folderIds: new Set(['scoped-folder']),
+				scopeKey: 'current:scoped-folder',
+			});
+			noteRepository.getNote.mockResolvedValue({ ...note('a'), parent_id: 'other-folder' });
+
+			updater.handleNoteChange({ id: 'a', event: 2 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(preprocessor.processOne).not.toHaveBeenCalled();
+			expect(analysisController.applyDelta).toHaveBeenCalledWith([], ['a']);
+		});
+
+		it('upserts an edited note that is inside the configured scope', async () => {
+			getCurrentScope.mockReturnValue({
+				folderIds: new Set(['scoped-folder']),
+				scopeKey: 'current:scoped-folder',
+			});
+			noteRepository.getNote.mockResolvedValue({ ...note('a'), parent_id: 'scoped-folder' });
+
+			updater.handleNoteChange({ id: 'a', event: 2 });
+			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
+
+			expect(analysisController.applyDelta).toHaveBeenCalledWith(
+				[{ ...note('a'), parent_id: 'scoped-folder' }],
+				[]
+			);
+		});
+
 		it('falls back to a full reload if the debounced flush fails to fetch the changed note', async () => {
 			noteRepository.getNote.mockRejectedValue(new Error('network error'));
 
@@ -321,7 +362,9 @@ describe('IncrementalUpdater', () => {
 		});
 
 		it('logs and requeues the delta when the full-reload fallback itself also fails, instead of dropping it silently', async () => {
-			const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+			const consoleErrorSpy = jest
+				.spyOn(console, 'error')
+				.mockImplementation(() => undefined);
 			noteRepository.getNote.mockRejectedValue(new Error('network error'));
 			onFullReloadNeeded.mockRejectedValueOnce(new Error('reload also failed'));
 
@@ -346,7 +389,9 @@ describe('IncrementalUpdater', () => {
 		});
 
 		it('does not auto-reschedule after a double failure, but a later sync sweep still picks up the requeued id', async () => {
-			const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+			const consoleErrorSpy = jest
+				.spyOn(console, 'error')
+				.mockImplementation(() => undefined);
 			noteRepository.getNote.mockRejectedValue(new Error('network error'));
 			onFullReloadNeeded.mockRejectedValueOnce(new Error('reload also failed'));
 
@@ -369,7 +414,9 @@ describe('IncrementalUpdater', () => {
 			noteRepository.getNote.mockResolvedValue(note('a'));
 			const enrichedGraphData = { nodes: [], edges: [] };
 			analysisController.enrichCurrentGraph.mockResolvedValue(enrichedGraphData);
-			analysisController.getLastDiff.mockReturnValueOnce(fakeDiff).mockReturnValueOnce(fakeDiff);
+			analysisController.getLastDiff
+				.mockReturnValueOnce(fakeDiff)
+				.mockReturnValueOnce(fakeDiff);
 
 			updater.handleNoteChange({ id: 'a', event: 1 });
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
@@ -416,7 +463,10 @@ describe('IncrementalUpdater', () => {
 		});
 
 		it('sweeps with no cursor on the first-ever call and persists the returned baseline', async () => {
-			eventsRepository.getNoteEventsSince.mockResolvedValue({ events: [], cursor: 'baseline-1' });
+			eventsRepository.getNoteEventsSince.mockResolvedValue({
+				events: [],
+				cursor: 'baseline-1',
+			});
 
 			await updater.handleSyncComplete();
 
@@ -426,7 +476,10 @@ describe('IncrementalUpdater', () => {
 
 		it('resumes from the persisted cursor on subsequent calls', async () => {
 			graphCache.loadEventsCursor.mockResolvedValue('cursor-1');
-			eventsRepository.getNoteEventsSince.mockResolvedValue({ events: [], cursor: 'cursor-2' });
+			eventsRepository.getNoteEventsSince.mockResolvedValue({
+				events: [],
+				cursor: 'cursor-2',
+			});
 
 			await updater.handleSyncComplete();
 
@@ -482,7 +535,10 @@ describe('IncrementalUpdater', () => {
 
 			await updater.handleSyncComplete();
 
-			expect(ai.getEmbeddings).toHaveBeenCalledWith({ cursor: 'embeddings-cursor-1', limit: 1000 });
+			expect(ai.getEmbeddings).toHaveBeenCalledWith({
+				cursor: 'embeddings-cursor-1',
+				limit: 1000,
+			});
 			expect(graphCache.saveEmbeddingsCursor).toHaveBeenCalledWith('embeddings-cursor-1');
 			expect(analysisController.applyDelta).toHaveBeenCalledWith([note('a')], []);
 		});
@@ -547,7 +603,11 @@ describe('IncrementalUpdater', () => {
 		});
 
 		it('falls back to /events upserts for this sync when the embeddings sweep fails, without a full reload', async () => {
-			ai.getIndexStatus.mockResolvedValue({ ready: false, state: 'preparing', modelId: null });
+			ai.getIndexStatus.mockResolvedValue({
+				ready: false,
+				state: 'preparing',
+				modelId: null,
+			});
 			eventsRepository.getNoteEventsSince.mockResolvedValue({
 				events: [{ noteId: 'a', type: 'updated' }],
 				cursor: 'events-cursor-2',
@@ -562,12 +622,64 @@ describe('IncrementalUpdater', () => {
 		});
 
 		it('still falls back to a full reload if the /events sweep itself also fails', async () => {
-			ai.getIndexStatus.mockResolvedValue({ ready: false, state: 'preparing', modelId: null });
+			ai.getIndexStatus.mockResolvedValue({
+				ready: false,
+				state: 'preparing',
+				modelId: null,
+			});
 			eventsRepository.getNoteEventsSince.mockRejectedValue(new Error('network error'));
 
 			await updater.handleSyncComplete();
 
 			expect(onFullReloadNeeded).toHaveBeenCalledTimes(1);
+		});
+
+		it('throttles the embeddings sweep to at most once per 5 minutes, falling back to /events in between', async () => {
+			let now = 10 * 60 * 1000;
+			const throttledUpdater = new IncrementalUpdater(
+				analysisController,
+				onGraphPatch,
+				onFullReloadNeeded,
+				noteRepository,
+				preprocessor,
+				eventsRepository,
+				graphCache,
+				COALESCE_WINDOW_MS,
+				checkAiEnabled,
+				onRetriesExhausted,
+				() => now,
+				getCurrentScope
+			);
+			ai.getEmbeddings.mockResolvedValue({
+				modelId: 'test-model',
+				dimension: 2,
+				chunks: [{ noteId: 'embed-note', vector: [1, 0] }],
+				nextCursor: undefined,
+			});
+			eventsRepository.getNoteEventsSince.mockResolvedValue({
+				events: [{ noteId: 'events-note', type: 'updated' }],
+				cursor: 'events-cursor-1',
+			});
+			noteRepository.getNote.mockImplementation(async (id) => note(id));
+
+			await throttledUpdater.handleSyncComplete();
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(1);
+			expect(analysisController.applyDelta).toHaveBeenLastCalledWith(
+				[note('embed-note')],
+				[]
+			);
+
+			now += 60 * 1000;
+			await throttledUpdater.handleSyncComplete();
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(1);
+			expect(analysisController.applyDelta).toHaveBeenLastCalledWith(
+				[note('events-note')],
+				[]
+			);
+
+			now += 5 * 60 * 1000;
+			await throttledUpdater.handleSyncComplete();
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(2);
 		});
 	});
 
@@ -616,7 +728,7 @@ describe('IncrementalUpdater', () => {
 			expect(analysisController.applyDelta).toHaveBeenCalledTimes(2);
 		});
 
-		it('applies a second flush\'s Pass A patch without waiting for an earlier flush\'s slow Pass B enrichment', async () => {
+		it("applies a second flush's Pass A patch without waiting for an earlier flush's slow Pass B enrichment", async () => {
 			noteRepository.getNote.mockImplementation(async (id) => note(id));
 			let resolveFirstEnrich: (value: unknown) => void = () => undefined;
 			let enrichCalls = 0;

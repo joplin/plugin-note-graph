@@ -4,13 +4,17 @@ import { GraphData, GraphNode, RenderedEdge } from './graph/types';
 import { GraphDiffer, GraphDiff } from './graph/GraphDiffer';
 import { clampSize } from './graph/CentralityScorer';
 import { VectorRepository } from '../data/Database/VectorRepository';
-import { GraphCacheRepository } from '../data/Database/GraphCacheRepository';
+import { GraphCacheRepository, PersistedEnrichment } from '../data/Database/GraphCacheRepository';
 import { ProviderResolver } from './embeddings/ProviderResolver';
 import { EmbeddingOrchestrator } from './embeddings/Orchestrator';
 import { EmbeddedNote, EmbeddingProvider, BatchProgress } from './embeddings/Types';
 import { LLMEnricher, EnrichmentNodeInput, EnrichmentEdgeInput, EnrichmentProgress, EnrichmentResult, CacheSeed } from './llm/LLMEnricher';
 import { NodeEnrichment, EdgeEnrichment } from './llm/ResponseParser';
-import { isAiAnalysisEnabled, isLlmEnrichmentEnabled, getSimilaritySettings } from './settings/GraphSettings';
+import {
+	isAiAnalysisEnabled,
+	isLlmEnrichmentEnabled,
+	getSimilaritySettings,
+} from './settings/GraphSettings';
 
 export interface SemanticBuildResult {
 	graphData: GraphData;
@@ -33,7 +37,8 @@ export class AnalysisController {
 	private cancelledAtToken: number | null = null;
 	private lastDeltaSkippedForRetry = false;
 	private currentOrchestrator: EmbeddingOrchestrator | null = null;
-	private enrichmentInFlight = false;
+	private enrichmentInFlight: Promise<GraphData | null> | null = null;
+	private currentScopeKey = 'all';
 
 	public constructor(
 		private readonly builder = new GraphBuilder(),
@@ -81,6 +86,10 @@ export class AnalysisController {
 		return this.lastNotes ?? [];
 	}
 
+	public setScopeKey(scopeKey: string): void {
+		this.currentScopeKey = scopeKey;
+	}
+
 	public async loadFromCache(): Promise<GraphData | null> {
 		try {
 			const cached = await this.graphCache.loadGraph();
@@ -95,6 +104,44 @@ export class AnalysisController {
 		}
 	}
 
+	public async seedEnrichmentFromStore(): Promise<void> {
+		try {
+			const records = await this.graphCache.loadEnrichments();
+			const nodeSeeds: CacheSeed<NodeEnrichment>[] = [];
+			const edgeSeeds: CacheSeed<EdgeEnrichment>[] = [];
+			for (const record of records) {
+				if (record.kind === 'node') {
+					nodeSeeds.push({
+						id: record.id,
+						updatedTime: record.updatedTime,
+						enrichment: record.enrichment as unknown as NodeEnrichment,
+					});
+				} else {
+					edgeSeeds.push({
+						id: record.id,
+						updatedTime: record.updatedTime,
+						enrichment: record.enrichment as unknown as EdgeEnrichment,
+					});
+				}
+			}
+			this.enrichmentService.seedCache(nodeSeeds, edgeSeeds);
+		} catch (e) {
+			console.error('Failed to seed LLM enrichment cache from disk:', e);
+		}
+	}
+
+	public async migrateCachedEnrichment(): Promise<void> {
+		try {
+			const cached = await this.graphCache.loadGraph();
+			if (!cached) return;
+			const records = this.buildEnrichmentRecords(cached.notes, cached.graphData);
+			if (records.length === 0) return;
+			await this.graphCache.saveEnrichments(records);
+		} catch (e) {
+			console.error('Failed to migrate cached LLM enrichment:', e);
+		}
+	}
+
 	private seedEnrichmentCache(notes: Note[], graphData: GraphData): void {
 		const noteById = new Map(notes.map((note) => [note.id, note]));
 
@@ -103,12 +150,17 @@ export class AnalysisController {
 			if (node.data.category === undefined) continue;
 			const note = noteById.get(node.data.id);
 			if (!note) continue;
-			nodeSeeds.push({ id: node.data.id, updatedTime: note.updated_time, enrichment: { category: node.data.category } });
+			nodeSeeds.push({
+				id: node.data.id,
+				updatedTime: note.updated_time,
+				enrichment: { category: node.data.category },
+			});
 		}
 
 		const edgeSeeds: CacheSeed<EdgeEnrichment>[] = [];
 		for (const edge of graphData.edges) {
-			if (edge.data.type !== 'semantic' || edge.data.relationshipLabel === undefined) continue;
+			if (edge.data.type !== 'semantic' || edge.data.relationshipLabel === undefined)
+				continue;
 			const source = noteById.get(edge.data.source);
 			const target = noteById.get(edge.data.target);
 			if (!source || !target) continue;
@@ -151,6 +203,7 @@ export class AnalysisController {
 		return this.buildFrom(notes, token, {
 			onProgress: guardedProgress,
 			commitNotes: true,
+			avoidSemanticDowngrade: true,
 		});
 	}
 
@@ -164,7 +217,10 @@ export class AnalysisController {
 		}
 	): Promise<SemanticBuildResult | null> {
 		const hadSemanticGraph = this.hasSemanticEdges();
-		const { embeddedNotes, reason, aiWasEnabled } = await this.tryEmbed(notes, options.onProgress);
+		const { embeddedNotes, reason, aiWasEnabled } = await this.tryEmbed(
+			notes,
+			options.onProgress
+		);
 		if (this.isStale(token, options.avoidSemanticDowngrade)) return null;
 
 		if (!embeddedNotes) {
@@ -243,7 +299,12 @@ export class AnalysisController {
 		onProgress?: (progress: EnrichmentProgress) => void
 	): Promise<GraphData | null> {
 		if (!this.lastGraphData || !this.lastNotes) return null;
-		if (this.enrichmentInFlight) return null;
+
+		const inFlight = this.enrichmentInFlight;
+		if (inFlight) {
+			await inFlight;
+			return this.enrichCurrentGraph(onProgress);
+		}
 
 		const token = this.runToken;
 		if (token === this.cancelledAtToken) return null;
@@ -251,20 +312,24 @@ export class AnalysisController {
 		const notes = this.lastNotes;
 		const guardedProgress = onProgress ? this.guardStaleProgress(token, onProgress) : undefined;
 
-		this.enrichmentInFlight = true;
-		let enriched: GraphData;
-		try {
-			enriched = await this.applyEnrichment(graphData, notes, token, guardedProgress);
-		} finally {
-			this.enrichmentInFlight = false;
-		}
+		const task = (async (): Promise<GraphData | null> => {
+			let enriched: GraphData;
+			try {
+				enriched = await this.applyEnrichment(graphData, notes, token, guardedProgress);
+			} finally {
+				this.enrichmentInFlight = null;
+			}
 
-		if (this.isStale(token) || enriched === graphData) {
-			return null;
-		}
+			if (this.isStale(token) || enriched === graphData) {
+				return null;
+			}
 
-		this.commitGraphData(enriched);
-		return enriched;
+			this.commitGraphData(enriched);
+			return enriched;
+		})();
+
+		this.enrichmentInFlight = task;
+		return task;
 	}
 
 	public async applyDelta(upserts: Note[], removedIds: string[]): Promise<GraphData | null> {
@@ -298,10 +363,71 @@ export class AnalysisController {
 		this.persistCache();
 	}
 
+	private persistNewEnrichments(newEntries: {
+		nodes: CacheSeed<NodeEnrichment>[];
+		edges: CacheSeed<EdgeEnrichment>[];
+	}): void {
+		const records: PersistedEnrichment[] = [];
+		for (const node of newEntries.nodes) {
+			records.push({
+				kind: 'node',
+				id: node.id,
+				updatedTime: node.updatedTime,
+				enrichment: node.enrichment as unknown as Record<string, unknown>,
+			});
+		}
+		for (const edge of newEntries.edges) {
+			records.push({
+				kind: 'edge',
+				id: edge.id,
+				updatedTime: edge.updatedTime,
+				enrichment: edge.enrichment as unknown as Record<string, unknown>,
+			});
+		}
+		if (records.length === 0) return;
+		this.graphCache.saveEnrichments(records).catch((e) => {
+			console.error('Failed to persist LLM enrichment cache:', e);
+		});
+	}
+
+	private buildEnrichmentRecords(notes: Note[], graphData: GraphData): PersistedEnrichment[] {
+		const noteById = new Map(notes.map((note) => [note.id, note]));
+
+		const records: PersistedEnrichment[] = [];
+		for (const node of graphData.nodes) {
+			if (node.data.category === undefined) continue;
+			const note = noteById.get(node.data.id);
+			if (!note) continue;
+			records.push({
+				kind: 'node',
+				id: node.data.id,
+				updatedTime: note.updated_time,
+				enrichment: { category: node.data.category },
+			});
+		}
+		for (const edge of graphData.edges) {
+			if (edge.data.type !== 'semantic' || edge.data.relationshipLabel === undefined)
+				continue;
+			const source = noteById.get(edge.data.source);
+			const target = noteById.get(edge.data.target);
+			if (!source || !target) continue;
+			records.push({
+				kind: 'edge',
+				id: edge.data.id,
+				updatedTime: Math.max(source.updated_time, target.updated_time),
+				enrichment: { relationshipLabel: edge.data.relationshipLabel },
+			});
+		}
+		return records;
+	}
+
 	private persistCache(): void {
 		if (!this.lastNotes || !this.lastGraphData) return;
 		this.graphCache.saveGraph(this.lastNotes, this.lastGraphData).catch((e) => {
 			console.error('Failed to persist graph cache:', e);
+		});
+		this.graphCache.saveScopeKey(this.currentScopeKey).catch((e) => {
+			console.error('Failed to persist graph cache scope key:', e);
 		});
 	}
 
@@ -344,7 +470,10 @@ export class AnalysisController {
 	}
 
 	/** Wraps a progress callback so it stops firing once a newer run supersedes `token` — otherwise a slow, superseded run could re-show the progress bar after a newer run already hid it by posting its finished graph. */
-	private guardStaleProgress<T>(token: number, onProgress: (progress: T) => void): (progress: T) => void {
+	private guardStaleProgress<T>(
+		token: number,
+		onProgress: (progress: T) => void
+	): (progress: T) => void {
 		return (progress) => {
 			if (token === this.runToken) {
 				onProgress(progress);
@@ -367,6 +496,7 @@ export class AnalysisController {
 				() => token !== this.runToken,
 				onProgress
 			);
+			this.persistNewEnrichments(this.enrichmentService.takeNewEnrichments());
 			if (enrichment.nodeEnrichments.size === 0 && enrichment.edgeEnrichments.size === 0) {
 				return graphData;
 			}

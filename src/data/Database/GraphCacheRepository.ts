@@ -21,6 +21,23 @@ const SYNC_STATE_SCHEMA = `
 	)
 `;
 
+const SCOPE_STATE_SCHEMA = `
+	CREATE TABLE IF NOT EXISTS scope_state (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		scope_key TEXT
+	)
+`;
+
+const ENRICHMENT_CACHE_SCHEMA = `
+	CREATE TABLE IF NOT EXISTS enrichment_cache (
+		kind TEXT NOT NULL,
+		id TEXT NOT NULL,
+		updated_time INTEGER NOT NULL,
+		enrichment_json TEXT NOT NULL,
+		PRIMARY KEY (kind, id)
+	)
+`;
+
 interface GraphCacheRow {
 	notes_json: string;
 	graph_json: string;
@@ -31,6 +48,24 @@ interface SyncStateRow {
 	embeddings_cursor: string | null;
 }
 
+interface ScopeStateRow {
+	scope_key: string | null;
+}
+
+interface EnrichmentCacheRow {
+	kind: string;
+	id: string;
+	updated_time: number;
+	enrichment_json: string;
+}
+
+export interface PersistedEnrichment {
+	kind: 'node' | 'edge';
+	id: string;
+	updatedTime: number;
+	enrichment: Record<string, unknown>;
+}
+
 export class GraphCacheRepository {
 	private writeLock: Promise<void> = Promise.resolve();
 
@@ -38,6 +73,8 @@ export class GraphCacheRepository {
 		private readonly db: IVectorDatabase = new VectorDatabase(DB_FILE_NAME, [
 			GRAPH_CACHE_SCHEMA,
 			SYNC_STATE_SCHEMA,
+			SCOPE_STATE_SCHEMA,
+			ENRICHMENT_CACHE_SCHEMA,
 		])
 	) {}
 
@@ -110,6 +147,79 @@ export class GraphCacheRepository {
 				 ON CONFLICT(id) DO UPDATE SET embeddings_cursor = excluded.embeddings_cursor`,
 				[cursor]
 			);
+		});
+	}
+
+	public async loadScopeKey(): Promise<string | null> {
+		await this.db.open();
+		const rows = await this.db.all<ScopeStateRow>(
+			'SELECT scope_key FROM scope_state WHERE id = 1',
+			[]
+		);
+		return rows[0]?.scope_key ?? null;
+	}
+
+	public saveScopeKey(scopeKey: string): Promise<void> {
+		return this.enqueueWrite(async () => {
+			await this.db.open();
+			await this.db.run(
+				`INSERT INTO scope_state (id, scope_key)
+				 VALUES (1, ?)
+				 ON CONFLICT(id) DO UPDATE SET scope_key = excluded.scope_key`,
+				[scopeKey]
+			);
+		});
+	}
+
+	public clearGraph(): Promise<void> {
+		return this.enqueueWrite(async () => {
+			await this.db.open();
+			await this.db.run('DELETE FROM graph_cache WHERE id = 1', []);
+		});
+	}
+
+	public async loadEnrichments(): Promise<PersistedEnrichment[]> {
+		await this.db.open();
+		const rows = await this.db.all<EnrichmentCacheRow>(
+			'SELECT kind, id, updated_time, enrichment_json FROM enrichment_cache',
+			[]
+		);
+		return rows.map((row) => ({
+			kind: row.kind === 'node' ? 'node' : 'edge',
+			id: row.id,
+			updatedTime: row.updated_time,
+			enrichment: JSON.parse(row.enrichment_json) as Record<string, unknown>,
+		}));
+	}
+
+	public saveEnrichments(records: PersistedEnrichment[]): Promise<void> {
+		if (records.length === 0) return Promise.resolve();
+		return this.enqueueWrite(async () => {
+			await this.db.open();
+			await this.db.run('BEGIN TRANSACTION', []);
+			try {
+				for (const record of records) {
+					await this.db.run(
+						`INSERT INTO enrichment_cache (kind, id, updated_time, enrichment_json)
+						 VALUES (?, ?, ?, ?)
+						 ON CONFLICT(kind, id) DO UPDATE SET
+							updated_time = excluded.updated_time,
+							enrichment_json = excluded.enrichment_json`,
+						[record.kind, record.id, record.updatedTime, JSON.stringify(record.enrichment)]
+					);
+				}
+				await this.db.run('COMMIT', []);
+			} catch (e) {
+				try {
+					await this.db.run('ROLLBACK', []);
+				} catch (rollbackError) {
+					console.error(
+						'Enrichment cache rollback failed after a write error:',
+						rollbackError
+					);
+				}
+				throw e;
+			}
 		});
 	}
 

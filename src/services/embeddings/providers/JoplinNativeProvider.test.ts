@@ -50,8 +50,10 @@ describe('JoplinNativeProvider', () => {
 		ai.getEmbeddings.mockRejectedValue(new Error('network error'));
 		const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
-		const rejection = expect(provider.fetchVectorsByNoteIds(['n2'])).rejects.toThrow('network error');
-		await jest.advanceTimersByTimeAsync(2000);
+		const rejection = expect(provider.fetchVectorsByNoteIds(['n2'])).rejects.toThrow(
+			'network error'
+		);
+		await jest.advanceTimersByTimeAsync(3000);
 		await rejection;
 
 		expect(provider.getFetchedModelId()).toBeNull();
@@ -76,7 +78,11 @@ describe('JoplinNativeProvider', () => {
 				getEmbeddings: jest.Mock;
 			};
 
-			ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' });
+			ai.getIndexStatus.mockResolvedValue({
+				ready: true,
+				state: 'ready',
+				modelId: 'test-model',
+			});
 			let calls = 0;
 			ai.getEmbeddings.mockImplementation(async () => {
 				calls++;
@@ -106,17 +112,107 @@ describe('JoplinNativeProvider', () => {
 				getEmbeddings: jest.Mock;
 			};
 
-			ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' });
+			ai.getIndexStatus.mockResolvedValue({
+				ready: true,
+				state: 'ready',
+				modelId: 'test-model',
+			});
 			ai.getEmbeddings.mockRejectedValue(new Error('network blip'));
 			const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
 			const resultPromise = provider.fetchVectorsByNoteIds(['n1']);
 			const rejection = expect(resultPromise).rejects.toThrow('network blip');
-			await jest.advanceTimersByTimeAsync(2000);
+			await jest.advanceTimersByTimeAsync(3000);
 			await rejection;
 
 			expect(ai.getEmbeddings).toHaveBeenCalledTimes(3);
-			expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('giving up'), expect.anything());
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining('giving up'),
+				expect.anything()
+			);
+			errorSpy.mockRestore();
+		});
+
+		it('backs off exponentially between page-fetch retries instead of a fixed delay', async () => {
+			const provider = new JoplinNativeProvider();
+			const ai = joplin.ai as unknown as {
+				getIndexStatus: jest.Mock;
+				getEmbeddings: jest.Mock;
+			};
+
+			ai.getIndexStatus.mockResolvedValue({
+				ready: true,
+				state: 'ready',
+				modelId: 'test-model',
+			});
+			ai.getEmbeddings.mockRejectedValue(new Error('network blip'));
+			const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+			const resultPromise = provider.fetchVectorsByNoteIds(['n1']);
+			const rejection = expect(resultPromise).rejects.toThrow('network blip');
+
+			await jest.advanceTimersByTimeAsync(999);
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(1);
+
+			await jest.advanceTimersByTimeAsync(1);
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(2);
+
+			await jest.advanceTimersByTimeAsync(1999);
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(2);
+
+			await jest.advanceTimersByTimeAsync(1);
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(3);
+
+			await rejection;
+			errorSpy.mockRestore();
+		});
+
+		it('retries a transient getIndexStatus() failure before giving up on the page fetch', async () => {
+			const provider = new JoplinNativeProvider();
+			const ai = joplin.ai as unknown as {
+				getIndexStatus: jest.Mock;
+				getEmbeddings: jest.Mock;
+			};
+
+			let statusCalls = 0;
+			ai.getIndexStatus.mockImplementation(async () => {
+				statusCalls++;
+				if (statusCalls === 1) throw new Error('rpc hiccup');
+				return { ready: true, state: 'ready', modelId: 'test-model' };
+			});
+			ai.getEmbeddings.mockResolvedValue({
+				modelId: 'test-model',
+				dimension: 2,
+				chunks: [{ noteId: 'n1', vector: [1, 0] }],
+				nextCursor: undefined,
+			});
+			const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+			const resultPromise = provider.fetchVectorsByNoteIds(['n1']);
+			await jest.advanceTimersByTimeAsync(1000);
+			const vectors = await resultPromise;
+
+			expect(ai.getIndexStatus).toHaveBeenCalledTimes(2);
+			expect(vectors.get('n1')).toEqual([1, 0]);
+			errorSpy.mockRestore();
+		});
+
+		it('gives up after exhausting every attempt for getIndexStatus()', async () => {
+			const provider = new JoplinNativeProvider();
+			const ai = joplin.ai as unknown as {
+				getIndexStatus: jest.Mock;
+				getEmbeddings: jest.Mock;
+			};
+
+			ai.getIndexStatus.mockRejectedValue(new Error('rpc down'));
+			const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+			const resultPromise = provider.fetchVectorsByNoteIds(['n1']);
+			const rejection = expect(resultPromise).rejects.toThrow('rpc down');
+			await jest.advanceTimersByTimeAsync(3000);
+			await rejection;
+
+			expect(ai.getIndexStatus).toHaveBeenCalledTimes(3);
 			errorSpy.mockRestore();
 		});
 	});

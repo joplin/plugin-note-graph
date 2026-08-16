@@ -1,6 +1,7 @@
 import joplin from 'api';
 import { SettingItemType } from 'api/types';
 import { DEFAULT_THRESHOLD, TOP_K } from '../similarity/ThresholdPresets';
+import { ScopeMode, ScopeSettings } from './NoteScopeResolver';
 
 const SECTION_NAME = 'noteGraph';
 export const AI_ANALYSIS_ENABLED_KEY = 'noteGraph.aiAnalysisEnabled';
@@ -9,6 +10,10 @@ const MAX_EDGES_PER_NOTE_KEY = 'noteGraph.maxEdgesPerNote';
 export const LLM_ENRICHMENT_ENABLED_KEY = 'noteGraph.llmEnrichmentEnabled';
 export const RETRY_EMBEDDING_KEY = 'noteGraph.retryEmbedding';
 export const RETRY_ENRICHMENT_KEY = 'noteGraph.retryEnrichment';
+export const SCOPE_MODE_KEY = 'noteGraph.scopeMode';
+export const SCOPE_SELECTED_NOTEBOOKS_KEY = 'noteGraph.scopeSelectedNotebooks';
+
+export const SCOPE_SETTING_KEYS = [SCOPE_MODE_KEY, SCOPE_SELECTED_NOTEBOOKS_KEY];
 
 /** All Note Graph setting keys — the single source of truth for anything that needs to check "did one of our settings change?" */
 export const NOTE_GRAPH_SETTING_KEYS = [
@@ -18,6 +23,7 @@ export const NOTE_GRAPH_SETTING_KEYS = [
 	LLM_ENRICHMENT_ENABLED_KEY,
 	RETRY_EMBEDDING_KEY,
 	RETRY_ENRICHMENT_KEY,
+	...SCOPE_SETTING_KEYS,
 ];
 
 /**
@@ -48,7 +54,8 @@ export async function registerGraphSettings(): Promise<void> {
 			public: true,
 			section: SECTION_NAME,
 			label: 'Similarity threshold (%)',
-			description: 'Lower value = more semantic edges. Only applies when AI analysis is enabled.',
+			description:
+				'Lower value = more semantic edges. Only applies when AI analysis is enabled.',
 		},
 		[MAX_EDGES_PER_NOTE_KEY]: {
 			value: TOP_K,
@@ -88,6 +95,18 @@ export async function registerGraphSettings(): Promise<void> {
 			description:
 				'Tick to immediately retry LLM analysis for any note/edge still missing a label. Unticks itself once the retry starts. No-op if the graph panel has not been opened yet.',
 		},
+		[SCOPE_MODE_KEY]: {
+			value: 'all',
+			type: SettingItemType.String,
+			public: false,
+			label: 'Analysis scope',
+		},
+		[SCOPE_SELECTED_NOTEBOOKS_KEY]: {
+			value: '',
+			type: SettingItemType.String,
+			public: false,
+			label: 'Selected notebooks',
+		},
 	});
 }
 
@@ -97,6 +116,33 @@ export async function isAiAnalysisEnabled(): Promise<boolean> {
 
 export async function isLlmEnrichmentEnabled(): Promise<boolean> {
 	return await joplin.settings.value(LLM_ENRICHMENT_ENABLED_KEY);
+}
+
+function parseScopeMode(value: unknown): ScopeMode {
+	return value === 'current' || value === 'selected' ? value : 'all';
+}
+
+function parseSelectedNotebookIds(raw: string): string[] {
+	try {
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) && parsed.every((id) => typeof id === 'string')
+			? parsed
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+export async function getScopeSettings(): Promise<ScopeSettings> {
+	const values = await joplin.settings.values([SCOPE_MODE_KEY, SCOPE_SELECTED_NOTEBOOKS_KEY]);
+	const mode = parseScopeMode(values[SCOPE_MODE_KEY]);
+	const rawIds =
+		typeof values[SCOPE_SELECTED_NOTEBOOKS_KEY] === 'string'
+			? values[SCOPE_SELECTED_NOTEBOOKS_KEY]
+			: '';
+	const selectedNotebookIds = parseSelectedNotebookIds(rawIds);
+
+	return { mode, selectedNotebookIds };
 }
 
 const THRESHOLD_MIN_PERCENT = 0;

@@ -59,7 +59,12 @@ describe('GraphBuilder', () => {
 		expect(result.nodes[0].data.degree).toBe(1);
 		expect(result.nodes[1].data.degree).toBe(1);
 		expect(result.edges).toHaveLength(1);
-		expect(result.edges[0].data).toEqual({ id: 'a::b::link', source: 'a', target: 'b', type: 'link' });
+		expect(result.edges[0].data).toEqual({
+			id: 'a::b::link',
+			source: 'a',
+			target: 'b',
+			type: 'link',
+		});
 	});
 
 	it('truncates long note labels to 64 chars', () => {
@@ -84,7 +89,12 @@ describe('GraphBuilder', () => {
 		const notes = [note('a', 'A'), note('b', 'B')];
 		const result = builder.build(notes);
 		expect(result.edges).toHaveLength(1);
-		expect(result.edges[0].data).toEqual({ id: 'a::b::link', source: 'a', target: 'b', type: 'link' });
+		expect(result.edges[0].data).toEqual({
+			id: 'a::b::link',
+			source: 'a',
+			target: 'b',
+			type: 'link',
+		});
 	});
 
 	it('applies the detected community and centrality size to each node', () => {
@@ -117,6 +127,32 @@ describe('GraphBuilder', () => {
 		expect(result.nodes[0].data).toMatchObject({ community: 0, size: 1 });
 		expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('a'));
 		consoleErrorSpy.mockRestore();
+	});
+
+	describe('allNotesVeryShort', () => {
+		beforeEach(() => {
+			mockEdgeFactory.createEdges.mockReturnValue([]);
+		});
+
+		it('is true when every note body is under the very-short threshold', () => {
+			const notes = [
+				{ ...note('a', 'A'), body: 'stub' },
+				{ ...note('b', 'B'), body: '' },
+			];
+			expect(builder.build(notes).allNotesVeryShort).toBe(true);
+		});
+
+		it('is false when at least one note has real content', () => {
+			const notes = [
+				{ ...note('a', 'A'), body: 'stub' },
+				{ ...note('b', 'B'), body: 'This note has a full sentence of real content in it.' },
+			];
+			expect(builder.build(notes).allNotesVeryShort).toBe(false);
+		});
+
+		it('is false for an empty note set', () => {
+			expect(builder.build([]).allNotesVeryShort).toBe(false);
+		});
 	});
 
 	describe('buildWithSimilarity', () => {
