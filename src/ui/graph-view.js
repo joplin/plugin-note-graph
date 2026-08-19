@@ -1,11 +1,9 @@
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import svg from 'cytoscape-svg';
-import layoutUtilities from 'cytoscape-layout-utilities';
 
 cytoscape.use(fcose);
 cytoscape.use(svg);
-cytoscape.use(layoutUtilities);
 
 var FCOSE_OPTIONS = {
 	name: 'fcose',
@@ -870,6 +868,8 @@ function computeClientPatch(graphData) {
 	};
 }
 
+var WHOLESALE_CHANGE_RATIO = 0.5;
+
 function isWholesaleChange(patch) {
 	var currentCount = cy.nodes().filter(function (n) {
 		return !n.data('isCommunityParent');
@@ -883,9 +883,9 @@ function isWholesaleChange(patch) {
 		if (!existing || !existing.length) newCount++;
 	});
 
-	if (currentCount > 0 && removedCount >= currentCount * 0.5) return true;
+	if (currentCount > 0 && removedCount >= currentCount * WHOLESALE_CHANGE_RATIO) return true;
 	var resultingCount = currentCount - removedCount + newCount;
-	return newCount >= resultingCount * 0.5;
+	return newCount >= resultingCount * WHOLESALE_CHANGE_RATIO;
 }
 
 function handleGraphUpdate(type, message) {
@@ -1079,8 +1079,6 @@ function init() {
 			elements: [],
 			wheelSensitivity: 0.3,
 		});
-
-		cy.layoutUtilities({ componentSpacing: 120 });
 
 		cy.on('tap', 'node[!isCommunityParent]', onNodeTap);
 		cy.on('dblclick', 'node[!isCommunityParent]', onNodeDblClick);
