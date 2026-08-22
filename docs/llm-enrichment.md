@@ -27,6 +27,40 @@ what Pass A produced.
 turns it on; it has no effect until AI-based semantic analysis is also
 enabled and has produced semantic edges to label.
 
+## Cost and data handling
+
+Pass B sends text to whatever AI provider you have set up in Joplin's own AI
+configuration, so the cost and privacy behavior follow that configuration,
+not this plugin. Note Graph never stores or forwards note content anywhere
+of its own accord; its only outbound traffic is the `joplin.ai.chat()` call
+described below. Joplin routes that call to the provider you chose in
+Joplin's Configuration screen (**AI** page). The plugin has no separate
+server, no separate terms and no third-party destination of its own.
+
+What actually leaves your machine and what it costs therefore depends
+entirely on that provider:
+
+- **Which provider.** `joplin.ai.chat()` uses whichever chat model Joplin is
+  configured to talk to. If you point Joplin at a local or self-hosted
+  model, note content stays on your machine; if you use a cloud provider,
+  the excerpts go to that provider's servers and are handled under its
+  terms. The plugin does not select or influence the provider.
+
+- **How much is sent.** Only notes and edges that already carry a semantic
+  edge are ever sent, in batches of 4, with each note body truncated to 300
+  characters (`MAX_BODY_EXCERPT_LENGTH`). Unchanged notes and edges are
+  served from the in-memory cache and never re-sent, so re-running
+  enrichment on a mostly unchanged graph sends very little new text.
+
+- **Credentials and billing.** Any API key, account, rate limit, or billing
+  relationship belongs to Joplin's AI setup, not to Note Graph. The plugin
+  neither reads nor manages credentials and has no usage meter or cost
+  estimate of its own.
+
+In short, treat Pass B as an extension of Joplin's AI chat. Its cost and
+privacy posture are whatever you already accepted when you enabled AI in
+Joplin. The plugin adds nothing on top of that.
+
 ## Where it runs: `LLMEnricher`
 
 `LLMEnricher` (`src/services/llm/LLMEnricher.ts`) is called from

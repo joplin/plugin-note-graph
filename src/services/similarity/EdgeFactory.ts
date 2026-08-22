@@ -2,8 +2,8 @@ import { Note } from '../../data/Types';
 import { GraphEdge } from '../graph/types';
 import { SimilarityPair } from './SimilarityEngine';
 
-/** Tags shared by more notes than this are skipped entirely, to avoid a combinatorial blowup of pairs (a clique on n notes is n*(n-1)/2 edges). */
-const MAX_NOTES_PER_TAG = 20;
+export const TAG_CLIQUE_MAX_NOTES = 20;
+export const TAG_CAPPED_NEIGHBORS_PER_NOTE = 4;
 
 export class EdgeFactory {
 	/**
@@ -40,32 +40,18 @@ export class EdgeFactory {
 		return Array.from(linkEdgeMap.values());
 	}
 
-	/**
-	 * Builds one edge per pair of notes sharing a tag, merging multiple shared
-	 * tag names onto the same edge. Tags shared by more than 20 notes are
-	 * skipped to avoid a combinatorial blowup of pairs.
-	 */
 	private createTagEdges(notes: Note[]): GraphEdge[] {
 		const tagToNotes = this.groupNoteIdsByTag(notes);
-		const tagEdgeMap = new Map<string, { source: string; target: string; tagNames: string[] }>();
+		const tagEdgeMap = new Map<
+			string,
+			{ source: string; target: string; tagNames: string[] }
+		>();
 
 		for (const [tagName, noteIds] of tagToNotes) {
-			if (noteIds.length > MAX_NOTES_PER_TAG) continue;
-
-			for (let i = 0; i < noteIds.length; i++) {
-				for (let j = i + 1; j < noteIds.length; j++) {
-					const a = noteIds[i];
-					const b = noteIds[j];
-					const [source, target] = a < b ? [a, b] : [b, a];
-					const pairKey = `${source}::${target}`;
-
-					const existing = tagEdgeMap.get(pairKey);
-					if (existing) {
-						existing.tagNames.push(tagName);
-					} else {
-						tagEdgeMap.set(pairKey, { source, target, tagNames: [tagName] });
-					}
-				}
+			if (noteIds.length <= TAG_CLIQUE_MAX_NOTES) {
+				this.connectClique(tagEdgeMap, noteIds, tagName);
+			} else {
+				this.connectCapped(tagEdgeMap, noteIds, tagName);
 			}
 		}
 
@@ -75,6 +61,51 @@ export class EdgeFactory {
 			type: 'tag',
 			tagName: edge.tagNames.slice().sort().join(', '),
 		}));
+	}
+
+	private connectClique(
+		tagEdgeMap: Map<string, { source: string; target: string; tagNames: string[] }>,
+		noteIds: string[],
+		tagName: string
+	): void {
+		for (let i = 0; i < noteIds.length; i++) {
+			for (let j = i + 1; j < noteIds.length; j++) {
+				this.addTagPair(tagEdgeMap, noteIds[i], noteIds[j], tagName);
+			}
+		}
+	}
+
+	private connectCapped(
+		tagEdgeMap: Map<string, { source: string; target: string; tagNames: string[] }>,
+		noteIds: string[],
+		tagName: string
+	): void {
+		const sorted = [...noteIds].sort();
+		const m = sorted.length;
+		const k = Math.min(TAG_CAPPED_NEIGHBORS_PER_NOTE, m - 1);
+
+		for (let i = 0; i < m; i++) {
+			for (let j = 1; j <= k; j++) {
+				this.addTagPair(tagEdgeMap, sorted[i], sorted[(i + j) % m], tagName);
+			}
+		}
+	}
+
+	private addTagPair(
+		tagEdgeMap: Map<string, { source: string; target: string; tagNames: string[] }>,
+		a: string,
+		b: string,
+		tagName: string
+	): void {
+		const [source, target] = a < b ? [a, b] : [b, a];
+		const pairKey = `${source}::${target}`;
+
+		const existing = tagEdgeMap.get(pairKey);
+		if (existing) {
+			existing.tagNames.push(tagName);
+		} else {
+			tagEdgeMap.set(pairKey, { source, target, tagNames: [tagName] });
+		}
 	}
 
 	private groupNoteIdsByTag(notes: Note[]): Map<string, string[]> {
@@ -104,6 +135,7 @@ export class EdgeFactory {
 				source: pair.source,
 				target: pair.target,
 				type: 'semantic',
+				score: pair.score,
 			});
 		}
 

@@ -510,6 +510,38 @@ describe('LLMEnricher', () => {
 		expect(second.nodeEnrichments.get('n1')).toEqual({ category: 'category-n1' });
 	});
 
+	it('returns only newly-produced enrichments from takeNewEnrichments', async () => {
+		const enricher = createEnricher();
+		getChatMock().mockImplementation(async (messages) => respondValid(messages));
+
+		await enricher.enrich({ nodes: nodes('n1', 'n2'), edges: [edge('n1', 'n2')] }, NOT_STALE);
+
+		const newEntries = enricher.takeNewEnrichments();
+		expect(newEntries.nodes).toEqual(
+			expect.arrayContaining([
+				{ id: 'n1', updatedTime: 1, enrichment: { category: 'category-n1' } },
+				{ id: 'n2', updatedTime: 1, enrichment: { category: 'category-n2' } },
+			])
+		);
+		expect(newEntries.nodes).toHaveLength(2);
+		expect(newEntries.edges).toEqual([
+			{ id: 'n1::n2::semantic', updatedTime: 1, enrichment: { relationshipLabel: 'label-n1-n2' } },
+		]);
+	});
+
+	it('returns nothing from takeNewEnrichments for a fully-cached run', async () => {
+		const enricher = createEnricher();
+		getChatMock().mockImplementation(async (messages) => respondValid(messages));
+
+		const input: EnrichmentInput = { nodes: nodes('n1', 'n2'), edges: [edge('n1', 'n2')] };
+		await enricher.enrich(input, NOT_STALE);
+		enricher.takeNewEnrichments();
+
+		await enricher.enrich(input, NOT_STALE);
+
+		expect(enricher.takeNewEnrichments()).toEqual({ nodes: [], edges: [] });
+	});
+
 	it('treats a changed edge updatedTime as a cache miss and re-enriches', async () => {
 		const enricher = createEnricher();
 		getChatMock().mockImplementation(async (messages) => respondValid(messages));

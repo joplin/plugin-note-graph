@@ -23,7 +23,9 @@ jest.mock('../data/Database/VectorRepository', () => ({
 jest.mock('../data/Database/GraphCacheRepository');
 
 const MockGraphBuilder = GraphBuilder as jest.MockedClass<typeof GraphBuilder>;
-const MockGraphCacheRepository = GraphCacheRepository as jest.MockedClass<typeof GraphCacheRepository>;
+const MockGraphCacheRepository = GraphCacheRepository as jest.MockedClass<
+	typeof GraphCacheRepository
+>;
 const MockProviderResolver = ProviderResolver as jest.Mocked<typeof ProviderResolver>;
 const MockOrchestrator = EmbeddingOrchestrator as jest.MockedClass<typeof EmbeddingOrchestrator>;
 const MockLLMEnricher = LLMEnricher as jest.MockedClass<typeof LLMEnricher>;
@@ -85,9 +87,13 @@ describe('AnalysisController', () => {
 		mockGetSimilaritySettings.mockResolvedValue({ threshold: 0.5, topK: 5 });
 		mockGraphCache = new MockGraphCacheRepository() as jest.Mocked<GraphCacheRepository>;
 		mockGraphCache.saveGraph.mockResolvedValue(undefined);
+		mockGraphCache.saveScopeKey.mockResolvedValue(undefined);
 		mockGraphCache.loadGraph.mockResolvedValue(null);
+		mockGraphCache.saveEnrichments.mockResolvedValue(undefined);
+		mockGraphCache.loadEnrichments.mockResolvedValue([]);
 		mockEnricher = new MockLLMEnricher() as jest.Mocked<LLMEnricher>;
 		mockEnricher.replayCached.mockReturnValue({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
+		mockEnricher.takeNewEnrichments.mockReturnValue({ nodes: [], edges: [] });
 		mockIsLlmEnrichmentEnabled.mockResolvedValue(false);
 		controller = new AnalysisController(mockBuilder, mockGraphCache, undefined, mockEnricher);
 
@@ -174,6 +180,35 @@ describe('AnalysisController', () => {
 				5,
 				expect.any(Function)
 			);
+		});
+
+		it('keeps a cached semantic graph instead of downgrading it when a later call fails transiently (e.g. AI-toggle settings churn)', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
+				errors: [],
+			});
+			mockBuilder.buildWithSimilarity.mockResolvedValue({
+				nodes: [],
+				edges: [
+					{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } },
+				],
+			});
+			const notes = [note('a')];
+			await controller.embedAndBuildSemantic(notes);
+			jest.clearAllMocks();
+
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockRejectedValue(
+				new Error('index not ready')
+			);
+
+			const result = await controller.embedAndBuildSemantic(notes);
+
+			expect(result).toBeNull();
+			expect(mockBuilder.build).not.toHaveBeenCalled();
+			expect(controller.getLastGraphData()?.edges).toHaveLength(1);
 		});
 
 		it('discards a run that resolves after a newer run has already started', async () => {
@@ -336,7 +371,9 @@ describe('AnalysisController', () => {
 			});
 			await controller.embedAndBuildSemantic([note('a')]);
 
-			MockProviderResolver.resolveWithValidation.mockRejectedValue(new Error('index not ready'));
+			MockProviderResolver.resolveWithValidation.mockRejectedValue(
+				new Error('index not ready')
+			);
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 			jest.clearAllMocks();
 
@@ -350,7 +387,10 @@ describe('AnalysisController', () => {
 			mockIsAiAnalysisEnabled.mockResolvedValue(true);
 			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
 			const embeddedA = { note: note('a'), embedding: [1, 0] };
-			mockOrchestratorInstance.embedNotes.mockResolvedValue({ embeddedNotes: [embeddedA], errors: [] });
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [embeddedA],
+				errors: [],
+			});
 			await controller.embedAndBuildSemantic([note('a')]);
 			jest.clearAllMocks();
 			mockIsAiAnalysisEnabled.mockResolvedValue(true);
@@ -380,7 +420,16 @@ describe('AnalysisController', () => {
 				{ data: { id: 'a', label: 'a', noteId: 'a', degree: 1, community: 0, size: 5 } },
 				{ data: { id: 'b', label: 'b', noteId: 'b', degree: 1, community: 0, size: 5 } },
 			],
-			edges: [{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' as const } }],
+			edges: [
+				{
+					data: {
+						id: 'a::b::semantic',
+						source: 'a',
+						target: 'b',
+						type: 'semantic' as const,
+					},
+				},
+			],
 		};
 
 		beforeEach(() => {
@@ -391,7 +440,10 @@ describe('AnalysisController', () => {
 				errors: [],
 			});
 			mockBuilder.buildWithSimilarity.mockResolvedValue(semanticGraphData);
-			mockEnricher.enrich.mockResolvedValue({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
+			mockEnricher.enrich.mockResolvedValue({
+				nodeEnrichments: new Map(),
+				edgeEnrichments: new Map(),
+			});
 		});
 
 		it('does not call the enrichment service when the setting is off', async () => {
@@ -408,7 +460,9 @@ describe('AnalysisController', () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			mockEnricher.enrich.mockResolvedValue({
 				nodeEnrichments: new Map([['a', { category: 'Gardening' }]]),
-				edgeEnrichments: new Map([['a::b::semantic', { relationshipLabel: 'inspired by' }]]),
+				edgeEnrichments: new Map([
+					['a::b::semantic', { relationshipLabel: 'inspired by' }],
+				]),
 			});
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 			await controller.enrichCurrentGraph();
@@ -423,8 +477,12 @@ describe('AnalysisController', () => {
 		it('merges category, relationship label and a clamped size adjustment into the graph', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			mockEnricher.enrich.mockResolvedValue({
-				nodeEnrichments: new Map([['a', { category: 'Gardening', centralityAdjustment: 2 }]]),
-				edgeEnrichments: new Map([['a::b::semantic', { relationshipLabel: 'inspired by' }]]),
+				nodeEnrichments: new Map([
+					['a', { category: 'Gardening', centralityAdjustment: 2 }],
+				]),
+				edgeEnrichments: new Map([
+					['a::b::semantic', { relationshipLabel: 'inspired by' }],
+				]),
 			});
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
@@ -492,7 +550,16 @@ describe('AnalysisController', () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			mockBuilder.buildWithSimilarity.mockResolvedValue({
 				nodes: semanticGraphData.nodes,
-				edges: [{ data: { id: 'a::c::semantic', source: 'a', target: 'c', type: 'semantic' as const } }],
+				edges: [
+					{
+						data: {
+							id: 'a::c::semantic',
+							source: 'a',
+							target: 'c',
+							type: 'semantic' as const,
+						},
+					},
+				],
 			});
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
@@ -555,19 +622,29 @@ describe('AnalysisController', () => {
 
 			const input = mockEnricher.enrich.mock.calls[0][0];
 			expect(input.edges).toEqual([
-				{ id: 'a::b::semantic', source: 'a', target: 'b', updatedTime: note('a').updated_time },
+				{
+					id: 'a::b::semantic',
+					source: 'a',
+					target: 'b',
+					updatedTime: note('a').updated_time,
+				},
 			]);
 		});
 
 		it('keys an edge enrichment cache entry on the newer of its two endpoints, not the source alone', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
-			const notes = [{ ...note('a'), updated_time: 100 }, { ...note('b'), updated_time: 200 }];
+			const notes = [
+				{ ...note('a'), updated_time: 100 },
+				{ ...note('b'), updated_time: 200 },
+			];
 			await controller.embedAndBuildSemantic(notes);
 
 			await controller.enrichCurrentGraph();
 
 			const input = mockEnricher.enrich.mock.calls[0][0];
-			expect(input.edges).toEqual([{ id: 'a::b::semantic', source: 'a', target: 'b', updatedTime: 200 }]);
+			expect(input.edges).toEqual([
+				{ id: 'a::b::semantic', source: 'a', target: 'b', updatedTime: 200 },
+			]);
 		});
 
 		it('passes an isStale predicate that reflects a newer run superseding this one', async () => {
@@ -648,27 +725,31 @@ describe('AnalysisController', () => {
 			expect(result).toBeNull();
 		});
 
-		it('rejects a second enrichCurrentGraph call while one is already in flight', async () => {
+		it('waits for an in-flight enrichment to finish, then runs against the latest graph', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
-			let resolveEnrich!: (result: Awaited<ReturnType<typeof mockEnricher.enrich>>) => void;
-			mockEnricher.enrich.mockImplementation(
-				() =>
-					new Promise((resolve) => {
-						resolveEnrich = resolve;
-					})
-			);
+			let resolveFirst!: (result: Awaited<ReturnType<typeof mockEnricher.enrich>>) => void;
+			mockEnricher.enrich
+				.mockImplementationOnce(
+					() =>
+						new Promise((resolve) => {
+							resolveFirst = resolve;
+						})
+				)
+				.mockResolvedValueOnce({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
 
 			const first = controller.enrichCurrentGraph();
 			await new Promise((resolve) => setImmediate(resolve));
 
-			const second = await controller.enrichCurrentGraph();
-			expect(second).toBeNull();
-			expect(mockEnricher.enrich).toHaveBeenCalledTimes(1);
+			const secondPromise = controller.enrichCurrentGraph();
 
-			resolveEnrich({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
+			resolveFirst({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
 			await first;
+
+			const second = await secondPromise;
+			expect(second).toBeNull();
+			expect(mockEnricher.enrich).toHaveBeenCalledTimes(2);
 		});
 	});
 
@@ -773,7 +854,18 @@ describe('AnalysisController', () => {
 				errors: [],
 			});
 			mockBuilder.buildWithSimilarity.mockResolvedValue({
-				nodes: [{ data: { id: 'a', label: 'a', noteId: 'a', degree: 0, community: 0, size: 5 } }],
+				nodes: [
+					{
+						data: {
+							id: 'a',
+							label: 'a',
+							noteId: 'a',
+							degree: 0,
+							community: 0,
+							size: 5,
+						},
+					},
+				],
 				edges: [],
 			});
 			// Pass A completes and commits first, same as production: Pass B only
@@ -815,7 +907,18 @@ describe('AnalysisController', () => {
 				errors: [],
 			});
 			mockBuilder.buildWithSimilarity.mockResolvedValue({
-				nodes: [{ data: { id: 'a', label: 'a', noteId: 'a', degree: 0, community: 0, size: 5 } }],
+				nodes: [
+					{
+						data: {
+							id: 'a',
+							label: 'a',
+							noteId: 'a',
+							degree: 0,
+							community: 0,
+							size: 5,
+						},
+					},
+				],
 				edges: [],
 			});
 			await controller.embedAndBuildSemantic([note('a')]);
@@ -860,6 +963,20 @@ describe('AnalysisController', () => {
 
 			expect(mockGraphCache.saveGraph).toHaveBeenCalledWith(notes, graphData);
 		});
+
+		it('defaults to the "all" scope key when none has been set', () => {
+			controller.buildStructural([note('a')]);
+
+			expect(mockGraphCache.saveScopeKey).toHaveBeenCalledWith('all');
+		});
+
+		it('persists whichever scope key was set via setScopeKey', () => {
+			controller.setScopeKey('current:folder-1');
+
+			controller.buildStructural([note('a')]);
+
+			expect(mockGraphCache.saveScopeKey).toHaveBeenCalledWith('current:folder-1');
+		});
 	});
 
 	describe('loadFromCache', () => {
@@ -896,8 +1013,27 @@ describe('AnalysisController', () => {
 			const notes = [note('a'), note('b')];
 			const graphData = {
 				nodes: [
-					{ data: { id: 'a', label: 'a', noteId: 'a', degree: 1, community: 0, size: 1, category: 'Cat A' } },
-					{ data: { id: 'b', label: 'b', noteId: 'b', degree: 1, community: 0, size: 1 } },
+					{
+						data: {
+							id: 'a',
+							label: 'a',
+							noteId: 'a',
+							degree: 1,
+							community: 0,
+							size: 1,
+							category: 'Cat A',
+						},
+					},
+					{
+						data: {
+							id: 'b',
+							label: 'b',
+							noteId: 'b',
+							degree: 1,
+							community: 0,
+							size: 1,
+						},
+					},
 				],
 				edges: [
 					{
@@ -917,7 +1053,13 @@ describe('AnalysisController', () => {
 
 			expect(mockEnricher.seedCache).toHaveBeenCalledWith(
 				[{ id: 'a', updatedTime: 1, enrichment: { category: 'Cat A' } }],
-				[{ id: 'a::b::semantic', updatedTime: 1, enrichment: { relationshipLabel: 'links to' } }]
+				[
+					{
+						id: 'a::b::semantic',
+						updatedTime: 1,
+						enrichment: { relationshipLabel: 'links to' },
+					},
+				]
 			);
 		});
 
@@ -926,8 +1068,23 @@ describe('AnalysisController', () => {
 			const graphData = {
 				nodes: [],
 				edges: [
-					{ data: { id: 'a::b::link', source: 'a', target: 'b', type: 'link' as const, relationshipLabel: 'ignored' } },
-					{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' as const } },
+					{
+						data: {
+							id: 'a::b::link',
+							source: 'a',
+							target: 'b',
+							type: 'link' as const,
+							relationshipLabel: 'ignored',
+						},
+					},
+					{
+						data: {
+							id: 'a::b::semantic',
+							source: 'a',
+							target: 'b',
+							type: 'semantic' as const,
+						},
+					},
 				],
 			};
 			mockGraphCache.loadGraph.mockResolvedValue({ notes, graphData });
@@ -937,6 +1094,172 @@ describe('AnalysisController', () => {
 			expect(mockEnricher.seedCache).toHaveBeenCalledWith([], []);
 		});
 	});
+
+	describe('seedEnrichmentFromStore', () => {
+		it('seeds node and edge enrichment from the persisted table', async () => {
+			mockGraphCache.loadEnrichments.mockResolvedValue([
+				{ kind: 'node', id: 'a', updatedTime: 1, enrichment: { category: 'Cat A' } },
+				{
+					kind: 'edge',
+					id: 'a::b::semantic',
+					updatedTime: 2,
+					enrichment: { relationshipLabel: 'links' },
+				},
+			]);
+
+			await controller.seedEnrichmentFromStore();
+
+			expect(mockEnricher.seedCache).toHaveBeenCalledWith(
+				[{ id: 'a', updatedTime: 1, enrichment: { category: 'Cat A' } }],
+				[
+					{
+						id: 'a::b::semantic',
+						updatedTime: 2,
+						enrichment: { relationshipLabel: 'links' },
+					},
+				]
+			);
+		});
+
+		it('swallows a read failure instead of throwing', async () => {
+			mockGraphCache.loadEnrichments.mockRejectedValue(new Error('disk error'));
+
+			await expect(controller.seedEnrichmentFromStore()).resolves.toBeUndefined();
+		});
+	});
+
+	describe('enrichment persistence', () => {
+		it('does not re-persist enrichment already on a committed graph', () => {
+			mockBuilder.build.mockReturnValue({
+				nodes: [
+					{
+						data: {
+							id: 'a',
+							label: 'a',
+							noteId: 'a',
+							degree: 1,
+							community: 0,
+							size: 1,
+							category: 'Cat A',
+						},
+					},
+				],
+				edges: [
+					{
+						data: {
+							id: 'a::b::semantic',
+							source: 'a',
+							target: 'b',
+							type: 'semantic' as const,
+							relationshipLabel: 'links',
+						},
+					},
+				],
+			});
+
+			controller.buildStructural([note('a'), note('b')]);
+
+			expect(mockGraphCache.saveEnrichments).not.toHaveBeenCalled();
+		});
+
+		it('persists only the enrichments newly produced by the LLM pass', async () => {
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+			controller.buildStructural([note('a'), note('b')]);
+
+			mockEnricher.enrich.mockResolvedValue({
+				nodeEnrichments: new Map([['a', { category: 'Cat A' }]]),
+				edgeEnrichments: new Map([['a::b::semantic', { relationshipLabel: 'links' }]]),
+			});
+			mockEnricher.takeNewEnrichments.mockReturnValue({
+				nodes: [{ id: 'a', updatedTime: 1, enrichment: { category: 'Cat A' } }],
+				edges: [
+					{
+						id: 'a::b::semantic',
+						updatedTime: 1,
+						enrichment: { relationshipLabel: 'links' },
+					},
+				],
+			});
+
+			await controller.enrichCurrentGraph();
+
+			expect(mockGraphCache.saveEnrichments).toHaveBeenCalledWith([
+				{ kind: 'node', id: 'a', updatedTime: 1, enrichment: { category: 'Cat A' } },
+				{
+					kind: 'edge',
+					id: 'a::b::semantic',
+					updatedTime: 1,
+					enrichment: { relationshipLabel: 'links' },
+				},
+			]);
+		});
+
+		it('does not write the enrichment table when the LLM pass produced nothing new', async () => {
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+			controller.buildStructural([note('a'), note('b')]);
+
+			mockEnricher.enrich.mockResolvedValue({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
+			mockEnricher.takeNewEnrichments.mockReturnValue({ nodes: [], edges: [] });
+
+			await controller.enrichCurrentGraph();
+
+			expect(mockGraphCache.saveEnrichments).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('migrateCachedEnrichment', () => {
+		it('persists enrichment already on the cached graph before it is discarded', async () => {
+			const notes = [note('a'), note('b')];
+			const graphData = {
+				nodes: [
+					{
+						data: {
+							id: 'a',
+							label: 'a',
+							noteId: 'a',
+							degree: 1,
+							community: 0,
+							size: 1,
+							category: 'Cat A',
+						},
+					},
+				],
+				edges: [
+					{
+						data: {
+							id: 'a::b::semantic',
+							source: 'a',
+							target: 'b',
+							type: 'semantic' as const,
+							relationshipLabel: 'links',
+						},
+					},
+				],
+			};
+			mockGraphCache.loadGraph.mockResolvedValue({ notes, graphData });
+
+			await controller.migrateCachedEnrichment();
+
+			expect(mockGraphCache.saveEnrichments).toHaveBeenCalledWith([
+				{ kind: 'node', id: 'a', updatedTime: 1, enrichment: { category: 'Cat A' } },
+				{
+					kind: 'edge',
+					id: 'a::b::semantic',
+					updatedTime: 1,
+					enrichment: { relationshipLabel: 'links' },
+				},
+			]);
+		});
+
+		it('does nothing when nothing has been cached', async () => {
+			mockGraphCache.loadGraph.mockResolvedValue(null);
+
+			await controller.migrateCachedEnrichment();
+
+			expect(mockGraphCache.saveEnrichments).not.toHaveBeenCalled();
+		});
+	});
+
 
 	describe('applyDelta', () => {
 		it('returns null when nothing has been loaded yet', async () => {
@@ -957,7 +1280,10 @@ describe('AnalysisController', () => {
 
 			expect(result).toBe(graphData);
 			expect(mockBuilder.build).toHaveBeenCalledWith(
-				expect.arrayContaining([expect.objectContaining({ id: 'a' }), expect.objectContaining({ id: 'b' })])
+				expect.arrayContaining([
+					expect.objectContaining({ id: 'a' }),
+					expect.objectContaining({ id: 'b' }),
+				])
 			);
 			expect(controller.getCurrentNotes()).toHaveLength(2);
 		});
@@ -1021,7 +1347,10 @@ describe('AnalysisController', () => {
 			expect(deltaResult).not.toBeNull();
 			expect(controller.getCurrentNotes()).toHaveLength(2);
 
-			staleEmbed.resolve({ embeddedNotes: [{ note: note('a'), embedding: [1, 0] }], errors: [] });
+			staleEmbed.resolve({
+				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
+				errors: [],
+			});
 			const staleResult = await staleCall;
 
 			expect(staleResult).toBeNull();
@@ -1091,13 +1420,17 @@ describe('AnalysisController', () => {
 			});
 			mockBuilder.buildWithSimilarity.mockResolvedValue({
 				nodes: [],
-				edges: [{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } }],
+				edges: [
+					{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } },
+				],
 			});
 			await controller.embedAndBuildSemantic([note('a')]);
 			jest.clearAllMocks();
 
 			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockRejectedValue(new Error('index not ready'));
+			MockProviderResolver.resolveWithValidation.mockRejectedValue(
+				new Error('index not ready')
+			);
 
 			const result = await controller.applyDelta([note('b')], []);
 
@@ -1129,13 +1462,17 @@ describe('AnalysisController', () => {
 			});
 			mockBuilder.buildWithSimilarity.mockResolvedValue({
 				nodes: [],
-				edges: [{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } }],
+				edges: [
+					{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } },
+				],
 			});
 			await controller.embedAndBuildSemantic([note('a')]);
 			jest.clearAllMocks();
 
 			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockRejectedValueOnce(new Error('index not ready'));
+			MockProviderResolver.resolveWithValidation.mockRejectedValueOnce(
+				new Error('index not ready')
+			);
 			await controller.applyDelta([note('b')], []);
 			expect(controller.wasLastDeltaSkippedForRetry()).toBe(true);
 
@@ -1161,13 +1498,17 @@ describe('AnalysisController', () => {
 			});
 			mockBuilder.buildWithSimilarity.mockResolvedValue({
 				nodes: [],
-				edges: [{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } }],
+				edges: [
+					{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } },
+				],
 			});
 			await controller.embedAndBuildSemantic([note('a')]);
 			jest.clearAllMocks();
 
 			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockRejectedValueOnce(new Error('index not ready'));
+			MockProviderResolver.resolveWithValidation.mockRejectedValueOnce(
+				new Error('index not ready')
+			);
 			const skipped = await controller.applyDelta([note('b')], []);
 			expect(skipped).toBeNull();
 			expect(controller.getCurrentNotes()).toHaveLength(1);
@@ -1196,7 +1537,9 @@ describe('AnalysisController', () => {
 			});
 			mockBuilder.buildWithSimilarity.mockResolvedValue({
 				nodes: [],
-				edges: [{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } }],
+				edges: [
+					{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } },
+				],
 			});
 			await controller.embedAndBuildSemantic([note('a')]);
 			jest.clearAllMocks();
@@ -1220,7 +1563,18 @@ describe('AnalysisController', () => {
 
 		it('treats the first build as entirely new (no previous graph to diff against)', () => {
 			const graphData = {
-				nodes: [{ data: { id: 'a', label: 'a', noteId: 'a', degree: 0, community: 0, size: 1 } }],
+				nodes: [
+					{
+						data: {
+							id: 'a',
+							label: 'a',
+							noteId: 'a',
+							degree: 0,
+							community: 0,
+							size: 1,
+						},
+					},
+				],
 				edges: [],
 			};
 			mockBuilder.build.mockReturnValue(graphData);
@@ -1236,8 +1590,12 @@ describe('AnalysisController', () => {
 		});
 
 		it('reports only what changed between two builds', () => {
-			const nodeA = { data: { id: 'a', label: 'a', noteId: 'a', degree: 0, community: 0, size: 1 } };
-			const nodeB = { data: { id: 'b', label: 'b', noteId: 'b', degree: 0, community: 0, size: 1 } };
+			const nodeA = {
+				data: { id: 'a', label: 'a', noteId: 'a', degree: 0, community: 0, size: 1 },
+			};
+			const nodeB = {
+				data: { id: 'b', label: 'b', noteId: 'b', degree: 0, community: 0, size: 1 },
+			};
 			mockBuilder.build.mockReturnValueOnce({ nodes: [nodeA], edges: [] });
 			controller.buildStructural([note('a')]);
 

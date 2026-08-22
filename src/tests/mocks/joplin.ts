@@ -18,6 +18,8 @@ const joplinWorkspace = {
 	onNoteChange: jest.fn(),
 	onNoteSelectionChange: jest.fn(),
 	onSyncComplete: jest.fn(),
+	selectedNote: jest.fn(),
+	selectedFolder: jest.fn(),
 };
 
 const joplinViewsPanels = {

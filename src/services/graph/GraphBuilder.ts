@@ -6,6 +6,8 @@ import { GraphData, GraphEdge, GraphNode, RenderedEdge } from './types';
 import { LouvainDetector } from './LouvainDetector';
 import { CentralityScorer } from './CentralityScorer';
 
+const VERY_SHORT_BODY_CHARS = 20;
+
 export class GraphBuilder {
 	private readonly edgeFactory: EdgeFactory;
 	private readonly louvainDetector: LouvainDetector;
@@ -63,7 +65,18 @@ export class GraphBuilder {
 
 		this.logGraphStats(nodes, visibleEdges, degreeMap, communities);
 
-		return { nodes, edges: visibleEdges.map((e) => ({ data: this.toRenderedEdge(e) })) };
+		return {
+			nodes,
+			edges: visibleEdges.map((e) => ({ data: this.toRenderedEdge(e) })),
+			allNotesVeryShort: this.isAllNotesVeryShort(notes),
+		};
+	}
+
+	private isAllNotesVeryShort(notes: Note[]): boolean {
+		return (
+			notes.length > 0 &&
+			notes.every((n) => (n.body ?? '').trim().length < VERY_SHORT_BODY_CHARS)
+		);
 	}
 
 	private toRenderedEdge(edge: GraphEdge): RenderedEdge {

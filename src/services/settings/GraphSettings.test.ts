@@ -1,6 +1,11 @@
 import joplin from 'api';
 import { SettingItemType } from 'api/types';
-import { registerGraphSettings, isAiAnalysisEnabled, getSimilaritySettings } from './GraphSettings';
+import {
+	registerGraphSettings,
+	isAiAnalysisEnabled,
+	getSimilaritySettings,
+	getScopeSettings,
+} from './GraphSettings';
 
 describe('GraphSettings', () => {
 	beforeEach(() => {
@@ -56,6 +61,16 @@ describe('GraphSettings', () => {
 						value: false,
 						public: true,
 						section: 'noteGraph',
+					}),
+					'noteGraph.scopeMode': expect.objectContaining({
+						type: SettingItemType.String,
+						value: 'all',
+						public: false,
+					}),
+					'noteGraph.scopeSelectedNotebooks': expect.objectContaining({
+						type: SettingItemType.String,
+						value: '',
+						public: false,
 					}),
 				})
 			);
@@ -150,6 +165,48 @@ describe('GraphSettings', () => {
 			const secondResult = await getSimilaritySettings();
 
 			expect(secondResult).toEqual({ threshold: 0.5, topK: 5 });
+		});
+	});
+
+	describe('getScopeSettings', () => {
+		it('reads a JSON-encoded list of selected notebook IDs', async () => {
+			(joplin.settings.values as jest.Mock).mockResolvedValue({
+				'noteGraph.scopeMode': 'selected',
+				'noteGraph.scopeSelectedNotebooks': JSON.stringify(['id-1', 'id-2']),
+			});
+
+			const result = await getScopeSettings();
+
+			expect(joplin.settings.values).toHaveBeenCalledWith([
+				'noteGraph.scopeMode',
+				'noteGraph.scopeSelectedNotebooks',
+			]);
+			expect(result).toEqual({
+				mode: 'selected',
+				selectedNotebookIds: ['id-1', 'id-2'],
+			});
+		});
+
+		it('falls back to "all" for an unrecognized or missing mode', async () => {
+			(joplin.settings.values as jest.Mock).mockResolvedValue({
+				'noteGraph.scopeMode': undefined,
+				'noteGraph.scopeSelectedNotebooks': '',
+			});
+
+			const result = await getScopeSettings();
+
+			expect(result).toEqual({ mode: 'all', selectedNotebookIds: [] });
+		});
+
+		it('reads the "current" mode', async () => {
+			(joplin.settings.values as jest.Mock).mockResolvedValue({
+				'noteGraph.scopeMode': 'current',
+				'noteGraph.scopeSelectedNotebooks': '',
+			});
+
+			const result = await getScopeSettings();
+
+			expect(result.mode).toBe('current');
 		});
 	});
 });

@@ -76,6 +76,8 @@ export interface CacheSeed<T> {
 export class LLMEnricher {
 	private readonly nodeCache = new Map<string, CachedEnrichment<NodeEnrichment>>();
 	private readonly edgeCache = new Map<string, CachedEnrichment<EdgeEnrichment>>();
+	private readonly dirtyNodes = new Map<string, CachedEnrichment<NodeEnrichment>>();
+	private readonly dirtyEdges = new Map<string, CachedEnrichment<EdgeEnrichment>>();
 	private readonly edgesPerBatch: number;
 	private readonly maxAttemptsPerBatch: number;
 
@@ -100,6 +102,25 @@ export class LLMEnricher {
 				this.edgeCache.set(seed.id, { enrichment: seed.enrichment, updatedTime: seed.updatedTime });
 			}
 		}
+	}
+
+	public takeNewEnrichments(): {
+		nodes: CacheSeed<NodeEnrichment>[];
+		edges: CacheSeed<EdgeEnrichment>[];
+	} {
+		const nodes = Array.from(this.dirtyNodes.entries()).map(([id, cached]) => ({
+			id,
+			updatedTime: cached.updatedTime,
+			enrichment: cached.enrichment,
+		}));
+		const edges = Array.from(this.dirtyEdges.entries()).map(([id, cached]) => ({
+			id,
+			updatedTime: cached.updatedTime,
+			enrichment: cached.enrichment,
+		}));
+		this.dirtyNodes.clear();
+		this.dirtyEdges.clear();
+		return { nodes, edges };
 	}
 
 	public replayCached(input: EnrichmentInput): EnrichmentResult {
@@ -348,6 +369,7 @@ export class LLMEnricher {
 			}
 			if (enrichment.category !== undefined) {
 				this.nodeCache.set(id, { enrichment: { category: enrichment.category }, updatedTime });
+				this.dirtyNodes.set(id, { enrichment: { category: enrichment.category }, updatedTime });
 			}
 			into.set(id, enrichment);
 			writtenThisRun.add(id);
@@ -366,6 +388,7 @@ export class LLMEnricher {
 				continue;
 			}
 			this.edgeCache.set(id, { enrichment, updatedTime });
+			this.dirtyEdges.set(id, { enrichment, updatedTime });
 			into.set(id, enrichment);
 		}
 	}

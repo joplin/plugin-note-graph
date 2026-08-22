@@ -18,6 +18,7 @@ export interface GraphEdge {
 	/** Comma-separated tag names when type === 'tag'. */
 	tagName?: string;
 	relationshipLabel?: string;
+	score?: number;
 }
 
 export interface RenderedEdge extends GraphEdge {
@@ -27,4 +28,5 @@ export interface RenderedEdge extends GraphEdge {
 export interface GraphData {
 	nodes: Array<{ data: GraphNode }>;
 	edges: Array<{ data: RenderedEdge }>;
+	allNotesVeryShort?: boolean;
 }

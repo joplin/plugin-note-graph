@@ -53,6 +53,39 @@ export function isIndexUsable(state: AiIndexState | undefined): boolean {
 	return !!state && !BLOCKING_STATES.has(state);
 }
 
+export async function retryWithBackoff<T>(
+	label: string,
+	fn: () => Promise<T>,
+	options: { maxAttempts: number; baseDelayMs: number }
+): Promise<T> {
+	let lastError: unknown;
+
+	for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
+		if (attempt > 1) {
+			await delay(options.baseDelayMs * 2 ** (attempt - 2));
+		}
+
+		try {
+			return await fn();
+		} catch (e) {
+			lastError = e;
+			const willRetry = attempt < options.maxAttempts;
+			console.error(
+				`${label} failed on attempt ${attempt}/${options.maxAttempts}${
+					willRetry ? '; retrying.' : '; giving up.'
+				}`,
+				e
+			);
+		}
+	}
+
+	throw lastError;
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class JoplinNativeProvider implements EmbeddingProvider {
 	public readonly id: ProviderId = 'joplin-native';
 	public static readonly DEFAULT_MODEL_ID = 'joplin-native';
@@ -189,39 +222,22 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		return grouped;
 	}
 
-	private async fetchPageWithRetry(
+	private fetchPageWithRetry(
 		api: JoplinAiApi,
 		options: GetEmbeddingsOptions
 	): Promise<EmbeddingsPage> {
-		let lastError: unknown;
-
-		for (let attempt = 1; attempt <= JoplinNativeProvider.MAX_ATTEMPTS_PER_PAGE; attempt++) {
-			if (attempt > 1) {
-				await this.delay(JoplinNativeProvider.RETRY_DELAY_MS);
-			}
-
-			try {
-				return await api.getEmbeddings(options);
-			} catch (e) {
-				lastError = e;
-				const willRetry = attempt < JoplinNativeProvider.MAX_ATTEMPTS_PER_PAGE;
-				console.error(
-					`Embedding fetch failed on attempt ${attempt}/${JoplinNativeProvider.MAX_ATTEMPTS_PER_PAGE}${willRetry ? '; retrying.' : '; giving up.'}`,
-					e
-				);
-			}
-		}
-
-		throw lastError;
-	}
-
-	private delay(ms: number): Promise<void> {
-		return new Promise((resolve) => setTimeout(resolve, ms));
+		return retryWithBackoff('Embedding fetch', () => api.getEmbeddings(options), {
+			maxAttempts: JoplinNativeProvider.MAX_ATTEMPTS_PER_PAGE,
+			baseDelayMs: JoplinNativeProvider.RETRY_DELAY_MS,
+		});
 	}
 
 	/** Throws if the index isn't usable yet; otherwise returns the model ID it's currently indexed with. */
 	private async requireUsableIndex(api: JoplinAiApi): Promise<string | null> {
-		const status = await api.getIndexStatus();
+		const status = await retryWithBackoff('getIndexStatus() call', () => api.getIndexStatus(), {
+			maxAttempts: JoplinNativeProvider.MAX_ATTEMPTS_PER_PAGE,
+			baseDelayMs: JoplinNativeProvider.RETRY_DELAY_MS,
+		});
 		if (!status || !isIndexUsable(status.state)) {
 			throw new Error(
 				`Joplin AI index is not usable yet (state: ${status?.state ?? 'unknown'}). ` +

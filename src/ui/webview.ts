@@ -4,6 +4,16 @@ import { renderPanelHtml } from './App';
 import { GraphData } from '../services/graph/types';
 import { GraphDiff } from '../services/graph/GraphDiffer';
 
+export interface ScopeState {
+	mode: 'all' | 'current' | 'selected';
+	selectedNotebookIds: string[];
+}
+
+export interface NotebookOption {
+	id: string;
+	title: string;
+}
+
 const PANEL_ID = 'aiNoteGraphPanel';
 const PANEL_HTML = renderPanelHtml();
 const PANEL_SCRIPTS = ['./ui/styles/panel.css', './ui/setup.js', './ui/graph-view.js'];
@@ -18,13 +28,27 @@ let panelHandle: ViewHandle;
 let currentGraphData: GraphData | null = null;
 let currentVersion = 0;
 let currentProgress: ProgressState | null = null;
+let queuedFocusNoteId: string | null = null;
 
-const createPanel = async (onNoData: () => void, onCancel: () => void): Promise<ViewHandle> => {
+const createPanel = async (
+	onNoData: () => void,
+	onCancel: () => void,
+	onRequestFolders: () => Promise<NotebookOption[]>,
+	onGetScopeState: () => Promise<ScopeState>,
+	onSetScope: (mode: ScopeState['mode'], selectedNotebookIds: string[]) => Promise<void>
+): Promise<ViewHandle> => {
 	const handle = await joplin.views.panels.create(PANEL_ID);
 	await joplin.views.panels.setHtml(handle, PANEL_HTML);
 	await joplin.views.panels.onMessage(
 		handle,
-		async (message: { type?: string; nodeId?: string; nodeLabel?: string; version?: number }) => {
+		async (message: {
+			type?: string;
+			nodeId?: string;
+			nodeLabel?: string;
+			version?: number;
+			mode?: ScopeState['mode'];
+			selectedIds?: string[];
+		}) => {
 			if (message?.type === 'close-note-graph') {
 				await joplin.views.panels.hide(handle);
 				return { done: true };
@@ -43,11 +67,14 @@ const createPanel = async (onNoData: () => void, onCancel: () => void): Promise<
 				if (message.version === currentVersion) {
 					return { type: 'no-change', progress: currentProgress };
 				}
+				const focusNoteId = queuedFocusNoteId;
+				queuedFocusNoteId = null;
 				return {
 					type: 'graph-data',
 					...currentGraphData,
 					version: currentVersion,
 					progress: currentProgress,
+					focusNoteId,
 				};
 			}
 			if (message?.type === 'node-clicked' && message?.nodeId) {
@@ -56,6 +83,16 @@ const createPanel = async (onNoData: () => void, onCancel: () => void): Promise<
 				} catch {
 					await joplin.commands.execute('openItem', message.nodeId);
 				}
+				return { done: true };
+			}
+			if (message?.type === 'request-folders') {
+				return { type: 'folders', folders: await onRequestFolders() };
+			}
+			if (message?.type === 'get-scope-state') {
+				return await onGetScopeState();
+			}
+			if (message?.type === 'set-scope' && message.mode) {
+				await onSetScope(message.mode, message.selectedIds ?? []);
 				return { done: true };
 			}
 		}
@@ -81,12 +118,21 @@ const getPanel = (): ViewHandle => {
  */
 export const initializeAiNoteGraphPanel = async (
 	onNoData: () => void,
-	onCancel: () => void
+	onCancel: () => void,
+	onRequestFolders: () => Promise<NotebookOption[]>,
+	onGetScopeState: () => Promise<ScopeState>,
+	onSetScope: (mode: ScopeState['mode'], selectedNotebookIds: string[]) => Promise<void>
 ): Promise<void> => {
 	if (panelHandle) {
 		return;
 	}
-	panelHandle = await createPanel(onNoData, onCancel);
+	panelHandle = await createPanel(
+		onNoData,
+		onCancel,
+		onRequestFolders,
+		onGetScopeState,
+		onSetScope
+	);
 };
 
 /**
@@ -95,6 +141,17 @@ export const initializeAiNoteGraphPanel = async (
 export const showAiNoteGraphPanel = async (): Promise<void> => {
 	const handle = getPanel();
 	await joplin.views.panels.show(handle);
+};
+
+export const postFocusNote = async (noteId: string | null): Promise<void> => {
+	queuedFocusNoteId = noteId;
+	if (!panelHandle) return;
+	await joplin.views.panels.postMessage(panelHandle, { type: 'focus-note', noteId });
+};
+
+export const isNoteGraphPanelVisible = async (): Promise<boolean> => {
+	if (!panelHandle) return false;
+	return joplin.views.panels.visible(panelHandle);
 };
 
 /**

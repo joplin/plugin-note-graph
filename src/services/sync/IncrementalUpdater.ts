@@ -7,8 +7,15 @@ import { GraphCacheRepository } from '../../data/Database/GraphCacheRepository';
 import { AnalysisController } from '../AnalysisController';
 import { GraphDiff } from '../graph/GraphDiffer';
 import { GraphData } from '../graph/types';
-import { JoplinAiApi, isIndexUsable } from '../embeddings/providers/JoplinNativeProvider';
+import {
+	JoplinAiApi,
+	isIndexUsable,
+	retryWithBackoff,
+} from '../embeddings/providers/JoplinNativeProvider';
 import { isAiAnalysisEnabled } from '../settings/GraphSettings';
+import { ResolvedScope } from '../settings/NoteScopeResolver';
+
+const UNSCOPED: ResolvedScope = { folderIds: null, scopeKey: 'all' };
 
 const ITEM_CHANGE_DELETE = 3;
 
@@ -17,12 +24,18 @@ const EMBEDDINGS_MAX_PAGES = 500;
 const DEFAULT_COALESCE_WINDOW_MS = 1000;
 const MAX_CONSECUTIVE_RETRY_SKIPS = 5;
 
+const EMBEDDINGS_SWEEP_MIN_INTERVAL_MS = 5 * 60 * 1000;
+
+const INDEX_STATUS_MAX_ATTEMPTS = 3;
+const INDEX_STATUS_RETRY_DELAY_MS = 1000;
+
 export class IncrementalUpdater {
 	private readonly pendingUpsertIds = new Set<string>();
 	private readonly pendingRemovedIds = new Set<string>();
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
 	private flushChain: Promise<void> = Promise.resolve();
 	private consecutiveRetrySkips = 0;
+	private lastEmbeddingsSweepAt = 0;
 
 	public constructor(
 		private readonly analysisController: AnalysisController,
@@ -35,6 +48,8 @@ export class IncrementalUpdater {
 		private readonly coalesceWindowMs = DEFAULT_COALESCE_WINDOW_MS,
 		private readonly checkAiEnabled: () => Promise<boolean> = isAiAnalysisEnabled,
 		private readonly onRetriesExhausted: () => void = () => {},
+		private readonly now: () => number = Date.now,
+		private readonly getCurrentScope: () => ResolvedScope = () => UNSCOPED,
 		private readonly onEnrichmentProgress: (progress: { current: number; total: number }) => void = () => {}
 	) {}
 
@@ -60,12 +75,21 @@ export class IncrementalUpdater {
 			let embeddingsSweepFailed = false;
 
 			if (aiEnabled) {
-				try {
-					const upsertIds = await this.detectEmbeddingUpserts();
-					for (const id of upsertIds) this.scheduleUpsert(id);
-				} catch (e) {
-					console.error('Embeddings sweep failed, falling back to /events for this sync:', e);
+				if (this.now() - this.lastEmbeddingsSweepAt < EMBEDDINGS_SWEEP_MIN_INTERVAL_MS) {
+					console.info('Embeddings sweep throttled; relying on /events for this sync.');
 					embeddingsSweepFailed = true;
+				} else {
+					try {
+						const upsertIds = await this.detectEmbeddingUpserts();
+						this.lastEmbeddingsSweepAt = this.now();
+						for (const id of upsertIds) this.scheduleUpsert(id);
+					} catch (e) {
+						console.error(
+							'Embeddings sweep failed, falling back to /events for this sync:',
+							e
+						);
+						embeddingsSweepFailed = true;
+					}
 				}
 			}
 
@@ -94,7 +118,10 @@ export class IncrementalUpdater {
 		while (pageCount < EMBEDDINGS_MAX_PAGES) {
 			pageCount++;
 
-			const page = await api.getEmbeddings({ cursor: currentCursor, limit: EMBEDDINGS_PAGE_SIZE });
+			const page = await api.getEmbeddings({
+				cursor: currentCursor,
+				limit: EMBEDDINGS_PAGE_SIZE,
+			});
 			for (const chunk of page.chunks) {
 				noteIds.add(chunk.noteId);
 			}
@@ -125,7 +152,10 @@ export class IncrementalUpdater {
 	}
 
 	private async ensureIndexUsable(api: JoplinAiApi): Promise<void> {
-		const status = await api.getIndexStatus();
+		const status = await retryWithBackoff('getIndexStatus() call', () => api.getIndexStatus(), {
+			maxAttempts: INDEX_STATUS_MAX_ATTEMPTS,
+			baseDelayMs: INDEX_STATUS_RETRY_DELAY_MS,
+		});
 		if (!status || !isIndexUsable(status.state)) {
 			throw new Error(
 				`Joplin AI index is not usable yet (state: ${status?.state ?? 'unknown'}). ` +
@@ -227,7 +257,9 @@ export class IncrementalUpdater {
 
 			this.consecutiveRetrySkips = 0;
 			const removedCount = removedIds.length + discoveredRemovals.length;
-			console.info(`Incremental update applied: ${upserts.length} upserted, ${removedCount} removed.`);
+			console.info(
+				`Incremental update applied: ${upserts.length} upserted, ${removedCount} removed.`
+			);
 
 			const diff = this.analysisController.getLastDiff();
 			if (diff) {
@@ -243,7 +275,10 @@ export class IncrementalUpdater {
 			try {
 				await this.onFullReloadNeeded();
 			} catch (fallbackError) {
-				console.error('Full-reload fallback also failed after an incremental flush error:', fallbackError);
+				console.error(
+					'Full-reload fallback also failed after an incremental flush error:',
+					fallbackError
+				);
 				for (const id of upsertIds) this.pendingUpsertIds.add(id);
 				for (const id of removedIds) this.pendingRemovedIds.add(id);
 			}
@@ -271,10 +306,19 @@ export class IncrementalUpdater {
 	): Promise<{ upserts: Note[]; discoveredRemovals: string[] }> {
 		const upserts: Note[] = [];
 		const discoveredRemovals: string[] = [];
+		if (ids.length === 0) {
+			return { upserts, discoveredRemovals };
+		}
+
+		const { folderIds } = this.getCurrentScope();
 
 		for (const id of ids) {
 			const raw = await this.noteRepository.getNote(id);
 			if (!raw) {
+				discoveredRemovals.push(id);
+				continue;
+			}
+			if (folderIds && !folderIds.has(raw.parent_id)) {
 				discoveredRemovals.push(id);
 				continue;
 			}

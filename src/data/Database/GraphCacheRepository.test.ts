@@ -6,15 +6,26 @@ import { Note } from '../Types';
 class FakeConnection implements IVectorDatabase {
 	public opened = false;
 	private graphRow: { notes_json: string; graph_json: string } | null = null;
-	private syncStateRow: { events_cursor: string | null; embeddings_cursor: string | null } | null =
-		null;
+	private syncStateRow: {
+		events_cursor: string | null;
+		embeddings_cursor: string | null;
+	} | null = null;
+	private scopeStateRow: { scope_key: string | null } | null = null;
+	private enrichmentRows: {
+		kind: string;
+		id: string;
+		updated_time: number;
+		enrichment_json: string;
+	}[] = [];
 
 	public async open(): Promise<void> {
 		this.opened = true;
 	}
 
 	public async run(sql: string, params: unknown[]): Promise<void> {
-		if (sql.includes('INTO graph_cache')) {
+		if (sql.includes('DELETE FROM graph_cache')) {
+			this.graphRow = null;
+		} else if (sql.includes('INTO graph_cache')) {
 			const [notesJson, graphJson] = params as [string, string, number];
 			this.graphRow = { notes_json: notesJson, graph_json: graphJson };
 		} else if (sql.includes('embeddings_cursor')) {
@@ -29,6 +40,28 @@ class FakeConnection implements IVectorDatabase {
 				events_cursor: cursor,
 				embeddings_cursor: this.syncStateRow?.embeddings_cursor ?? null,
 			};
+		} else if (sql.includes('INTO scope_state')) {
+			const [scopeKey] = params as [string];
+			this.scopeStateRow = { scope_key: scopeKey };
+		} else if (sql.includes('INTO enrichment_cache')) {
+			const [kind, id, updatedTime, enrichmentJson] = params as [
+				string,
+				string,
+				number,
+				string
+			];
+			const existing = this.enrichmentRows.find((row) => row.kind === kind && row.id === id);
+			if (existing) {
+				existing.updated_time = updatedTime;
+				existing.enrichment_json = enrichmentJson;
+			} else {
+				this.enrichmentRows.push({
+					kind,
+					id,
+					updated_time: updatedTime,
+					enrichment_json: enrichmentJson,
+				});
+			}
 		}
 	}
 
@@ -38,6 +71,12 @@ class FakeConnection implements IVectorDatabase {
 		}
 		if (sql.includes('FROM sync_state')) {
 			return (this.syncStateRow ? [this.syncStateRow] : []) as unknown as T[];
+		}
+		if (sql.includes('FROM scope_state')) {
+			return (this.scopeStateRow ? [this.scopeStateRow] : []) as unknown as T[];
+		}
+		if (sql.includes('FROM enrichment_cache')) {
+			return this.enrichmentRows as unknown as T[];
 		}
 		return [];
 	}
@@ -53,7 +92,9 @@ const note: Note = {
 };
 
 const graphData: GraphData = {
-	nodes: [{ data: { id: 'n1', label: 'Note 1', noteId: 'n1', degree: 0, community: 0, size: 1 } }],
+	nodes: [
+		{ data: { id: 'n1', label: 'Note 1', noteId: 'n1', degree: 0, community: 0, size: 1 } },
+	],
 	edges: [],
 };
 
@@ -136,6 +177,85 @@ describe('GraphCacheRepository', () => {
 		});
 	});
 
+	describe('scope key', () => {
+		it('returns null when no scope has ever been saved', async () => {
+			expect(await repo.loadScopeKey()).toBeNull();
+		});
+
+		it('round-trips the scope key through save/load', async () => {
+			await repo.saveScopeKey('current:folder-1');
+			expect(await repo.loadScopeKey()).toBe('current:folder-1');
+		});
+
+		it('overwrites the previous scope key on a second save', async () => {
+			await repo.saveScopeKey('all');
+			await repo.saveScopeKey('current:folder-2');
+			expect(await repo.loadScopeKey()).toBe('current:folder-2');
+		});
+	});
+
+	describe('clearGraph', () => {
+		it('removes the cached graph so a later load returns null', async () => {
+			await repo.saveGraph([note], graphData);
+
+			await repo.clearGraph();
+
+			expect(await repo.loadGraph()).toBeNull();
+		});
+
+		it('leaves the events and embeddings cursors untouched', async () => {
+			await repo.saveGraph([note], graphData);
+			await repo.saveEventsCursor('cursor-1');
+			await repo.saveEmbeddingsCursor('embeddings-cursor-1');
+
+			await repo.clearGraph();
+
+			expect(await repo.loadEventsCursor()).toBe('cursor-1');
+			expect(await repo.loadEmbeddingsCursor()).toBe('embeddings-cursor-1');
+		});
+	});
+
+	describe('enrichment cache', () => {
+		it('returns an empty list when nothing has been persisted', async () => {
+			expect(await repo.loadEnrichments()).toEqual([]);
+		});
+
+		it('round-trips node and edge enrichments through save/load', async () => {
+			await repo.saveEnrichments([
+				{ kind: 'node', id: 'n1', updatedTime: 1, enrichment: { category: 'Cat' } },
+				{
+					kind: 'edge',
+					id: 'a::b::semantic',
+					updatedTime: 2,
+					enrichment: { relationshipLabel: 'links' },
+				},
+			]);
+
+			expect(await repo.loadEnrichments()).toEqual([
+				{ kind: 'node', id: 'n1', updatedTime: 1, enrichment: { category: 'Cat' } },
+				{
+					kind: 'edge',
+					id: 'a::b::semantic',
+					updatedTime: 2,
+					enrichment: { relationshipLabel: 'links' },
+				},
+			]);
+		});
+
+		it('upserts on a repeated save for the same kind and id', async () => {
+			await repo.saveEnrichments([
+				{ kind: 'node', id: 'n1', updatedTime: 1, enrichment: { category: 'Old' } },
+			]);
+			await repo.saveEnrichments([
+				{ kind: 'node', id: 'n1', updatedTime: 3, enrichment: { category: 'New' } },
+			]);
+
+			expect(await repo.loadEnrichments()).toEqual([
+				{ kind: 'node', id: 'n1', updatedTime: 3, enrichment: { category: 'New' } },
+			]);
+		});
+	});
+
 	describe('write serialization', () => {
 		it('serializes interleaved graph and cursor writes instead of racing them', async () => {
 			const order: string[] = [];
@@ -145,7 +265,10 @@ describe('GraphCacheRepository', () => {
 				await originalRun(sql, params);
 			};
 
-			await Promise.all([repo.saveGraph([note], graphData), repo.saveEventsCursor('cursor-1')]);
+			await Promise.all([
+				repo.saveGraph([note], graphData),
+				repo.saveEventsCursor('cursor-1'),
+			]);
 
 			expect(order).toHaveLength(2);
 			expect(await repo.loadGraph()).not.toBeNull();
