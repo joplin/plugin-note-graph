@@ -4,7 +4,7 @@
 	"app_min_version": "3.5",
 	"version": "1.0.0",
 	"name": "Note Graph Plugin",
-	"description": "A Joplin plugin that uses AI to discover hidden connections between your notes.",
+	"description": "Visualizes your notes as an interactive graph, connecting them by links, tags and AI-detected semantic similarity.",
 	"author": "yugalkaushik",
 	"homepage_url": "",
 	"repository_url": "https://github.com/joplin/plugin-note-graph",
@@ -16,8 +16,11 @@
 		"text embeddings",
 		"knowledge graph"
 	],
-	"categories": [],
-	"screenshots": [],
+	"categories": [
+		"productivity",
+		"personal knowledge management"
+	],
+	"screenshots": {},
 	"icons": {},
 	"promo_tile": {}
 }

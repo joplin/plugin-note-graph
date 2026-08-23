@@ -1,5 +1,15 @@
 import { IVectorDatabase, VectorDatabase } from './VectorDatabase';
 
+const DB_FILE_NAME = 'note-graph-vectors.sqlite';
+const SCHEMA = `
+	CREATE TABLE IF NOT EXISTS note_vectors (
+		note_id TEXT PRIMARY KEY,
+		model_id TEXT NOT NULL,
+		updated_time INTEGER NOT NULL,
+		vector BLOB NOT NULL
+	)
+`;
+
 export interface CachedVector {
 	vector: number[];
 	modelId: string;
@@ -41,7 +51,9 @@ export class VectorRepository implements VectorCache {
 	 */
 	private writeLock: Promise<void> = Promise.resolve();
 
-	public constructor(private readonly db: IVectorDatabase = new VectorDatabase()) {}
+	public constructor(
+		private readonly db: IVectorDatabase = new VectorDatabase(DB_FILE_NAME, [SCHEMA])
+	) {}
 
 	/** Returns cached vectors for the given note IDs, keyed by note ID. Missing notes are omitted. */
 	public async getMany(noteIds: string[]): Promise<Map<string, CachedVector>> {

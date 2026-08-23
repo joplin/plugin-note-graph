@@ -115,6 +115,25 @@ describe('EmbeddingOrchestrator', () => {
 			expect(result.embeddedNotes).toEqual([]);
 		});
 
+		it('passes the provider an isCancelled callback reflecting cancel()', async () => {
+			let capturedIsCancelled: (() => boolean) | undefined;
+			orchestrator.setProvider({
+				id: 'joplin-native',
+				modelName: 'test-model',
+				fetchVectorsByNoteIds: jest.fn().mockImplementation(async (_noteIds, isCancelled) => {
+					capturedIsCancelled = isCancelled;
+					return new Map();
+				}),
+			});
+
+			await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1')]);
+
+			expect(capturedIsCancelled).toBeDefined();
+			expect(capturedIsCancelled!()).toBe(false);
+			orchestrator.cancel();
+			expect(capturedIsCancelled!()).toBe(true);
+		});
+
 		it('catches provider errors and marks all notes', async () => {
 			orchestrator.setProvider({
 				id: 'joplin-native',
@@ -173,7 +192,7 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 999)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1']);
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function));
 			expect(result.embeddedNotes[0].embedding).toEqual([0.9, 0.9]);
 		});
 
@@ -198,7 +217,7 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 999)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1']);
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function));
 			expect(result.embeddedNotes).toHaveLength(0);
 			expect(result.errors).toEqual([
 				{ noteId: 'n1', error: 'Note not yet indexed by Joplin AI.' },
@@ -225,7 +244,7 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 50)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1']);
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function));
 			expect(result.embeddedNotes[0].embedding).toEqual([0.9, 0.9]);
 		});
 
@@ -252,7 +271,7 @@ describe('EmbeddingOrchestrator', () => {
 				makeNote('n2', 'T2', 'B2', 20),
 			]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n2']);
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n2'], expect.any(Function));
 			expect(result.embeddedNotes).toHaveLength(2);
 			expect(result.errors).toHaveLength(0);
 		});
@@ -307,7 +326,7 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 42)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1']);
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function));
 			expect(result.embeddedNotes[0].embedding).toEqual([0.4, 0.5]);
 		});
 
@@ -343,7 +362,7 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 42)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1']);
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function));
 			expect(result.embeddedNotes[0].embedding).toEqual([0.4, 0.5]);
 		});
 	});

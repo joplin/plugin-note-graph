@@ -1,6 +1,8 @@
 import joplin from 'api';
 
 export class TagRepository {
+	private static readonly MAX_PAGES = 100;
+
 	/**
 	 * Builds a map of note IDs to their tag titles by fetching all tags and their associated notes.
 	 * @param maxTags - maximum tags to fetch before truncating (default 1000).
@@ -57,5 +59,38 @@ export class TagRepository {
 		}
 
 		return { map: noteTagsMap, truncated: tags.length >= maxTags ? true : false };
+	}
+
+	public async getTagsForNote(noteId: string): Promise<{ titles: string[]; truncated: boolean }> {
+		const titles: string[] = [];
+		let page = 1;
+		let hasMore = true;
+
+		while (hasMore && page <= TagRepository.MAX_PAGES) {
+			try {
+				const response = await joplin.data.get(['notes', noteId, 'tags'], {
+					fields: ['title'],
+					page,
+					limit: 100,
+				});
+				for (const tag of response.items ?? []) {
+					titles.push(tag.title);
+				}
+				hasMore = response.has_more === true;
+				page++;
+			} catch (error) {
+				console.error(`Failed to fetch tags for note ${noteId}:`, error);
+				return { titles, truncated: true };
+			}
+		}
+
+		if (page > TagRepository.MAX_PAGES) {
+			console.info(
+				`Tag fetch for note ${noteId} hit the ${TagRepository.MAX_PAGES}-page safety cap; returning ${titles.length} tags.`
+			);
+			return { titles, truncated: true };
+		}
+
+		return { titles, truncated: false };
 	}
 }

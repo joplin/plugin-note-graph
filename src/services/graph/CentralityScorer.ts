@@ -4,6 +4,10 @@ const MAX_SIZE = 10;
 /** Used when every note has the same degree. There's nothing to compare, so all nodes get the same mid-range size. */
 const FLAT_DEGREE_SIZE = 5;
 
+export function clampSize(size: number): number {
+	return Math.min(MAX_SIZE, Math.max(MIN_SIZE, size));
+}
+
 export class CentralityScorer {
 	/** Maps each note's degree to a 1-10 size scale. See `scale()` for why this isn't plain min-max. */
 	public score(degreeMap: Map<string, number>): Map<string, number> {

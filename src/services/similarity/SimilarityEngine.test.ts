@@ -1,6 +1,8 @@
+import joplin from 'api';
 import { SimilarityEngine } from './SimilarityEngine';
 import { Note } from '../../data/Types';
 import { EmbeddedNote } from '../embeddings/Types';
+import { LARGE_VAULT_THRESHOLD } from './ThresholdPresets';
 
 function makeNote(
 	id: string,
@@ -575,6 +577,94 @@ describe('SimilarityEngine', () => {
 			const engine = new SimilarityEngine(notes, embedded);
 			const pairs = await engine.compute();
 
+			expect(pairs).toEqual([]);
+		});
+	});
+
+	describe('large vault (search-based) path retry', () => {
+		function makeLargeVault(): { notes: Note[]; embedded: EmbeddedNote[] } {
+			const count = LARGE_VAULT_THRESHOLD + 1;
+			const notes: Note[] = [];
+			for (let i = 0; i < count; i++) {
+				notes.push(makeNote('n' + i, 'Note ' + i));
+			}
+			const embedded = [embed('n0', [1, 0]), embed('n1', [1, 0])];
+			return { notes, embedded };
+		}
+
+		beforeEach(() => {
+			jest.useFakeTimers();
+		});
+
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		it('retries a failed note search and keeps the result once it succeeds', async () => {
+			const { notes, embedded } = makeLargeVault();
+			const search = (joplin.ai as unknown as { search: jest.Mock }).search;
+			let calls = 0;
+			search.mockImplementation(async (options: { query: { noteId: string } }) => {
+				calls++;
+				if (options.query.noteId === 'n0' && calls === 1) {
+					throw new Error('network blip');
+				}
+				if (options.query.noteId === 'n0') {
+					return [{ noteId: 'n1', chunkIndex: 0, chunkText: '', score: 0.9 }];
+				}
+				return [];
+			});
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairsPromise = engine.compute();
+			await jest.advanceTimersByTimeAsync(500);
+			const pairs = await pairsPromise;
+
+			expect(pairs.some((p) => p.source === 'n0' && p.target === 'n1')).toBe(true);
+		});
+
+		it('falls back to cosine similarity when every note search fails after retrying', async () => {
+			const { notes, embedded } = makeLargeVault();
+			const search = (joplin.ai as unknown as { search: jest.Mock }).search;
+			search.mockRejectedValue(new Error('search unavailable'));
+			const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairsPromise = engine.compute();
+			await jest.advanceTimersByTimeAsync(notes.length * 500 + 1000);
+			const pairs = await pairsPromise;
+
+			expect(pairs.some((p) => p.source === 'n0' && p.target === 'n1')).toBe(true);
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('falling back to pairwise cosine similarity'),
+				expect.anything()
+			);
+			warnSpy.mockRestore();
+		});
+
+		it('gives up after a handful of consecutive failures instead of retrying every note in a large vault', async () => {
+			const { notes, embedded } = makeLargeVault();
+			const search = (joplin.ai as unknown as { search: jest.Mock }).search;
+			search.mockRejectedValue(new Error('search unavailable'));
+			jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairsPromise = engine.compute();
+			await jest.advanceTimersByTimeAsync(3 * 500 + 1000);
+			await pairsPromise;
+
+			expect(search.mock.calls.length).toBeLessThan(notes.length);
+		});
+
+		it('stops before calling search when isCancelled() is already true', async () => {
+			const { notes, embedded } = makeLargeVault();
+			const search = (joplin.ai as unknown as { search: jest.Mock }).search;
+			search.mockResolvedValue([]);
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute(undefined, undefined, () => true);
+
+			expect(search).not.toHaveBeenCalled();
 			expect(pairs).toEqual([]);
 		});
 	});

@@ -5,7 +5,7 @@ export type ProviderId = 'joplin-native';
 export interface EmbeddingProvider {
 	readonly id: ProviderId;
 	readonly modelName: string;
-	fetchVectorsByNoteIds(noteIds: string[]): Promise<Map<string, number[]>>;
+	fetchVectorsByNoteIds(noteIds: string[], isCancelled?: () => boolean): Promise<Map<string, number[]>>;
 	getCachedVectors?(): Map<string, number[]> | null;
 	getFetchedModelId?(): string | null;
 }

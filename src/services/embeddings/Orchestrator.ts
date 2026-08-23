@@ -82,7 +82,10 @@ export class EmbeddingOrchestrator {
 
 		const fresh =
 			notesToFetch.length > 0
-				? await provider.fetchVectorsByNoteIds(notesToFetch.map((n) => n.id))
+				? await provider.fetchVectorsByNoteIds(
+						notesToFetch.map((n) => n.id),
+						() => this.cancelled
+					)
 				: new Map<string, number[]>();
 
 		await this.saveFreshVectors(notesToFetch, fresh, modelId);

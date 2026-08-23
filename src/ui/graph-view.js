@@ -13,30 +13,354 @@ var FCOSE_OPTIONS = {
 	animationDuration: 800,
 	fit: true,
 	padding: 40,
-	nodeDimensionsIncludeLabels: false,
-	uniformNodeDimensions: true,
+	nodeDimensionsIncludeLabels: true,
+	uniformNodeDimensions: false,
 	packComponents: true,
-	nodeSeparation: 140,
-	nodeRepulsion: function () { return 8000; },
-	gravity: 0.12,
+	nodeSeparation: 200,
+	nodeRepulsion: function () {
+		return 20000;
+	},
+	gravity: 0.05,
 	gravityRange: 5.0,
 	idealEdgeLength: 180,
 	edgeElasticity: 0.2,
 	numIter: 3000,
 	tile: true,
-	tilingPaddingVertical: 25,
-	tilingPaddingHorizontal: 25,
+	tilingPaddingVertical: 40,
+	tilingPaddingHorizontal: 40,
 	step: 'all',
 };
 
+var INCREMENTAL_FCOSE_OVERRIDES = {
+	randomize: false,
+	animate: false,
+	fit: false,
+	packComponents: false,
+};
+
+var LAYOUT_FCOSE = 'fcose';
+var LAYOUT_HIERARCHICAL = 'hierarchical';
+var currentLayoutName = LAYOUT_FCOSE;
+
+function buildLayoutOptions(incremental, fixedNodeConstraint) {
+	if (currentLayoutName === LAYOUT_HIERARCHICAL) {
+		return {
+			name: 'breadthfirst',
+			directed: false,
+			fit: true,
+			padding: 40,
+			spacingFactor: 1.6,
+			avoidOverlap: true,
+			animate: !incremental,
+			animationDuration: 500,
+		};
+	}
+
+	var options = Object.assign({}, FCOSE_OPTIONS);
+	if (incremental) {
+		Object.assign(options, INCREMENTAL_FCOSE_OVERRIDES, {
+			fixedNodeConstraint: fixedNodeConstraint || [],
+		});
+	}
+	return options;
+}
+
+function escapeHtml(value) {
+	return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function positionTooltip(clientX, clientY, offset) {
+	if (!tooltipEl) return;
+	var width = tooltipEl.offsetWidth;
+	var height = tooltipEl.offsetHeight;
+	var vw = window.innerWidth;
+	var vh = window.innerHeight;
+
+	var left = clientX + offset;
+	if (left + width > vw) left = clientX - width - offset;
+
+	var top = clientY + offset;
+	if (top + height > vh) top = clientY - height - offset;
+
+	tooltipEl.style.left = Math.max(4, Math.min(left, vw - width - 4)) + 'px';
+	tooltipEl.style.top = Math.max(4, Math.min(top, vh - height - 4)) + 'px';
+}
+
 var cy;
 var statusEl;
-var pollTimer;
 var tooltipEl;
 var nodeStats;
-var progressEl;
-var progressFillEl;
-var progressLabelEl;
+var pipelineProgressEl;
+var pipelineProgressFillEl;
+var pipelineProgressLabelEl;
+var pipelineProgressCancelEl;
+var hasRenderedOnce = false;
+var lastSeenVersion = 0;
+var categoryFilterEl;
+var currentSearchQuery = '';
+var searchBorderTimer = null;
+var densitySliderEl;
+var densityValueEl;
+var densityControlEl;
+var currentMinConfidence = 0;
+var edgeTypeOff = {};
+var focusBtnEl;
+var focusActive = false;
+var focusIsAutoFollowing = false;
+var pendingFocusNoteId = null;
+
+function focusNeighborhoodOf(node) {
+	var hood = node.closedNeighborhood().add(node.neighborhood().nodes().neighborhood());
+	return hood.add(hood.ancestors());
+}
+
+function applyVisibility() {
+	if (!cy) return;
+
+	var focusHood = null;
+	if (focusActive) {
+		var sel = cy.nodes(':selected');
+		if (sel.length > 0) focusHood = focusNeighborhoodOf(sel);
+	}
+
+	cy.nodes().forEach(function (n) {
+		if (focusHood && !focusHood.has(n)) n.hide();
+		else n.show();
+	});
+
+	cy.edges().forEach(function (e) {
+		var type = e.data('type');
+		var filtered =
+			!!edgeTypeOff[type] ||
+			(type === 'semantic' &&
+				typeof e.data('score') === 'number' &&
+				e.data('score') < currentMinConfidence);
+		var hiddenByFocus = focusHood ? !focusHood.has(e) : false;
+		if (filtered || hiddenByFocus) e.hide();
+		else e.show();
+	});
+}
+
+function engageFocusMode() {
+	if (!cy || focusActive) return;
+	var sel = cy.nodes(':selected');
+	if (sel.length === 0) return;
+	focusActive = true;
+	if (focusBtnEl) focusBtnEl.classList.add('legend-panel__action-btn--active');
+	applyVisibility();
+	cy.animate({ fit: { eles: focusNeighborhoodOf(sel), padding: 50 }, duration: 400 });
+}
+
+function focusNodeBeforeLayout(noteId) {
+	var node = cy.getElementById(noteId);
+	if (!node || node.empty()) return false;
+	cy.elements().unselect();
+	node.select();
+	focusActive = true;
+	focusIsAutoFollowing = true;
+	if (focusBtnEl) focusBtnEl.classList.add('legend-panel__action-btn--active');
+	return true;
+}
+
+function fitViewportToFocus() {
+	if (!cy) return;
+	if (focusActive) {
+		var sel = cy.nodes(':selected');
+		if (sel.length > 0) {
+			cy.fit(focusNeighborhoodOf(sel), 40);
+			return;
+		}
+	}
+	cy.fit(undefined, 40);
+}
+
+function disengageFocusMode() {
+	if (!cy || !focusActive) return;
+	focusActive = false;
+	focusIsAutoFollowing = false;
+	if (focusBtnEl) focusBtnEl.classList.remove('legend-panel__action-btn--active');
+	applyVisibility();
+	cy.fit(undefined, 30);
+}
+
+function engageFocusOnNote(noteId) {
+	if (!cy) return false;
+	var node = cy.getElementById(noteId);
+	if (!node || node.empty()) return false;
+	if (focusActive && !focusIsAutoFollowing) return true;
+	focusActive = true;
+	focusIsAutoFollowing = true;
+	if (focusBtnEl) focusBtnEl.classList.add('legend-panel__action-btn--active');
+	cy.elements().unselect();
+	node.select();
+	applyVisibility();
+	cy.animate({ fit: { eles: focusNeighborhoodOf(node), padding: 50 }, duration: 400 });
+	return true;
+}
+
+function resolvePendingFocus() {
+	if (!pendingFocusNoteId || !cy) return;
+	var noteId = pendingFocusNoteId;
+	if (engageFocusOnNote(noteId)) {
+		pendingFocusNoteId = null;
+	}
+}
+
+var COMMUNITY_PARENT_PREFIX = 'community::';
+var groupByCommunityEnabled = false;
+
+function communityParentId(community) {
+	return COMMUNITY_PARENT_PREFIX + community;
+}
+
+function applyCommunityGrouping() {
+	if (!cy) return;
+	var realNodes = cy.nodes().filter(function (n) {
+		return !n.data('isCommunityParent');
+	});
+
+	if (!groupByCommunityEnabled) {
+		realNodes.forEach(function (n) {
+			if (n.parent().nonempty()) n.move({ parent: null });
+		});
+		cy.nodes()
+			.filter(function (n) {
+				return n.data('isCommunityParent');
+			})
+			.remove();
+		return;
+	}
+
+	var communityCounts = {};
+	realNodes.forEach(function (n) {
+		var community = n.data('community') || 0;
+		communityCounts[community] = (communityCounts[community] || 0) + 1;
+	});
+
+	var presentParentIds = {};
+	Object.keys(communityCounts).forEach(function (community) {
+		if (communityCounts[community] <= 1) return;
+		var parentId = communityParentId(community);
+		presentParentIds[parentId] = true;
+		var label = 'Cluster (' + communityCounts[community] + ')';
+		var existing = cy.getElementById(parentId);
+		if (existing && existing.length) {
+			existing.data('label', label);
+		} else {
+			cy.add({ data: { id: parentId, label: label, isCommunityParent: true } });
+		}
+	});
+
+	cy.nodes()
+		.filter(function (n) {
+			return n.data('isCommunityParent') && !presentParentIds[n.id()];
+		})
+		.remove();
+
+	realNodes.forEach(function (n) {
+		var community = n.data('community') || 0;
+		if (communityCounts[community] <= 1) {
+			if (n.parent().nonempty()) n.move({ parent: null });
+			return;
+		}
+		var wantedParentId = communityParentId(community);
+		if (n.parent().id() !== wantedParentId) {
+			n.move({ parent: wantedParentId });
+		}
+	});
+}
+
+function refreshDensityControlVisibility() {
+	if (!densityControlEl) return;
+	var hasScore = false;
+	cy.edges('[type="semantic"]').forEach(function (e) {
+		if (typeof e.data('score') === 'number') hasScore = true;
+	});
+	densityControlEl.style.display = hasScore ? '' : 'none';
+}
+
+var UNCATEGORIZED_FILTER_VALUE = '__uncategorized__';
+
+function refreshCategoryFilterOptions() {
+	if (!categoryFilterEl) return;
+
+	var categories = {};
+	var hasUncategorized = false;
+	cy.nodes().forEach(function (n) {
+		if (n.data('isCommunityParent')) return;
+		var c = n.data('category');
+		if (c) {
+			categories[c] = true;
+		} else {
+			hasUncategorized = true;
+		}
+	});
+	var names = Object.keys(categories).sort();
+
+	var previousValue = categoryFilterEl.value;
+	categoryFilterEl.innerHTML = '';
+	var allOpt = document.createElement('option');
+	allOpt.value = '';
+	allOpt.textContent = 'All categories';
+	categoryFilterEl.appendChild(allOpt);
+	names.forEach(function (name) {
+		var opt = document.createElement('option');
+		opt.value = name;
+		opt.textContent = name;
+		categoryFilterEl.appendChild(opt);
+	});
+	if (hasUncategorized) {
+		var uncatOpt = document.createElement('option');
+		uncatOpt.value = UNCATEGORIZED_FILTER_VALUE;
+		uncatOpt.textContent = 'Uncategorized';
+		categoryFilterEl.appendChild(uncatOpt);
+	}
+
+	var stillValid =
+		previousValue === '' ||
+		names.indexOf(previousValue) !== -1 ||
+		(previousValue === UNCATEGORIZED_FILTER_VALUE && hasUncategorized);
+	categoryFilterEl.value = stillValid ? previousValue : '';
+	categoryFilterEl.style.display = names.length === 0 && !hasUncategorized ? 'none' : '';
+
+	applyNodeFilters();
+}
+
+function applyNodeFilters() {
+	if (!cy) return;
+	var query = currentSearchQuery;
+	var category = categoryFilterEl ? categoryFilterEl.value : '';
+
+	cy.nodes().stop(true, false);
+	cy.nodes().removeStyle('border-width border-color');
+
+	if (!query && !category) {
+		cy.nodes().style('opacity', 1);
+		return;
+	}
+
+	var matches = cy.collection();
+	cy.nodes().forEach(function (n) {
+		if (n.data('isCommunityParent')) return;
+		var matchesSearch = !query || (n.data('label') || '').toLowerCase().indexOf(query) !== -1;
+		var c = n.data('category');
+		var matchesCategory =
+			!category || (category === UNCATEGORIZED_FILTER_VALUE ? !c : c === category);
+		var isMatch = matchesSearch && matchesCategory;
+		n.style('opacity', isMatch ? 1 : 0.15);
+		if (isMatch) matches = matches.union(n);
+	});
+
+	if (query && matches.length > 0) {
+		matches.style('border-width', 3);
+		matches.style('border-color', '#ffa500');
+		if (searchBorderTimer) clearTimeout(searchBorderTimer);
+		searchBorderTimer = setTimeout(function () {
+			matches.removeStyle('border-width border-color');
+		}, 800);
+		cy.animate({ fit: { eles: matches, padding: 50 }, duration: 400 });
+	}
+}
 
 function showStatus(text) {
 	if (statusEl) {
@@ -51,18 +375,20 @@ function hideStatus() {
 	}
 }
 
-/** Updates the progress bar below the stats bar with an "embedding N/M notes" state. */
-function showProgress(current, total) {
-	if (!progressEl || !progressFillEl || !progressLabelEl) return;
-	progressEl.style.display = '';
+function showPipelineProgress(label, current, total) {
+	if (!pipelineProgressEl || !pipelineProgressFillEl || !pipelineProgressLabelEl) return;
+	pipelineProgressEl.style.display = 'inline-flex';
 	var pct = total > 0 ? Math.round((current / total) * 100) : 0;
-	progressFillEl.style.width = pct + '%';
-	progressLabelEl.textContent = 'Embedding notes: ' + current + '/' + total;
+	pipelineProgressFillEl.style.width = pct + '%';
+	pipelineProgressLabelEl.textContent = label;
+	if (pipelineProgressCancelEl) {
+		pipelineProgressCancelEl.disabled = false;
+	}
 }
 
-function hideProgress() {
-	if (progressEl) {
-		progressEl.style.display = 'none';
+function hidePipelineProgress() {
+	if (pipelineProgressEl) {
+		pipelineProgressEl.style.display = 'none';
 	}
 }
 
@@ -107,13 +433,18 @@ function isDarkTheme() {
 	return lum < 128;
 }
 
+function applyThemeToChrome(dark) {
+	document.documentElement.classList.toggle('theme-dark', dark);
+	if (densitySliderEl) densitySliderEl.style.accentColor = dark ? '#9b6bd5' : '#5b9bd5';
+}
+
 /** Build the Cytoscape stylesheet with theme-aware colours. Tag edges are green dotted, semantic are purple dashed, explicit are dark grey solid. */
 function buildStylesheet() {
 	var dark = isDarkTheme();
 
 	return [
 		{
-			selector: 'node',
+			selector: 'node[!isCommunityParent]',
 			style: {
 				'background-color': communityColor,
 				label: 'data(label)',
@@ -122,8 +453,11 @@ function buildStylesheet() {
 				'text-valign': 'top',
 				'text-halign': 'center',
 				'text-margin-y': -4,
-				'text-wrap': 'ellipsis',
-				'text-max-width': '100px',
+				'text-wrap': 'wrap',
+				'text-max-width': '90px',
+				'text-outline-width': 2,
+				'text-outline-color': dark ? '#1e1e1e' : '#ffffff',
+				'min-zoomed-font-size': 7,
 				width: nodeDiameter,
 				height: nodeDiameter,
 				'border-width': 1.5,
@@ -131,11 +465,34 @@ function buildStylesheet() {
 			},
 		},
 		{
-			selector: 'node:selected',
+			selector: 'node[!isCommunityParent]:selected',
 			style: {
-				'background-color': '#ffa500',
+				'outline-style': 'dashed',
+				'outline-color': communityColor,
+				'outline-width': 3,
+				'outline-opacity': 1,
+			},
+		},
+		{
+			selector: 'node[?isCommunityParent]',
+			style: {
+				'background-color': dark ? '#ffffff' : '#000000',
+				'background-opacity': dark ? 0.05 : 0.04,
 				'border-width': 1.5,
-				'border-color': '#cc8400',
+				'border-style': 'dashed',
+				'border-color': dark ? '#ffffff' : '#000000',
+				'border-opacity': dark ? 0.28 : 0.2,
+				shape: 'round-rectangle',
+				label: 'data(label)',
+				color: dark ? '#ccc' : '#555',
+				'font-size': '10px',
+				'font-weight': 600,
+				'text-valign': 'top',
+				'text-halign': 'center',
+				'text-margin-y': -6,
+				'text-outline-width': 2,
+				'text-outline-color': dark ? '#1e1e1e' : '#ffffff',
+				padding: '18px',
 			},
 		},
 		{
@@ -149,9 +506,9 @@ function buildStylesheet() {
 				},
 				'line-color': function (ele) {
 					var t = ele.data('type');
-					if (t === 'tag') return dark ? '#3d8b5e' : '#4caf7d';
+					if (t === 'tag') return '#4caf7d';
 					if (t === 'semantic') return dark ? '#a48ad9' : '#9b6bd5';
-					return dark ? '#999' : '#555';
+					return dark ? '#bbbbbb' : '#555';
 				},
 				'curve-style': 'bezier',
 				'line-style': function (ele) {
@@ -166,9 +523,33 @@ function buildStylesheet() {
 				'target-arrow-color': function (ele) {
 					var t = ele.data('type');
 					if (t === 'semantic') return dark ? '#a48ad9' : '#9b6bd5';
-					return dark ? '#999' : '#555';
+					return dark ? '#bbbbbb' : '#555';
 				},
 				'arrow-scale': 0.8,
+			},
+		},
+		{
+			selector: 'edge.edge-hover',
+			style: {
+				'overlay-color': function (ele) {
+					var t = ele.data('type');
+					if (t === 'tag') return '#4caf7d';
+					if (t === 'semantic') return dark ? '#a48ad9' : '#9b6bd5';
+					return dark ? '#bbbbbb' : '#555';
+				},
+				'overlay-opacity': 0.6,
+				'overlay-padding': 2,
+				'z-index': 10,
+			},
+		},
+		{
+			selector: 'node.edge-hover-node, node.node-hover',
+			style: {
+				'outline-style': 'solid',
+				'outline-color': communityColor,
+				'outline-width': 3,
+				'outline-opacity': 1,
+				'z-index': 10,
 			},
 		},
 	];
@@ -196,33 +577,62 @@ function onNodeDblClick(evt) {
 	});
 }
 
-/**
- * Replace the current graph with new data. Computes per-node link/tag counts,
- * deduplicates unique tag names for the stats bar, and runs the fCoSE layout.
- * @param {{ nodes: Array, edges: Array }} message - graph data from the plugin.
- */
-function renderGraph(message) {
-	cy.elements().remove();
+function registerEdgeTooltip(selector, className, resolveText) {
+	cy.on('mouseover', selector, function (evt) {
+		var value = resolveText(evt.target);
+		if (!value || !tooltipEl) return;
+		tooltipEl.className = 'graph-tooltip';
+		tooltipEl.style.borderLeft = '';
+		tooltipEl.innerHTML = '<div class="graph-tooltip__value">' + escapeHtml(value) + '</div>';
+		tooltipEl.classList.add(className);
+		tooltipEl.classList.add('is-visible');
+		positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 12);
+	});
 
-	if (!message || !message.nodes || !message.nodes.length) {
-		showStatus('No graph data received');
-		updateStats(0, 0, 0, 0);
-		return;
+	cy.on('mousemove', selector, function (evt) {
+		positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 12);
+	});
+
+	cy.on('mouseout', selector, function () {
+		if (!tooltipEl) return;
+		tooltipEl.classList.remove('is-visible');
+		tooltipEl.classList.remove(className);
+	});
+}
+
+function fallbackCopy(text) {
+	var ta = document.createElement('textarea');
+	ta.value = text;
+	ta.style.position = 'fixed';
+	ta.style.opacity = '0';
+	document.body.appendChild(ta);
+	ta.select();
+	try {
+		document.execCommand('copy');
+	} catch (e) {
+		console.error('Copy failed:', e);
 	}
+	document.body.removeChild(ta);
+}
 
-	hideStatus();
+function copyText(text) {
+	if (navigator.clipboard && navigator.clipboard.writeText) {
+		navigator.clipboard.writeText(text).catch(function () {
+			fallbackCopy(text);
+		});
+	} else {
+		fallbackCopy(text);
+	}
+}
 
-	cy.add(message.nodes);
-	cy.add(message.edges || []);
-
+function recomputeStats() {
 	nodeStats = {};
-	var edgesArr = message.edges || [];
 	var explicitCount = 0;
 	var semanticCount = 0;
 	var tagNames = {};
 
-	for (var i = 0; i < edgesArr.length; i++) {
-		var e = edgesArr[i].data || edgesArr[i];
+	cy.edges().forEach(function (edge) {
+		var e = edge.data();
 		if (!nodeStats[e.source]) nodeStats[e.source] = { linkCount: 0, tagCount: 0 };
 		if (!nodeStats[e.target]) nodeStats[e.target] = { linkCount: 0, tagCount: 0 };
 
@@ -244,19 +654,264 @@ function renderGraph(message) {
 				}
 			}
 		}
-	}
+	});
 
 	var totalTags = Object.keys(tagNames).length;
-	updateStats(message.nodes.length, explicitCount, semanticCount, totalTags);
+	var noteNodeCount = cy.nodes().filter(function (n) {
+		return !n.data('isCommunityParent');
+	}).length;
+	updateStats(noteNodeCount, explicitCount, semanticCount, totalTags);
+	refreshCategoryFilterOptions();
+	refreshDensityControlVisibility();
+	if (groupByCommunityEnabled) {
+		applyCommunityGrouping();
+	}
+}
 
-	cy.layout(FCOSE_OPTIONS).run();
+/** Mirrors LouvainDetector.MIN_NOTES_FOR_LOUVAIN — below this, the graph has too few notes for meaningful structure. */
+var NEAR_EMPTY_NOTE_THRESHOLD = 3;
 
-	var edgeCount = (message.edges || []).length;
-	if (edgeCount === 0) {
-		showStatus(message.nodes.length + ' notes, 0 connections');
+var lastAllNotesVeryShort = false;
+
+function noteCountLabel(count) {
+	return count + (count === 1 ? ' note' : ' notes');
+}
+
+function refreshEmptyStateStatus() {
+	var noteCount = cy.nodes().length;
+	if (noteCount === 0) {
+		showStatus('No graph data received');
+	} else if (noteCount < NEAR_EMPTY_NOTE_THRESHOLD) {
+		showStatus(
+			'Only ' +
+				noteCountLabel(noteCount) +
+				' found. Add more notes to see a meaningful graph.'
+		);
+	} else if (cy.edges().length === 0) {
+		showStatus(noteCountLabel(noteCount) + ', 0 connections');
+	} else if (lastAllNotesVeryShort) {
+		showStatus('Notes are very short - add more content for a more meaningful graph.');
 	} else {
 		hideStatus();
 	}
+}
+
+/**
+ * Replace the current graph with new data and run a full fCoSE layout.
+ * @param {{ nodes: Array, edges: Array }} message - graph data from the plugin.
+ */
+function renderGraph(message) {
+	cy.elements().remove();
+	focusActive = false;
+	focusIsAutoFollowing = false;
+	if (focusBtnEl) focusBtnEl.classList.remove('legend-panel__action-btn--active');
+	lastAllNotesVeryShort = !!(message && message.allNotesVeryShort);
+
+	if (!message || !message.nodes || !message.nodes.length) {
+		showStatus('No graph data received');
+		updateStats(0, 0, 0, 0);
+		return;
+	}
+
+	hideStatus();
+
+	cy.add(message.nodes);
+	cy.add(message.edges || []);
+
+	recomputeStats();
+
+	var focused = false;
+	if (pendingFocusNoteId && focusNodeBeforeLayout(pendingFocusNoteId)) {
+		pendingFocusNoteId = null;
+		focused = true;
+	}
+
+	var layoutOptions = buildLayoutOptions(false);
+	if (focused) {
+		layoutOptions.animate = false;
+		layoutOptions.fit = false;
+	}
+	var layout = cy.elements().layout(layoutOptions);
+	if (focused) {
+		layout.one('layoutstop', function () {
+			applyVisibility();
+			fitViewportToFocus();
+		});
+	} else {
+		applyVisibility();
+	}
+	layout.run();
+	refreshEmptyStateStatus();
+}
+
+function upsertElement(data) {
+	var existing = cy.getElementById(data.id);
+	if (existing && existing.length) {
+		existing.removeData();
+		existing.data(data);
+	} else {
+		cy.add({ data: data });
+	}
+}
+
+function applyGraphPatch(patch) {
+	if (!cy || !patch) return;
+	var hasChanges =
+		(patch.upsertedNodes && patch.upsertedNodes.length) ||
+		(patch.upsertedEdges && patch.upsertedEdges.length) ||
+		(patch.removedNodeIds && patch.removedNodeIds.length) ||
+		(patch.removedEdgeIds && patch.removedEdgeIds.length);
+	if (!hasChanges) return;
+
+	var movableIds = {};
+
+	(patch.removedEdgeIds || []).forEach(function (id) {
+		var ele = cy.getElementById(id);
+		if (ele && ele.length) {
+			movableIds[ele.data('source')] = true;
+			movableIds[ele.data('target')] = true;
+		}
+	});
+
+	var toRemove = cy.collection();
+	(patch.removedEdgeIds || []).concat(patch.removedNodeIds || []).forEach(function (id) {
+		var ele = cy.getElementById(id);
+		if (ele && ele.length) toRemove = toRemove.union(ele);
+	});
+	toRemove.remove();
+
+	(patch.upsertedNodes || []).forEach(function (item) {
+		var data = item.data || item;
+		var existing = cy.getElementById(data.id);
+		var isNew = !(existing && existing.length);
+		upsertElement(data);
+		if (isNew) movableIds[data.id] = true;
+	});
+	(patch.upsertedEdges || []).forEach(function (item) {
+		var data = item.data || item;
+		upsertElement(data);
+		movableIds[data.source] = true;
+		movableIds[data.target] = true;
+	});
+
+	recomputeStats();
+
+	var fixedNodeConstraint = [];
+	if (currentLayoutName === LAYOUT_FCOSE) {
+		cy.nodes().forEach(function (n) {
+			if (n.data('isCommunityParent')) return;
+			if (!movableIds[n.id()]) {
+				fixedNodeConstraint.push({ nodeId: n.id(), position: n.position() });
+			}
+		});
+	}
+	cy.elements(':visible').layout(buildLayoutOptions(true, fixedNodeConstraint)).run();
+
+	applyVisibility();
+	refreshEmptyStateStatus();
+	resolvePendingFocus();
+}
+
+function definedKeys(obj) {
+	return Object.keys(obj).filter(function (key) {
+		return obj[key] !== undefined;
+	});
+}
+
+function dataEqual(existingEle, data) {
+	if (!existingEle || !existingEle.length) return false;
+	var existing = existingEle.data();
+	var keys = {};
+	definedKeys(existing).forEach(function (key) {
+		keys[key] = true;
+	});
+	definedKeys(data).forEach(function (key) {
+		keys[key] = true;
+	});
+	return Object.keys(keys).every(function (key) {
+		return existing[key] === data[key];
+	});
+}
+
+function computeClientPatch(graphData) {
+	var newNodeIds = {};
+	(graphData.nodes || []).forEach(function (n) {
+		newNodeIds[n.data.id] = true;
+	});
+	var newEdgeIds = {};
+	(graphData.edges || []).forEach(function (e) {
+		newEdgeIds[e.data.id] = true;
+	});
+
+	var upsertedNodes = (graphData.nodes || []).filter(function (n) {
+		return !dataEqual(cy.getElementById(n.data.id), n.data);
+	});
+	var upsertedEdges = (graphData.edges || []).filter(function (e) {
+		return !dataEqual(cy.getElementById(e.data.id), e.data);
+	});
+
+	var removedNodeIds = [];
+	cy.nodes().forEach(function (n) {
+		if (n.data('isCommunityParent')) return;
+		if (!newNodeIds[n.id()]) removedNodeIds.push(n.id());
+	});
+	var removedEdgeIds = [];
+	cy.edges().forEach(function (e) {
+		if (!newEdgeIds[e.id()]) removedEdgeIds.push(e.id());
+	});
+
+	return {
+		upsertedNodes: upsertedNodes,
+		upsertedEdges: upsertedEdges,
+		removedNodeIds: removedNodeIds,
+		removedEdgeIds: removedEdgeIds,
+	};
+}
+
+var WHOLESALE_CHANGE_RATIO = 0.5;
+
+function isWholesaleChange(patch) {
+	var currentCount = cy.nodes().filter(function (n) {
+		return !n.data('isCommunityParent');
+	}).length;
+	var removedCount = (patch.removedNodeIds || []).length;
+
+	var newCount = 0;
+	(patch.upsertedNodes || []).forEach(function (item) {
+		var data = item.data || item;
+		var existing = cy.getElementById(data.id);
+		if (!existing || !existing.length) newCount++;
+	});
+
+	if (currentCount > 0 && removedCount >= currentCount * WHOLESALE_CHANGE_RATIO) return true;
+	var resultingCount = currentCount - removedCount + newCount;
+	return newCount >= resultingCount * WHOLESALE_CHANGE_RATIO;
+}
+
+function handleGraphUpdate(type, message) {
+	var version = message.version || 0;
+	if (hasRenderedOnce && version <= lastSeenVersion) return;
+
+	if (message && message.focusNoteId) {
+		pendingFocusNoteId = message.focusNoteId;
+	}
+
+	if (type === 'graph-patch') {
+		if (!hasRenderedOnce || version !== lastSeenVersion + 1) return;
+		applyGraphPatch(message);
+	} else if (!hasRenderedOnce) {
+		renderGraph(message);
+		hasRenderedOnce = true;
+	} else {
+		var patch = computeClientPatch(message);
+		if (isWholesaleChange(patch)) {
+			renderGraph(message);
+		} else {
+			applyGraphPatch(patch);
+		}
+	}
+
+	lastSeenVersion = version;
 }
 
 /** Write counts into the stats bar elements (stat-notes, stat-explicit, stat-semantic, stat-tags). */
@@ -274,7 +929,8 @@ function updateStats(notes, explicit, semantic, tags) {
 function createExportMenu(btn) {
 	var menu = document.createElement('div');
 	menu.className = 'export-menu';
-	menu.innerHTML = '<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="svg"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>SVG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
+	menu.innerHTML =
+		'<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="svg"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>SVG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
 	document.body.appendChild(menu);
 
 	btn.addEventListener('click', function (e) {
@@ -284,7 +940,7 @@ function createExportMenu(btn) {
 		if (!open) {
 			var rect = btn.getBoundingClientRect();
 			menu.style.left = rect.left + 'px';
-			menu.style.top = (rect.bottom + 4) + 'px';
+			menu.style.top = rect.bottom + 4 + 'px';
 		}
 	});
 
@@ -294,7 +950,9 @@ function createExportMenu(btn) {
 		if (!item) return;
 		var format = item.getAttribute('data-format');
 		menu.style.display = 'none';
-		var bg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim() || '#1e1e1e';
+		var bg =
+			getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim() ||
+			'#1e1e1e';
 		if (format === 'png') {
 			downloadFile(cy.png({ full: true, bg: bg }), 'note-graph.png');
 		} else if (format === 'svg') {
@@ -302,7 +960,9 @@ function createExportMenu(btn) {
 			var svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
 			downloadFile(URL.createObjectURL(svgBlob), 'note-graph.svg');
 		} else if (format === 'json') {
-			var blob = new Blob([JSON.stringify(cy.json().elements, null, 2)], { type: 'application/json' });
+			var blob = new Blob([JSON.stringify(cy.json().elements, null, 2)], {
+				type: 'application/json',
+			});
 			downloadFile(URL.createObjectURL(blob), 'note-graph.json');
 		}
 	});
@@ -324,20 +984,42 @@ function downloadFile(data, filename) {
 	if (data.indexOf('blob:') === 0) URL.revokeObjectURL(data);
 }
 
-/** Poll every second for graph data via webviewApi until the first graph-data response arrives. */
+var POLL_INTERVAL_WAITING_MS = 1000;
+var POLL_INTERVAL_LIVE_MS = 3000;
+
+function requestData() {
+	webviewApi
+		.postMessage({ type: 'request-data', version: lastSeenVersion })
+		.then(function (response) {
+			if (response && response.type === 'graph-data') {
+				handleGraphUpdate('graph-data', response);
+			}
+			if (response && response.progress) {
+				var label =
+					response.progress.stage === 'enrichment-progress'
+						? 'Enriching notes'
+						: 'Building graph';
+				showPipelineProgress(label, response.progress.current, response.progress.total);
+			} else {
+				hidePipelineProgress();
+			}
+		})
+		.catch(function (e) {
+			console.error('Note Graph poll failed:', e);
+		})
+		.then(function () {
+			setTimeout(
+				requestData,
+				hasRenderedOnce ? POLL_INTERVAL_LIVE_MS : POLL_INTERVAL_WAITING_MS
+			);
+		});
+}
+
 function pollForData() {
 	if (typeof webviewApi === 'undefined') {
 		return;
 	}
-
-	pollTimer = setInterval(function () {
-		webviewApi.postMessage({ type: 'request-data' }).then(function (response) {
-			if (response && response.type === 'graph-data') {
-				clearInterval(pollTimer);
-				renderGraph(response);
-			}
-		});
-	}, 1000);
+	requestData();
 }
 
 /**
@@ -350,13 +1032,15 @@ function init() {
 		return;
 	}
 
+	applyThemeToChrome(isDarkTheme());
+
 	var header = document.querySelector('.panel-header');
 	var legend = document.getElementById('legend-panel');
 	var statsBar = document.getElementById('stats-bar');
 	var headerH = header ? header.offsetHeight : 0;
 	var legendH = legend ? legend.offsetHeight : 0;
 	var statsH = statsBar ? statsBar.offsetHeight : 0;
-	container.style.height = (window.innerHeight - headerH - legendH - statsH) + 'px';
+	container.style.height = window.innerHeight - headerH - legendH - statsH + 'px';
 	container.style.minHeight = '350px';
 	container.style.width = '100%';
 
@@ -369,9 +1053,20 @@ function init() {
 		statusEl.style.display = '';
 	}
 
-	progressEl = document.getElementById('analysis-progress');
-	progressFillEl = document.getElementById('analysis-progress-fill');
-	progressLabelEl = document.getElementById('analysis-progress-label');
+	pipelineProgressEl = document.getElementById('pipeline-progress');
+	pipelineProgressFillEl = document.getElementById('pipeline-progress-fill');
+	pipelineProgressLabelEl = document.getElementById('pipeline-progress-label');
+	pipelineProgressCancelEl = document.getElementById('pipeline-progress-cancel');
+	if (pipelineProgressCancelEl) {
+		pipelineProgressCancelEl.addEventListener('click', function () {
+			pipelineProgressCancelEl.disabled = true;
+			if (typeof webviewApi !== 'undefined') {
+				webviewApi.postMessage({ type: 'cancel-analysis' }).catch(function (e) {
+					console.error('Note Graph cancel failed:', e);
+				});
+			}
+		});
+	}
 
 	tooltipEl = document.createElement('div');
 	tooltipEl.className = 'graph-tooltip';
@@ -385,8 +1080,8 @@ function init() {
 			wheelSensitivity: 0.3,
 		});
 
-		cy.on('tap', 'node', onNodeTap);
-		cy.on('dblclick', 'node', onNodeDblClick);
+		cy.on('tap', 'node[!isCommunityParent]', onNodeTap);
+		cy.on('dblclick', 'node[!isCommunityParent]', onNodeDblClick);
 
 		var zoomInBtn = document.getElementById('graph-zoom-in');
 		var zoomOutBtn = document.getElementById('graph-zoom-out');
@@ -394,7 +1089,10 @@ function init() {
 			zoomInBtn.addEventListener('click', function () {
 				cy.zoom({
 					level: cy.zoom() * 1.3,
-					renderedPosition: { x: container.clientWidth / 2, y: container.clientHeight / 2 },
+					renderedPosition: {
+						x: container.clientWidth / 2,
+						y: container.clientHeight / 2,
+					},
 				});
 			});
 		}
@@ -402,57 +1100,88 @@ function init() {
 			zoomOutBtn.addEventListener('click', function () {
 				cy.zoom({
 					level: cy.zoom() * 0.7,
-					renderedPosition: { x: container.clientWidth / 2, y: container.clientHeight / 2 },
+					renderedPosition: {
+						x: container.clientWidth / 2,
+						y: container.clientHeight / 2,
+					},
 				});
 			});
 		}
 
-		cy.on('mouseover', 'edge[type="tag"]', function (evt) {
+		registerEdgeTooltip('edge[type="tag"]', 'graph-tooltip--tag', function (edge) {
+			return edge.data('tagName');
+		});
+		registerEdgeTooltip(
+			'edge[type="semantic"]',
+			'graph-tooltip--relationship',
+			function (edge) {
+				return edge.data('relationshipLabel');
+			}
+		);
+
+		cy.on('mouseover', 'edge', function (evt) {
 			var edge = evt.target;
-			var tagName = edge.data('tagName');
-			if (!tagName || !tooltipEl) return;
-			tooltipEl.textContent = tagName;
-			tooltipEl.classList.add('graph-tooltip--tag');
-			tooltipEl.style.display = 'block';
+			edge.addClass('edge-hover');
+			edge.source().addClass('edge-hover-node');
+			edge.target().addClass('edge-hover-node');
 		});
 
-		cy.on('mousemove', 'edge[type="tag"]', function (evt) {
-			if (!tooltipEl) return;
-			tooltipEl.style.left = (evt.originalEvent.clientX + 12) + 'px';
-			tooltipEl.style.top = (evt.originalEvent.clientY + 12) + 'px';
+		cy.on('mouseout', 'edge', function (evt) {
+			var edge = evt.target;
+			edge.removeClass('edge-hover');
+			edge.source().removeClass('edge-hover-node');
+			edge.target().removeClass('edge-hover-node');
 		});
 
-		cy.on('mouseout', 'edge[type="tag"]', function () {
-			if (!tooltipEl) return;
-			tooltipEl.style.display = 'none';
-			tooltipEl.classList.remove('graph-tooltip--tag');
-		});
-
-		cy.on('mouseover', 'node', function (evt) {
+		cy.on('mouseover', 'node[!isCommunityParent]', function (evt) {
 			var node = evt.target;
+			node.addClass('node-hover');
 			var label = node.data('label') || '(untitled)';
 			var id = node.id();
 			var degree = node.data('degree') || 0;
 			var community = node.data('community') || 0;
+			var category = node.data('category');
 			var stats = nodeStats && nodeStats[id] ? nodeStats[id] : { linkCount: 0, tagCount: 0 };
-			var safeLabel = label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-			tooltipEl.innerHTML = '<div class="graph-tooltip__title">' + safeLabel + '</div>'
-				+ '<div class="graph-tooltip__row"><span>Degree</span><strong>' + degree + '</strong></div>'
-				+ '<div class="graph-tooltip__row"><span>Links</span><strong>' + stats.linkCount + '</strong></div>'
-				+ '<div class="graph-tooltip__row"><span>Tags</span><strong>' + stats.tagCount + '</strong></div>'
-				+ '<div class="graph-tooltip__row"><span>Community</span><strong>' + community + '</strong></div>';
-			tooltipEl.style.display = 'block';
+			var badge = category
+				? '<div class="graph-tooltip__badge">' + escapeHtml(category) + '</div>'
+				: '';
+			tooltipEl.className = 'graph-tooltip';
+			tooltipEl.style.borderLeft = '3px solid ' + communityColor(node);
+			tooltipEl.innerHTML =
+				'<div class="graph-tooltip__title">' +
+				escapeHtml(label) +
+				'</div>' +
+				badge +
+				'<div class="graph-tooltip__stats">' +
+				'<span class="graph-tooltip__stat">degree <strong>' +
+				degree +
+				'</strong></span>' +
+				'<span class="graph-tooltip__sep"></span>' +
+				'<span class="graph-tooltip__stat">links <strong>' +
+				stats.linkCount +
+				'</strong></span>' +
+				'</div>' +
+				'<div class="graph-tooltip__stats">' +
+				'<span class="graph-tooltip__stat">tags <strong>' +
+				stats.tagCount +
+				'</strong></span>' +
+				'<span class="graph-tooltip__sep"></span>' +
+				'<span class="graph-tooltip__stat">community <strong>' +
+				community +
+				'</strong></span>' +
+				'</div>';
+			tooltipEl.classList.add('is-visible');
+			positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 14);
 		});
 
-		cy.on('mousemove', 'node', function (evt) {
-			if (!tooltipEl) return;
-			tooltipEl.style.left = (evt.originalEvent.clientX + 14) + 'px';
-			tooltipEl.style.top = (evt.originalEvent.clientY + 14) + 'px';
+		cy.on('mousemove', 'node[!isCommunityParent]', function (evt) {
+			positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 14);
 		});
 
-		cy.on('mouseout', 'node', function () {
+		cy.on('mouseout', 'node[!isCommunityParent]', function (evt) {
+			evt.target.removeClass('node-hover');
 			if (!tooltipEl) return;
-			tooltipEl.style.display = 'none';
+			tooltipEl.classList.remove('is-visible');
 		});
 
 		cy.on('tap', function (evt) {
@@ -465,23 +1194,34 @@ function init() {
 			var h = header ? header.offsetHeight : 0;
 			var lh = legend ? legend.offsetHeight : 0;
 			var sh = statsBar ? statsBar.offsetHeight : 0;
-			container.style.height = (window.innerHeight - h - lh - sh) + 'px';
+			container.style.height = window.innerHeight - h - lh - sh + 'px';
 			cy.resize();
 			cy.fit(undefined, 30);
 		});
 		observer.observe(container);
 		observer.observe(document.body);
 
-		var lastBg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
+		var lastBg = getComputedStyle(document.body)
+			.getPropertyValue('--joplin-background-color')
+			.trim();
 		var themeObserver = new MutationObserver(function () {
-			var currentBg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
+			var currentBg = getComputedStyle(document.body)
+				.getPropertyValue('--joplin-background-color')
+				.trim();
 			if (currentBg !== lastBg) {
 				lastBg = currentBg;
 				cy.style().fromJson(buildStylesheet()).update();
+				applyThemeToChrome(isDarkTheme());
 			}
 		});
-		themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
-		themeObserver.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] });
+		themeObserver.observe(document.documentElement, {
+			attributes: true,
+			attributeFilter: ['style', 'class'],
+		});
+		themeObserver.observe(document.body, {
+			attributes: true,
+			attributeFilter: ['style', 'class'],
+		});
 
 		var fitBtn = document.getElementById('graph-fit');
 		if (fitBtn) {
@@ -500,62 +1240,202 @@ function init() {
 			edgeToggles[t].addEventListener('click', function () {
 				var edgeType = this.getAttribute('data-edge');
 				var off = this.classList.toggle('legend-panel__pill--off');
-				if (off) {
-					cy.edges('[type="' + edgeType + '"]').hide();
-				} else {
-					cy.edges('[type="' + edgeType + '"]').show();
-				}
+				edgeTypeOff[edgeType] = off;
+				applyVisibility();
 			});
 		}
 
-		var searchTimer = null;
+		densitySliderEl = document.getElementById('graph-density-slider');
+		densityValueEl = document.getElementById('graph-density-value');
+		densityControlEl = document.getElementById('graph-density-control');
+		if (densitySliderEl) {
+			densitySliderEl.addEventListener('input', function () {
+				currentMinConfidence = Number(this.value) / 100;
+				if (densityValueEl) densityValueEl.textContent = this.value + '%';
+				applyVisibility();
+			});
+			applyThemeToChrome(isDarkTheme());
+		}
+
+		var SEARCH_DEBOUNCE_MS = 400;
+		var searchDebounceTimer = null;
+
 		var searchInput = document.getElementById('graph-search');
 		if (searchInput) {
 			searchInput.addEventListener('input', function () {
-				var q = this.value.trim().toLowerCase();
-				if (searchTimer) clearTimeout(searchTimer);
-				cy.nodes().style('opacity', 1);
-				cy.nodes().removeStyle('border-width border-color');
-				cy.nodes().stop(true, false);
-				if (!q) return;
-				cy.nodes().style('opacity', 0.15);
-				var matches = cy.nodes().filter(function (n) {
-					return (n.data('label') || '').toLowerCase().indexOf(q) !== -1;
+				var value = this.value;
+				if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+				searchDebounceTimer = setTimeout(function () {
+					currentSearchQuery = value.trim().toLowerCase();
+					applyNodeFilters();
+				}, SEARCH_DEBOUNCE_MS);
+			});
+		}
+
+		categoryFilterEl = document.getElementById('graph-category-filter');
+		if (categoryFilterEl) {
+			categoryFilterEl.addEventListener('change', applyNodeFilters);
+		}
+
+		var groupToggleEl = document.getElementById('graph-group-toggle');
+
+		function setGroupingEnabled(enabled) {
+			groupByCommunityEnabled = enabled;
+			if (groupToggleEl) {
+				groupToggleEl.classList.toggle('legend-panel__action-btn--active', enabled);
+				groupToggleEl.setAttribute('aria-pressed', String(enabled));
+			}
+			applyCommunityGrouping();
+			applyVisibility();
+		}
+
+		function updateGroupToggleAvailability() {
+			if (!groupToggleEl) return;
+			var hierarchical = currentLayoutName === LAYOUT_HIERARCHICAL;
+			if (hierarchical && groupByCommunityEnabled) {
+				setGroupingEnabled(false);
+			}
+			groupToggleEl.disabled = hierarchical;
+			groupToggleEl.title = hierarchical ? 'Not available under hierarchical layout' : '';
+		}
+
+		var LAYOUT_DISPLAY_NAMES = {
+			fcose: 'fCoSE',
+			hierarchical: 'Hierarchical',
+		};
+		var layoutBtnEl = document.getElementById('graph-layout-btn');
+		var layoutMenuEl = document.getElementById('graph-layout-menu');
+		var layoutLabelEl = document.getElementById('graph-layout-label');
+
+		function closeLayoutMenu() {
+			if (!layoutMenuEl || !layoutBtnEl) return;
+			layoutMenuEl.hidden = true;
+			layoutBtnEl.setAttribute('aria-expanded', 'false');
+		}
+
+		function setLayout(layoutName) {
+			currentLayoutName = layoutName;
+			if (layoutLabelEl)
+				layoutLabelEl.textContent = LAYOUT_DISPLAY_NAMES[layoutName] || layoutName;
+			if (layoutMenuEl) {
+				layoutMenuEl.querySelectorAll('[data-layout]').forEach(function (item) {
+					item.classList.toggle(
+						'graph-pill-menu-item--active',
+						item.getAttribute('data-layout') === layoutName
+					);
 				});
-				matches.style('opacity', 1);
-				if (matches.length > 0) {
-					matches.style('border-width', 3);
-					matches.style('border-color', '#ffa500');
-					searchTimer = setTimeout(function () {
-						matches.removeStyle('border-width border-color');
-					}, 800);
-					cy.animate({ fit: { eles: matches, padding: 50 }, duration: 400 });
+			}
+			updateGroupToggleAvailability();
+			if (cy.nodes().length > 0) {
+				cy.elements(':visible').layout(buildLayoutOptions(false)).run();
+			}
+		}
+
+		if (layoutBtnEl && layoutMenuEl) {
+			layoutBtnEl.addEventListener('click', function (e) {
+				e.stopPropagation();
+				var isHidden = layoutMenuEl.hidden;
+				layoutMenuEl.hidden = !isHidden;
+				layoutBtnEl.setAttribute('aria-expanded', String(isHidden));
+			});
+
+			document.addEventListener('click', function (e) {
+				if (
+					!layoutMenuEl.hidden &&
+					!layoutMenuEl.contains(e.target) &&
+					e.target !== layoutBtnEl
+				) {
+					closeLayoutMenu();
+				}
+			});
+
+			layoutMenuEl.querySelectorAll('[data-layout]').forEach(function (item) {
+				item.addEventListener('click', function () {
+					setLayout(item.getAttribute('data-layout'));
+					closeLayoutMenu();
+				});
+			});
+
+			setLayout(currentLayoutName);
+		}
+
+		if (groupToggleEl) {
+			groupToggleEl.addEventListener('click', function () {
+				if (currentLayoutName === LAYOUT_HIERARCHICAL) return;
+				setGroupingEnabled(!groupByCommunityEnabled);
+				if (cy.nodes().length > 0) {
+					cy.elements(':visible').layout(buildLayoutOptions(false)).run();
 				}
 			});
 		}
 
-		var focusBtn = document.getElementById('graph-focus');
-		var focusActive = false;
-		if (focusBtn) {
-			focusBtn.addEventListener('click', function () {
+		focusBtnEl = document.getElementById('graph-focus');
+		if (focusBtnEl) {
+			focusBtnEl.addEventListener('click', function () {
 				if (focusActive) {
-					focusActive = false;
-					this.classList.remove('legend-panel__action-btn--active');
-					cy.elements().show();
-					cy.fit(undefined, 30);
-					return;
+					disengageFocusMode();
+				} else {
+					focusIsAutoFollowing = false;
+					engageFocusMode();
 				}
-				var sel = cy.nodes(':selected');
-				if (sel.length === 0) return;
-				focusActive = true;
-				this.classList.add('legend-panel__action-btn--active');
-				cy.elements().hide();
-				var hood = sel.closedNeighborhood().add(sel.neighborhood().nodes().neighborhood());
-				hood.show();
-				sel.show();
-				cy.animate({ fit: { eles: hood, padding: 50 }, duration: 400 });
 			});
 		}
+
+		var contextMenuEl = document.createElement('div');
+		contextMenuEl.className = 'graph-context-menu';
+		contextMenuEl.hidden = true;
+		contextMenuEl.innerHTML =
+			'<button class="graph-context-menu__item" data-action="focus" type="button">Focus</button>' +
+			'<button class="graph-context-menu__item" data-action="copy-id" type="button">Copy note ID</button>';
+		document.body.appendChild(contextMenuEl);
+		var contextMenuNodeId = null;
+
+		function openContextMenu(node, x, y) {
+			contextMenuNodeId = node.id();
+			contextMenuEl.style.left = x + 'px';
+			contextMenuEl.style.top = y + 'px';
+			contextMenuEl.hidden = false;
+		}
+
+		function closeContextMenu() {
+			contextMenuEl.hidden = true;
+			contextMenuNodeId = null;
+		}
+
+		container.addEventListener('contextmenu', function (e) {
+			e.preventDefault();
+		});
+
+		cy.on('cxttap', 'node[!isCommunityParent]', function (evt) {
+			evt.originalEvent.preventDefault();
+			openContextMenu(evt.target, evt.originalEvent.clientX, evt.originalEvent.clientY);
+		});
+
+		document.addEventListener('click', function (e) {
+			if (!contextMenuEl.hidden && !contextMenuEl.contains(e.target)) {
+				closeContextMenu();
+			}
+		});
+
+		contextMenuEl.addEventListener('click', function (e) {
+			var item = e.target.closest('.graph-context-menu__item');
+			if (!item) return;
+			var node = cy.getElementById(contextMenuNodeId);
+			closeContextMenu();
+			if (!node || node.empty()) return;
+			if (item.getAttribute('data-action') === 'focus') {
+				focusIsAutoFollowing = false;
+				cy.elements().unselect();
+				node.select();
+				if (focusActive) {
+					focusActive = false;
+					if (focusBtnEl) focusBtnEl.classList.remove('legend-panel__action-btn--active');
+				}
+				engageFocusMode();
+			} else if (item.getAttribute('data-action') === 'copy-id') {
+				copyText(node.id());
+			}
+		});
 
 		showStatus('Graph engine ready: waiting for data...');
 		pollForData();
@@ -563,26 +1443,38 @@ function init() {
 		if (typeof webviewApi !== 'undefined') {
 			webviewApi.onMessage(function (message) {
 				if (message && message.type === 'graph-data') {
-					if (pollTimer) {
-						clearInterval(pollTimer);
-						pollTimer = null;
-					}
-					hideProgress();
-					renderGraph(message);
+					hidePipelineProgress();
+					handleGraphUpdate('graph-data', message);
+				}
+				if (message && message.type === 'graph-patch') {
+					hidePipelineProgress();
+					handleGraphUpdate('graph-patch', message);
 				}
 				if (message && message.type === 'fit-to-screen') {
 					cy.fit(undefined, 30);
 				}
 				if (message && message.type === 'status' && message.text) {
-					hideProgress();
+					hidePipelineProgress();
 					showStatus(message.text);
 				}
 				if (message && message.type === 'progress') {
-					showProgress(message.current, message.total);
+					var label = message.stage === 'enrichment-progress' ? 'Enriching notes' : 'Building graph';
+					showPipelineProgress(label, message.current, message.total);
+				}
+				if (message && message.type === 'focus-note') {
+					if (message.noteId) {
+						if (!engageFocusOnNote(message.noteId)) {
+							pendingFocusNoteId = message.noteId;
+						}
+					} else {
+						pendingFocusNoteId = null;
+						disengageFocusMode();
+					}
 				}
 			});
 		}
 	} catch (e) {
+		console.error('Note Graph panel failed to initialize:', e);
 		showStatus('Error: ' + (e && e.message ? e.message : String(e)));
 	}
 }

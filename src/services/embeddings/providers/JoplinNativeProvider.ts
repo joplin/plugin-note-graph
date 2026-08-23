@@ -53,12 +53,47 @@ export function isIndexUsable(state: AiIndexState | undefined): boolean {
 	return !!state && !BLOCKING_STATES.has(state);
 }
 
+export async function retryWithBackoff<T>(
+	label: string,
+	fn: () => Promise<T>,
+	options: { maxAttempts: number; baseDelayMs: number }
+): Promise<T> {
+	let lastError: unknown;
+
+	for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
+		if (attempt > 1) {
+			await delay(options.baseDelayMs * 2 ** (attempt - 2));
+		}
+
+		try {
+			return await fn();
+		} catch (e) {
+			lastError = e;
+			const willRetry = attempt < options.maxAttempts;
+			console.error(
+				`${label} failed on attempt ${attempt}/${options.maxAttempts}${
+					willRetry ? '; retrying.' : '; giving up.'
+				}`,
+				e
+			);
+		}
+	}
+
+	throw lastError;
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class JoplinNativeProvider implements EmbeddingProvider {
 	public readonly id: ProviderId = 'joplin-native';
 	public static readonly DEFAULT_MODEL_ID = 'joplin-native';
 	private static readonly PAGE_SIZE = 1000;
 	private static readonly MAX_PAGES = 500;
 	private static readonly MAX_MODEL_CHANGE_RETRIES = 3;
+	private static readonly MAX_ATTEMPTS_PER_PAGE = 3;
+	private static readonly RETRY_DELAY_MS = 1000;
 
 	private _modelName: string;
 	private cachedVectors: Map<string, number[]> | null = null;
@@ -72,7 +107,10 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		return this._modelName;
 	}
 
-	public async fetchVectorsByNoteIds(noteIds: string[]): Promise<Map<string, number[]>> {
+	public async fetchVectorsByNoteIds(
+		noteIds: string[],
+		isCancelled: () => boolean = () => false
+	): Promise<Map<string, number[]>> {
 		if (noteIds.length === 0) {
 			return new Map();
 		}
@@ -81,7 +119,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		this.fetchedModelId = null;
 
 		const api = this.validateAiApi();
-		const grouped = await this.fetchAllPages(api, noteIds);
+		const grouped = await this.fetchAllPages(api, noteIds, isCancelled);
 
 		this.fetchedModelId = this._modelName;
 
@@ -120,10 +158,15 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 	/**
 	 * Pages through getEmbeddings collecting vectors per note.
 	 * Restarts pagination if the embedding model changes mid-fetch.
+	 * Stops before starting the next page if `isCancelled()` reports true,
+	 * returning whatever has been collected so far — there's no way to abort
+	 * an in-flight `getEmbeddings()` call itself, so cancellation only takes
+	 * effect between pages.
 	 */
 	private async fetchAllPages(
 		api: JoplinAiApi,
-		noteIds: string[]
+		noteIds: string[],
+		isCancelled: () => boolean
 	): Promise<Map<string, number[][]>> {
 		let trackedModelId = await this.requireUsableIndex(api);
 
@@ -133,6 +176,10 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		let pageCount = 0;
 
 		while (true) {
+			if (isCancelled()) {
+				break;
+			}
+
 			if (pageCount >= JoplinNativeProvider.MAX_PAGES) {
 				throw new Error(
 					'Too many pages. The embedding index may be in an unexpected state.'
@@ -140,7 +187,7 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 			}
 			pageCount++;
 
-			const page = await api.getEmbeddings({
+			const page = await this.fetchPageWithRetry(api, {
 				noteIds: noteIds,
 				cursor: cursor,
 				limit: JoplinNativeProvider.PAGE_SIZE,
@@ -175,9 +222,22 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 		return grouped;
 	}
 
+	private fetchPageWithRetry(
+		api: JoplinAiApi,
+		options: GetEmbeddingsOptions
+	): Promise<EmbeddingsPage> {
+		return retryWithBackoff('Embedding fetch', () => api.getEmbeddings(options), {
+			maxAttempts: JoplinNativeProvider.MAX_ATTEMPTS_PER_PAGE,
+			baseDelayMs: JoplinNativeProvider.RETRY_DELAY_MS,
+		});
+	}
+
 	/** Throws if the index isn't usable yet; otherwise returns the model ID it's currently indexed with. */
 	private async requireUsableIndex(api: JoplinAiApi): Promise<string | null> {
-		const status = await api.getIndexStatus();
+		const status = await retryWithBackoff('getIndexStatus() call', () => api.getIndexStatus(), {
+			maxAttempts: JoplinNativeProvider.MAX_ATTEMPTS_PER_PAGE,
+			baseDelayMs: JoplinNativeProvider.RETRY_DELAY_MS,
+		});
 		if (!status || !isIndexUsable(status.state)) {
 			throw new Error(
 				`Joplin AI index is not usable yet (state: ${status?.state ?? 'unknown'}). ` +
