@@ -43,8 +43,7 @@ labels and one-line explanations for those connections.
 ### From the Joplin plugin marketplace
 
 1. In Joplin, open the Configuration screen and go to the **Plugins** page.
-2. Use the search box to look for **Note Graph**, or press the **Plugin
-   tools** (gear) button and choose **Browse all plugins**.
+2. Use the search box to look for **Note Graph**.
 3. Press **Install** next to Note Graph.
 4. Restart Joplin when prompted to complete installation.
 
