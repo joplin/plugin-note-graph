@@ -65,6 +65,24 @@ exports[`AnalysisController (full pipeline golden set) renders the enriched sema
     },
     {
       "data": {
+        "id": "11111111111111111111111111111111::44444444444444444444444444444444::semantic",
+        "score": 0.15000000000000002,
+        "source": "11111111111111111111111111111111",
+        "target": "44444444444444444444444444444444",
+        "type": "semantic",
+      },
+    },
+    {
+      "data": {
+        "id": "22222222222222222222222222222222::44444444444444444444444444444444::semantic",
+        "score": 0.1,
+        "source": "22222222222222222222222222222222",
+        "target": "44444444444444444444444444444444",
+        "type": "semantic",
+      },
+    },
+    {
+      "data": {
         "id": "33333333333333333333333333333333::44444444444444444444444444444444::semantic",
         "relationshipLabel": "expands the retry logic",
         "score": 0.6000000000000001,
@@ -79,7 +97,7 @@ exports[`AnalysisController (full pipeline golden set) renders the enriched sema
       "data": {
         "category": "Gardening",
         "community": 0,
-        "degree": 6,
+        "degree": 7,
         "id": "11111111111111111111111111111111",
         "label": "Alpha Note",
         "noteId": "11111111111111111111111111111111",
@@ -90,11 +108,11 @@ exports[`AnalysisController (full pipeline golden set) renders the enriched sema
       "data": {
         "category": "Gardening",
         "community": 0,
-        "degree": 4,
+        "degree": 5,
         "id": "22222222222222222222222222222222",
         "label": "Beta",
         "noteId": "22222222222222222222222222222222",
-        "size": 6,
+        "size": 7,
       },
     },
     {
@@ -112,11 +130,11 @@ exports[`AnalysisController (full pipeline golden set) renders the enriched sema
       "data": {
         "category": "Gardening",
         "community": 0,
-        "degree": 3,
+        "degree": 5,
         "id": "44444444444444444444444444444444",
         "label": "Delta",
         "noteId": "44444444444444444444444444444444",
-        "size": 1,
+        "size": 6,
       },
     },
   ],

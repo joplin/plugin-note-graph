@@ -10,7 +10,7 @@ normal.
 | Setting | Key | Type | Default | Effect |
 |---|---|---|---|---|
 | Enable AI-based semantic analysis | `noteGraph.aiAnalysisEnabled` | Boolean | `false` | Turns semantic edges on or off. Requires Joplin AI to be enabled with a ready embedding index (Configuration screen's AI page). |
-| Similarity threshold (%) | `noteGraph.similarityThreshold` | Integer, 0-100, step 5 | `50` | Minimum bonus-boosted similarity score for a semantic edge to appear, as a percentage. Lower = more edges. Only applies when AI analysis is enabled. |
+| Similarity threshold (%) | `noteGraph.similarityThreshold` | Integer, 0-100, step 5 | `70` | Minimum content similarity (raw cosine) for a semantic edge to appear, as a percentage. Lower = more edges. Only applies when AI analysis is enabled. |
 | Max semantic edges per note (top-K) | `noteGraph.maxEdgesPerNote` | Integer, 1-20, step 1 | `5` | Caps how many of each note's strongest semantic connections are kept. Only applies when AI analysis is enabled. |
 | Enable LLM analysis | `noteGraph.llmEnrichmentEnabled` | Boolean | `false` | Turns on Pass B: category labels and relationship explanations via Joplin AI chat. Requires AI-based semantic analysis to also be enabled. See [LLM enrichment](llm-enrichment.md). |
 | Retry AI embedding | `noteGraph.retryEmbedding` | Boolean | `false` | One-shot trigger, not a persistent toggle: ticking it immediately retries AI-based semantic analysis (for example, after cancelling it), then unticks itself. No-op if the graph panel hasn't been opened yet. |

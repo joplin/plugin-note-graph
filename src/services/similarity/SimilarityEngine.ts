@@ -45,14 +45,17 @@ export class SimilarityEngine {
 
 	/**
 	 * Orchestrates the full similarity pipeline:
-	 * compute → floor (raw scores) → normalize → enrich → threshold → top-K.
+	 * compute → floor (raw scores) → threshold (raw scores) → normalize →
+	 * bonuses → top-K.
 	 *
-	 * SEMANTIC_FLOOR is applied to *raw* scores, before normalization. Min-max
-	 * normalization always maps the batch's most-similar pair to exactly 1.0,
-	 * so a post-normalization floor can never reject it — even in a vault of
-	 * completely unrelated notes. Flooring on the raw scale (where 0.3 has an
-	 * absolute meaning) is what actually guarantees that tags alone can never
-	 * manufacture an edge out of a weak semantic score.
+	 * The threshold is checked on the *raw* score, before normalization.
+	 * Min-max normalization always maps the batch's most-similar pair to
+	 * exactly 1.0, so a post-normalization threshold could never reject it —
+	 * even in a vault of completely unrelated notes, the closest pair would be
+	 * scaled up and pass. Checking the raw cosine first gives the threshold an
+	 * absolute meaning; normalization then only ranks the pairs that already
+	 * passed. SEMANTIC_FLOOR (also raw, before normalization) guards against
+	 * tag-only edges on weak scores.
 	 */
 	public async compute(
 		threshold: number = DEFAULT_THRESHOLD,
@@ -75,10 +78,15 @@ export class SimilarityEngine {
 			return [];
 		}
 
-		const normalized = this.normalize(aboveFloor, SEMANTIC_FLOOR);
+		const aboveThreshold = this.filterBelowThreshold(aboveFloor, threshold);
+
+		if (aboveThreshold.length === 0) {
+			return [];
+		}
+
+		const normalized = this.normalize(aboveThreshold, SEMANTIC_FLOOR);
 		const enriched = this.addBonusPoints(normalized);
-		const aboveThreshold = this.filterBelowThreshold(enriched, threshold);
-		const topPairs = this.selectTopK(aboveThreshold, topK);
+		const topPairs = this.selectTopK(enriched, topK);
 
 		return topPairs;
 	}
@@ -122,8 +130,8 @@ export class SimilarityEngine {
 	 * property without invoking it (see JoplinNativeProvider.validateAiApi for why).
 	 *
 	 * Score-scale assumption: search relevance scores are treated as raw
-	 * similarity scores and flow through the same floor → normalize pipeline
-	 * as cosine scores.
+	 * similarity scores and flow through the same floor → threshold →
+	 * normalize pipeline as cosine scores.
 	 *
 	 * Failure handling: each note's search call is retried on transient
 	 * failures before being skipped; a partial candidate set is still
@@ -313,7 +321,7 @@ export class SimilarityEngine {
 		return pairs.filter((p) => p.score >= floor || this.isDirectlyLinked(p));
 	}
 
-	/** Keeps only pairs whose bonus-boosted score clears the threshold. */
+	/** Keeps only pairs whose raw score clears the threshold, before normalization. */
 	private filterBelowThreshold(pairs: SimilarityPair[], threshold: number): SimilarityPair[] {
 		return pairs.filter((p) => p.score >= threshold);
 	}

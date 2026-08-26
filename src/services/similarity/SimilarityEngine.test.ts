@@ -423,12 +423,14 @@ describe('SimilarityEngine', () => {
 
 	describe('top-K filtering', () => {
 		it('limits edges per note', async () => {
+			// 30° steps keep each note's two neighbours above the raw threshold
+			// (cos 30° ≈ 0.87), so top-K has something to limit.
 			const notes = [];
 			const embedded = [];
 			for (let i = 0; i < 6; i++) {
 				notes.push(makeNote(`n${i}`, `Note ${i}`));
 				embedded.push(
-					embed(`n${i}`, [Math.cos((i * Math.PI) / 3), Math.sin((i * Math.PI) / 3)])
+					embed(`n${i}`, [Math.cos((i * Math.PI) / 6), Math.sin((i * Math.PI) / 6)])
 				);
 			}
 
@@ -484,15 +486,15 @@ describe('SimilarityEngine', () => {
 		});
 
 		it('applies a looser caller-supplied threshold that admits a pair DEFAULT_THRESHOLD would reject', async () => {
-			// Raw cosine 0.35 (above SEMANTIC_FLOOR) plus the same-day temporal
-			// bonus (0.1) lands at 0.45 — below DEFAULT_THRESHOLD (0.5) but above
-			// a caller-supplied 0.4.
+			// Raw cosine 0.55 clears SEMANTIC_FLOOR but sits below
+			// DEFAULT_THRESHOLD (0.7); a caller-supplied 0.5 admits it. The
+			// threshold is checked on the raw score, before normalization.
 			const notes = [makeNote('a', 'A'), makeNote('b', 'B')];
-			const embedded = [embed('a', [1, 0]), embed('b', [0.35, Math.sqrt(1 - 0.35 * 0.35)])];
+			const embedded = [embed('a', [1, 0]), embed('b', [0.55, Math.sqrt(1 - 0.55 * 0.55)])];
 
 			const engine = new SimilarityEngine(notes, embedded);
 			const defaultPairs = await engine.compute();
-			const loosePairs = await engine.compute(0.4);
+			const loosePairs = await engine.compute(0.5);
 
 			expect(defaultPairs).toEqual([]);
 			expect(loosePairs).toHaveLength(1);
@@ -503,12 +505,13 @@ describe('SimilarityEngine', () => {
 			// keeps it in its own top-K), so topK=0 is the only value that
 			// unambiguously proves the override took effect: every note's own
 			// kept list is empty, so no pair can survive from any side.
+			// 30° steps keep adjacent pairs above the raw threshold.
 			const notes = [];
 			const embedded = [];
 			for (let i = 0; i < 6; i++) {
 				notes.push(makeNote(`n${i}`, `Note ${i}`));
 				embedded.push(
-					embed(`n${i}`, [Math.cos((i * Math.PI) / 3), Math.sin((i * Math.PI) / 3)])
+					embed(`n${i}`, [Math.cos((i * Math.PI) / 6), Math.sin((i * Math.PI) / 6)])
 				);
 			}
 
@@ -573,6 +576,35 @@ describe('SimilarityEngine', () => {
 				embed('c', [0, 0, 1, 0.12]),
 				embed('d', [0.03, 0, 0, 1]),
 			];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs).toEqual([]);
+		});
+	});
+
+	describe('threshold is applied to the raw score, before normalization', () => {
+		it('rejects a weak pair even when it is the closest pair in the batch', async () => {
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C')];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.45, Math.sqrt(1 - 0.45 * 0.45), 0]),
+				embed('c', [0.32, 0, Math.sqrt(1 - 0.32 * 0.32)]),
+			];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs).toEqual([]);
+		});
+
+		it('cannot manufacture a semantic edge from a shared tag or direct link below the raw threshold', async () => {
+			const notes = [
+				makeNote('a', 'A', ['b'], ['shared']),
+				makeNote('b', 'B', [], ['shared']),
+			];
+			const embedded = [embed('a', [1, 0]), embed('b', [0.45, Math.sqrt(1 - 0.45 * 0.45)])];
 
 			const engine = new SimilarityEngine(notes, embedded);
 			const pairs = await engine.compute();
