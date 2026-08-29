@@ -45,17 +45,21 @@ export class SimilarityEngine {
 
 	/**
 	 * Orchestrates the full similarity pipeline:
-	 * compute → floor (raw scores) → threshold (raw scores) → normalize →
+	 * compute → floor (raw scores) → percentile cutoff (raw scores) → normalize →
 	 * bonuses → top-K.
 	 *
-	 * The threshold is checked on the *raw* score, before normalization.
-	 * Min-max normalization always maps the batch's most-similar pair to
-	 * exactly 1.0, so a post-normalization threshold could never reject it —
-	 * even in a vault of completely unrelated notes, the closest pair would be
-	 * scaled up and pass. Checking the raw cosine first gives the threshold an
-	 * absolute meaning; normalization then only ranks the pairs that already
-	 * passed. SEMANTIC_FLOOR (also raw, before normalization) guards against
-	 * tag-only edges on weak scores.
+	 * Both the floor and the cutoff are checked on the *raw* score, before
+	 * normalization. Min-max normalization always maps the batch's most-similar
+	 * pair to exactly 1.0, so a post-normalization threshold could never reject
+	 * it — even in a vault of completely unrelated notes, the closest pair
+	 * would be scaled up and pass. Checking the raw cosine first gives the
+	 * cutoff a relative meaning; normalization then only ranks the pairs that
+	 * already passed. SEMANTIC_FLOOR (also raw, before normalization) is the
+	 * small absolute floor that guards tiny vaults with little data: a pair can
+	 * never become an edge on a weak raw score, no matter how relatively close
+	 * it is. The percentile cutoff keeps only the top (1 - threshold) fraction
+	 * of the surviving raw scores, which is what separates a batch whose scores
+	 * are all compressed into a narrow band (e.g. e5's [0.7, 1]).
 	 */
 	public async compute(
 		threshold: number = DEFAULT_THRESHOLD,
@@ -78,7 +82,8 @@ export class SimilarityEngine {
 			return [];
 		}
 
-		const aboveThreshold = this.filterBelowThreshold(aboveFloor, threshold);
+		const cutoff = this.percentileCutoff(aboveFloor, threshold);
+		const aboveThreshold = this.filterBelowThreshold(aboveFloor, cutoff);
 
 		if (aboveThreshold.length === 0) {
 			return [];
@@ -313,7 +318,7 @@ export class SimilarityEngine {
 	/**
 	 * Removes pairs whose *raw* score is below the safety floor — unless the
 	 * notes are directly linked, in which case they're kept and left for the
-	 * threshold check later. Runs before normalization on purpose: the floor
+	 * cutoff check later. Runs before normalization on purpose: the floor
 	 * guards against spurious tag-only edges, which requires an absolute
 	 * scale, not a batch-relative one.
 	 */
@@ -321,7 +326,25 @@ export class SimilarityEngine {
 		return pairs.filter((p) => p.score >= floor || this.isDirectlyLinked(p));
 	}
 
-	/** Keeps only pairs whose raw score clears the threshold, before normalization. */
+	private percentileCutoff(pairs: SimilarityPair[], percentile: number): number {
+		const scores = pairs
+			.filter((p) => p.score >= SEMANTIC_FLOOR)
+			.map((p) => p.score)
+			.sort((a, b) => a - b);
+
+		if (scores.length === 0) {
+			return SEMANTIC_FLOOR;
+		}
+
+		const clamped = Math.min(1, Math.max(0, percentile));
+		const index = Math.min(
+			scores.length - 1,
+			Math.max(0, Math.ceil(clamped * scores.length) - 1)
+		);
+		return scores[index];
+	}
+
+	/** Keeps only pairs whose raw score clears the cutoff, before normalization. */
 	private filterBelowThreshold(pairs: SimilarityPair[], threshold: number): SimilarityPair[] {
 		return pairs.filter((p) => p.score >= threshold);
 	}

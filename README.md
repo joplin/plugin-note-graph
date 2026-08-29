@@ -80,7 +80,7 @@ Available in the Configuration screen's **Note Graph** section:
 | Setting | Default | Effect |
 |---|---|---|
 | Enable AI-based semantic analysis | Off | Adds semantic similarity edges using Joplin AI |
-| Similarity threshold | 70% | Lower values surface more semantic edges |
+| Similarity threshold | 70% | Percentile cutoff on raw similarity; only the strongest (100 − value)% of candidate pairs become edges. Lower values surface more semantic edges |
 | Max semantic edges per note | 5 | Caps how many semantic connections each note keeps |
 | Enable LLM analysis | Off | Adds Pass B category labels and relationship explanations |
 | Retry AI embedding | Off | One-shot: re-runs AI-based semantic analysis, reusing cached embeddings |

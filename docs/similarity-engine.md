@@ -61,15 +61,18 @@ miss/no-op rather than failing the embed, so a corrupt cache degrades to
 fixed pipeline over every candidate note pair:
 
 ```
-raw scores -> floor -> threshold (raw) -> normalize -> bonuses -> top-K
+raw scores -> floor (absolute) -> percentile cutoff (raw) -> normalize -> bonuses -> top-K
 ```
 
-The **threshold is checked on the raw score, before normalization**. Min-max
-normalization always maps the batch's most-similar pair to exactly 1.0, so a
-post-normalization threshold could never reject it — even in a vault of
+The **percentile cutoff is checked on the raw score, before normalization**.
+Min-max normalization always maps the batch's most-similar pair to exactly
+1.0, so a post-normalization cutoff could never reject it — even in a vault of
 completely unrelated notes, the closest pair would be scaled up and pass.
-Checking the raw cosine first gives the threshold an absolute meaning;
-normalization then only ranks the pairs that already passed.
+Checking the raw cosine first gives the cutoff a relative meaning; it keeps
+only the top `(1 - threshold)` fraction of the surviving raw scores, which is
+what separates a batch whose scores are all compressed into a narrow band
+(for example e5's [0.7, 1]). Normalization then only ranks the pairs that
+already passed.
 
 ### 1. Raw scores
 
@@ -88,19 +91,24 @@ normalization then only ranks the pairs that already passed.
 
 Pairs scoring below `SEMANTIC_FLOOR` (0.3) on the **raw** scale are dropped,
 unless the two notes are already directly linked (those are kept and
-resolved later, at the threshold step). This has to happen before
+resolved later, at the cutoff step). This has to happen before
 normalization: min-max normalization would always stretch the best pair in
 the batch to exactly 1.0, even in a vault of totally unrelated notes, so a
 floor applied *after* normalization could never reject anything. Flooring the
-raw score is what gives 0.3 an absolute, not batch-relative, meaning.
+raw score is what gives 0.3 an absolute, not batch-relative, meaning, and it
+is the small absolute floor that keeps a tiny vault with little data from
+manufacturing edges out of weak scores.
 
-### 3. Threshold
+### 3. Percentile cutoff
 
-Pairs whose raw score is below the configured threshold
-(`DEFAULT_THRESHOLD` = 0.7, user-adjustable) are dropped. Like the floor,
-this runs on the raw scale, *before* normalization, so the threshold is an
-absolute similarity bar rather than a batch-relative one — an unrelated pair
-that happens to be a batch's closest cannot be normalized up to pass.
+Pairs whose raw score is below the score at the configured percentile
+(`DEFAULT_THRESHOLD` = 0.7, user-adjustable) are dropped. The percentile is
+computed over the above-floor raw scores in this batch, so it keeps only the
+top `(1 - threshold)` fraction — e.g. the strongest 30% at the default 70%.
+Like the floor, this runs on the raw scale, *before* normalization, and it is
+batch-relative on purpose: an unrelated pair that happens to be a batch's
+closest cannot be normalized up to pass, and a batch whose scores all sit in
+a narrow band (the e5 failure mode) is still separated by relative rank.
 Normalization then only ranks the pairs that already cleared it.
 
 ### 4. Normalize
@@ -124,8 +132,9 @@ Three additive bonuses nudge the normalized score:
 They are excluded from the tag-overlap bonus because sharing them says
 nothing about content similarity.
 
-Because the threshold and floor are checked on the *raw* score, bonuses can
-rank pairs but can never manufacture an edge out of a weak semantic score.
+Because the floor and the percentile cutoff are checked on the *raw* score,
+bonuses can rank pairs but can never manufacture an edge out of a weak
+semantic score.
 
 ### 6. Top-K
 
