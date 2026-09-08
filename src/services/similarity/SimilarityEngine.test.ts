@@ -102,11 +102,10 @@ describe('SimilarityEngine', () => {
 		});
 
 		it('gives higher scores to more similar notes', async () => {
-			// With the floor applied to the raw score before normalize, whichever
-			// pair is weakest among the floor survivors normalizes to exactly 0 —
-			// b-c (raw ~0.589) plays that role here so it doesn't drag a-c down
-			// with it, letting both a-b and a-c clear the threshold with a-b
-			// still scoring higher.
+			// A loose percentile keeps all three above-floor pairs so the test
+			// isolates normalization: whichever pair is weakest normalizes to
+			// exactly 0 — b-c (raw ~0.589) plays that role here so it doesn't
+			// drag a-c down with it, letting a-b score higher than a-c.
 			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C')];
 			const embedded = [
 				embed('a', [1, 0, 0]),
@@ -115,7 +114,7 @@ describe('SimilarityEngine', () => {
 			];
 
 			const engine = new SimilarityEngine(notes, embedded);
-			const pairs = await engine.compute();
+			const pairs = await engine.compute(0.2);
 
 			const abScore = pairs.find(
 				(p) =>
@@ -279,7 +278,7 @@ describe('SimilarityEngine', () => {
 			];
 
 			const engine = new SimilarityEngine(notes, embedded);
-			const pairs = await engine.compute();
+			const pairs = await engine.compute(0.2);
 
 			const abWithLink = pairs.find(
 				(p) =>
@@ -423,12 +422,14 @@ describe('SimilarityEngine', () => {
 
 	describe('top-K filtering', () => {
 		it('limits edges per note', async () => {
+			// 30° steps keep each note's two neighbours above the raw threshold
+			// (cos 30° ≈ 0.87), so top-K has something to limit.
 			const notes = [];
 			const embedded = [];
 			for (let i = 0; i < 6; i++) {
 				notes.push(makeNote(`n${i}`, `Note ${i}`));
 				embedded.push(
-					embed(`n${i}`, [Math.cos((i * Math.PI) / 3), Math.sin((i * Math.PI) / 3)])
+					embed(`n${i}`, [Math.cos((i * Math.PI) / 6), Math.sin((i * Math.PI) / 6)])
 				);
 			}
 
@@ -471,31 +472,57 @@ describe('SimilarityEngine', () => {
 	});
 
 	describe('custom threshold and top-K overrides', () => {
-		it('applies a stricter caller-supplied threshold instead of DEFAULT_THRESHOLD', async () => {
-			const notes = [makeNote('a', 'A'), makeNote('b', 'B')];
-			const embedded = [embed('a', [1, 0]), embed('b', [0.95, 0.3])];
+		it('applies a stricter caller-supplied percentile, keeping fewer pairs than DEFAULT_THRESHOLD', async () => {
+			// Raw scores span 0.5 to ~0.93, all above the floor. The default 0.7
+			// percentile keeps the top ~30% (a-b and c-d); a stricter 0.95 keeps
+			// only the single strongest pair (c-d).
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C'), makeNote('d', 'D')];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.9, Math.sqrt(1 - 0.81), 0]),
+				embed('c', [0.7, 0, Math.sqrt(1 - 0.49)]),
+				embed('d', [0.5, 0.3, Math.sqrt(1 - 0.25 - 0.09)]),
+			];
 
 			const engine = new SimilarityEngine(notes, embedded);
 			const defaultPairs = await engine.compute();
-			const strictPairs = await engine.compute(1.2);
+			const strictPairs = await engine.compute(0.95);
 
-			expect(defaultPairs).toHaveLength(1);
-			expect(strictPairs).toEqual([]);
+			expect(defaultPairs).toHaveLength(2);
+			expect(strictPairs).toHaveLength(1);
+			expect(strictPairs[0].source).toBe('c');
+			expect(strictPairs[0].target).toBe('d');
 		});
 
-		it('applies a looser caller-supplied threshold that admits a pair DEFAULT_THRESHOLD would reject', async () => {
-			// Raw cosine 0.35 (above SEMANTIC_FLOOR) plus the same-day temporal
-			// bonus (0.1) lands at 0.45 — below DEFAULT_THRESHOLD (0.5) but above
-			// a caller-supplied 0.4.
-			const notes = [makeNote('a', 'A'), makeNote('b', 'B')];
-			const embedded = [embed('a', [1, 0]), embed('b', [0.35, Math.sqrt(1 - 0.35 * 0.35)])];
+		it('applies a looser caller-supplied percentile, admitting pairs DEFAULT_THRESHOLD would reject', async () => {
+			// A looser percentile lowers the raw-score cutoff, admitting pairs
+			// the default rejects. a-c (raw 0.7) is below the default cutoff
+			// (~0.9) but above the looser one, so it appears only with the
+			// looser percentile.
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C'), makeNote('d', 'D')];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.9, Math.sqrt(1 - 0.81), 0]),
+				embed('c', [0.7, 0, Math.sqrt(1 - 0.49)]),
+				embed('d', [0.5, 0.3, Math.sqrt(1 - 0.25 - 0.09)]),
+			];
 
 			const engine = new SimilarityEngine(notes, embedded);
 			const defaultPairs = await engine.compute();
-			const loosePairs = await engine.compute(0.4);
+			const loosePairs = await engine.compute(0.2);
 
-			expect(defaultPairs).toEqual([]);
-			expect(loosePairs).toHaveLength(1);
+			const acInDefault = defaultPairs.some(
+				(p) =>
+					(p.source === 'a' && p.target === 'c') || (p.source === 'c' && p.target === 'a')
+			);
+			const acInLoose = loosePairs.some(
+				(p) =>
+					(p.source === 'a' && p.target === 'c') || (p.source === 'c' && p.target === 'a')
+			);
+
+			expect(acInDefault).toBe(false);
+			expect(acInLoose).toBe(true);
+			expect(loosePairs.length).toBeGreaterThan(defaultPairs.length);
 		});
 
 		it('applies a caller-supplied top-K instead of TOP_K', async () => {
@@ -503,12 +530,13 @@ describe('SimilarityEngine', () => {
 			// keeps it in its own top-K), so topK=0 is the only value that
 			// unambiguously proves the override took effect: every note's own
 			// kept list is empty, so no pair can survive from any side.
+			// 30° steps keep adjacent pairs above the raw threshold.
 			const notes = [];
 			const embedded = [];
 			for (let i = 0; i < 6; i++) {
 				notes.push(makeNote(`n${i}`, `Note ${i}`));
 				embedded.push(
-					embed(`n${i}`, [Math.cos((i * Math.PI) / 3), Math.sin((i * Math.PI) / 3)])
+					embed(`n${i}`, [Math.cos((i * Math.PI) / 6), Math.sin((i * Math.PI) / 6)])
 				);
 			}
 
@@ -518,6 +546,50 @@ describe('SimilarityEngine', () => {
 
 			expect(defaultPairs.length).toBeGreaterThan(0);
 			expect(zeroKPairs).toEqual([]);
+		});
+	});
+
+	describe('percentile cutoff', () => {
+		it('keeps only the top fraction of pairs when every score is compressed into a narrow high band', async () => {
+			// Mimics the e5 failure mode: all pairwise cosines sit in a narrow
+			// high band (0.77-0.99) so an absolute threshold would reject
+			// nothing. The percentile cutoff still prunes to the top ~30%.
+			const notes = [];
+			const embedded = [];
+			for (let i = 0; i < 6; i++) {
+				const angle = 10 + i * 8;
+				notes.push(makeNote(`n${i}`, `Note ${i}`));
+				embedded.push(
+					embed(`n${i}`, [Math.cos((angle * Math.PI) / 180), Math.sin((angle * Math.PI) / 180)])
+				);
+			}
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs.length).toBeGreaterThan(0);
+			expect(pairs.length).toBeLessThan(15);
+			for (const p of pairs) {
+				expect(p.score).toBeGreaterThan(0);
+			}
+		});
+
+		it('keeps the absolute floor decisive in a tiny vault with little data', async () => {
+			// A 3-note vault where every pair is below SEMANTIC_FLOOR but
+			// clearly ranked (0.1, 0.2, 0.3-tie is avoided here). The percentile
+			// alone would admit the top pair; the small absolute floor keeps a
+			// vault this sparse from manufacturing any edge.
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C')];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.2, Math.sqrt(1 - 0.04), 0]),
+				embed('c', [0.1, 0, Math.sqrt(1 - 0.01)]),
+			];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs).toEqual([]);
 		});
 	});
 
@@ -536,11 +608,12 @@ describe('SimilarityEngine', () => {
 			expect(pairs).toEqual([]);
 		});
 
-		it('lets a direct link bypass the floor, but the boosted score must still clear the threshold', async () => {
+		it('lets a direct link bypass the floor, but the boosted score must still clear the cutoff', async () => {
 			// a and b are nearly orthogonal (cosine ~0) but directly link to each other
 			// and share a tag. The link bypasses SEMANTIC_FLOOR (a user-created edge
-			// isn't a false positive), but the resulting boosted score (~0.25) still
-			// isn't enough to clear DEFAULT_THRESHOLD (0.5).
+			// isn't a false positive), but there is no above-floor pair to compute a
+			// percentile from, so the cutoff falls back to SEMANTIC_FLOOR and the
+			// boosted score (~0.25) still isn't enough to clear it.
 			const notes = [
 				makeNote('a', 'A', ['b'], ['shared']),
 				makeNote('b', 'B', [], ['shared']),
@@ -578,6 +651,53 @@ describe('SimilarityEngine', () => {
 			const pairs = await engine.compute();
 
 			expect(pairs).toEqual([]);
+		});
+	});
+
+	describe('threshold is applied to the raw score, before normalization', () => {
+		it('keeps the strongest pair of a weak batch, since the cutoff is relative to the batch', async () => {
+			// a-b (raw 0.45) is the batch's strongest above-floor pair, so the
+			// percentile cutoff admits it even though 0.45 is weak in absolute
+			// terms — relative ranking is what matters. b-c (raw 0.144) is
+			// below SEMANTIC_FLOOR and never becomes a candidate.
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C')];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.45, Math.sqrt(1 - 0.45 * 0.45), 0]),
+				embed('c', [0.32, 0, Math.sqrt(1 - 0.32 * 0.32)]),
+			];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs).toHaveLength(1);
+			expect(pairs[0].source).toBe('a');
+			expect(pairs[0].target).toBe('b');
+		});
+
+		it('cannot manufacture a semantic edge from a shared tag or direct link below the raw percentile cutoff', async () => {
+			// a-b is the batch's strongest pair (raw 0.9). b-c is weaker (raw
+			// 0.59) but above the floor and shares a tag and a direct link —
+			// the bonuses still can't bring it back once the raw percentile
+			// cutoff (~0.9) has rejected it, because the cutoff runs before
+			// bonuses.
+			const notes = [
+				makeNote('a', 'A'),
+				makeNote('b', 'B', ['c'], ['shared']),
+				makeNote('c', 'C', [], ['shared']),
+			];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.9, Math.sqrt(1 - 0.81), 0]),
+				embed('c', [0.8, -0.3, Math.sqrt(0.27)]),
+			];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs).toHaveLength(1);
+			expect(pairs[0].source).toBe('a');
+			expect(pairs[0].target).toBe('b');
 		});
 	});
 

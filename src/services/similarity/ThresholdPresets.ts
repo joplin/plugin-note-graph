@@ -1,7 +1,7 @@
 /** Only a direct link bypasses this floor — tags alone can never create an edge below it. */
 export const SEMANTIC_FLOOR = 0.3;
 
-export const DEFAULT_THRESHOLD = 0.5;
+export const DEFAULT_THRESHOLD = 0.7;
 
 export const TOP_K = 5;
 

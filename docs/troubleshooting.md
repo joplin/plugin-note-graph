@@ -26,12 +26,16 @@ simply the expected result. See [Settings reference](settings.md).
 
 ## The graph has very few or no semantic edges
 
-- Check the **similarity threshold** setting; 50% is the default and can be
-  lowered to surface more edges.
+- Check the **similarity threshold** setting; 70% is the default and can be
+  lowered to surface more edges. The threshold is a *percentile* cutoff on raw
+  similarity, so it always keeps only the strongest (100 − value)% of the
+  candidate pairs, even when the embedding model compresses every score into a
+  narrow band.
 - A small vault, or a vault with genuinely unrelated notes, will produce
-  fewer edges by design: the raw-score floor (`SEMANTIC_FLOOR`, 0.3) exists
-  specifically to prevent tag or link bonuses alone from manufacturing an
-  edge out of a weak semantic score. See [Similarity
+  fewer edges by design: semantic edges require the raw cosine similarity to
+  clear the absolute floor (`SEMANTIC_FLOOR`, 0.3) *before* the percentile
+  cutoff runs, and no tag, link, or time bonus can manufacture one out of a
+  weak semantic score. See [Similarity
   engine](similarity-engine.md).
 - Confirm the embedding index state is `ready` or at least `indexing` with
   meaningful progress, not `preparing`.
