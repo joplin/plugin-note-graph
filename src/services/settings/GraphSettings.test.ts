@@ -64,7 +64,7 @@ describe('GraphSettings', () => {
 					}),
 					'noteGraph.scopeMode': expect.objectContaining({
 						type: SettingItemType.String,
-						value: 'all',
+						value: 'current',
 						public: false,
 					}),
 					'noteGraph.scopeSelectedNotebooks': expect.objectContaining({

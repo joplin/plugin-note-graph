@@ -96,7 +96,7 @@ export async function registerGraphSettings(): Promise<void> {
 				'Tick to immediately retry LLM analysis for any note/edge still missing a label. Unticks itself once the retry starts. No-op if the graph panel has not been opened yet.',
 		},
 		[SCOPE_MODE_KEY]: {
-			value: 'all',
+			value: 'current',
 			type: SettingItemType.String,
 			public: false,
 			label: 'Analysis scope',
