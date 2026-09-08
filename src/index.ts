@@ -47,7 +47,7 @@ const analysisController = new AnalysisController(new GraphBuilder(), graphCache
 const noteScopeResolver = new NoteScopeResolver();
 
 let currentScope: ResolvedScope = { folderIds: null, scopeKey: 'all' };
-let currentScopeMode: ScopeMode = 'all';
+let currentScopeMode: ScopeMode = 'current';
 
 /**
  * Loads all notes from the Joplin API and enriches them with links and tags.

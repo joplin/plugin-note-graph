@@ -26,8 +26,7 @@ populated by `NotePreprocessor` before anything downstream sees the note.
 to 100 through `joplin.data.get(['notes'], ...)`, requesting only the fields
 the plugin needs (`id`, `parent_id`, `title`, `body`, `created_time`,
 `updated_time`, `deleted_time`). Notes with a non-zero `deleted_time` (in the
-trash) are filtered out. Fetching stops at 5000 notes; beyond that, the
-result is marked `truncated: true` so callers can log it, and a page fetch
+trash) are filtered out. Every note is fetched (no cap); a page fetch
 error truncates rather than throwing, so a transient API error surfaces a
 partial graph instead of failing the whole load.
 

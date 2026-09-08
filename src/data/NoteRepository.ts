@@ -10,10 +10,10 @@ interface NoteResponse extends Note {
 export class NoteRepository {
 	/**
 	 * Fetches all notes from the Joplin API with pagination.
-	 * @param maxNotes - maximum notes to fetch before truncating (default 5000).
+	 * @param maxNotes - optional safety cap on the number of notes fetched before truncating (default: no cap).
 	 * @returns the collected notes and a `truncated` flag if the limit was hit or an error occurred.
 	 */
-	public async getAllNotes(maxNotes = 5000): Promise<{ notes: Note[]; truncated: boolean }> {
+	public async getAllNotes(maxNotes = Infinity): Promise<{ notes: Note[]; truncated: boolean }> {
 		const notes: Note[] = [];
 		let page = 1;
 		let hasMore = true;
