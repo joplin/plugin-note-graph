@@ -25,8 +25,8 @@ The index state machine (mirrors Joplin's own `AiIndexState`):
 | `ready` | Fully indexed. | No |
 
 `JoplinNativeProvider` (`src/services/embeddings/providers/JoplinNativeProvider.ts`)
-fetches vectors via `joplin.ai.getEmbeddings()`, paginating (1000 chunks per
-page, capped at 500 pages). A note's body can be split into multiple
+fetches vectors via `joplin.ai.getEmbeddings()`, asking for at most 200 notes at a
+time and paginating (1000 chunks per page, capped at 500 pages). A note's body can be split into multiple
 embedding chunks; `poolAndNormalize()` averages a note's chunk vectors into
 one and L2-normalizes it, so downstream cosine similarity is a plain dot
 product. If the embedding model changes mid-fetch (a user changed the AI
@@ -48,9 +48,9 @@ reasoning.
 
 `EmbeddingOrchestrator` (`src/services/embeddings/Orchestrator.ts`) sits
 between `AnalysisController` and the provider. For each note it checks
-`VectorRepository` (a SQLite-backed cache) for a vector whose cached
-`updatedTime` and `modelId` still match the note; only notes that miss the
-cache are sent to the provider. Freshly fetched vectors are written back to
+`VectorRepository` (a SQLite-backed cache) for a vector from the current model;
+only notes that miss the cache are sent to the provider. Vectors are kept fresh
+separately, by [embedding sweeps](incremental-updates.md#embedding-sweeps). Freshly fetched vectors are written back to
 the cache. A cache read or write failure is logged and treated as a full
 miss/no-op rather than failing the embed, so a corrupt cache degrades to
 "slower" rather than "broken." See [Caching](caching.md) for the schema.
@@ -78,14 +78,18 @@ already passed.
 
 - **Vaults of 300 notes or fewer** (`LARGE_VAULT_THRESHOLD`): plain O(n²)
   pairwise cosine similarity (dot product of the L2-normalized vectors).
-- **Larger vaults**: `joplin.ai.search({ query: { noteId }, relevance: 'normal' })`
-  per note, using Joplin's own vector index instead of comparing every pair
-  in the plugin. Each note's call is retried once on a transient failure and
-  then skipped if it still fails, since a partial candidate set is still
-  useful. But if the first three notes in a row all fail (for example,
-  `search` exists on `joplin.ai` but isn't supported by this Joplin version),
-  the engine gives up early and falls back to full O(n²) cosine for the whole
-  vault, instead of retrying every remaining note only to fail the same way.
+- **Larger vaults**: only each note's 20 nearest neighbours are candidates, found
+  by `KnnIndex` (`src/services/similarity/KnnIndex.ts`). It holds every vector in one
+  flat array and compares them directly, using only the vectors already fetched from
+  `joplin.ai.getEmbeddings()`. A full build takes about 20 seconds at 10,000 notes,
+  in small slices that yield regularly and can be cancelled, in the plugin's own
+  window. The index stays in memory between runs and only recomputes what changed, so
+  updating one note costs one row of comparisons.
+
+  This replaced one `joplin.ai.search()` call per note. Those calls return the top
+  chunks without excluding the query note's own, so a note of about 16 KB or more got
+  back only itself and no neighbours at all. They also meant at least one API call
+  per note on every rebuild.
 
 ### 2. Floor
 

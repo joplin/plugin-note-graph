@@ -1,5 +1,14 @@
 # Troubleshooting
 
+## See what the plugin is doing
+
+The ⓘ button in the panel's header opens **What's happening**. It says whether
+your notes have loaded, how many notes have AI data, how many connections have
+an explanation, and lists the latest problems with their time. Where something
+can be retried, it has a button: **Load again**, **Run again**, or **Explain …
+more**. An orange dot on the button means something needs a look, or a problem
+happened since you last opened it.
+
 ## "AI analysis unavailable - showing structural graph"
 
 This status message appears when AI analysis is enabled in settings but the
@@ -44,36 +53,60 @@ simply the expected result. See [Settings reference](settings.md).
 
 The panel opened but hasn't received any graph yet. This is normal for a
 moment on first open of a large vault (notes are still loading and being
-embedded); check the progress bar. If it persists, check the developer
+embedded); check the progress bar. If it persists, open **What's happening**
+(the ⓘ button), or check the developer
 console (**Help -> Toggle Development Tools**) for an error logged by
 `index.ts` or `AnalysisController`.
 
-## Some notes or edges have no category badge or relationship label
+## Some semantic edges have no relationship label
 
 Confirm both **Enable AI-based semantic analysis** and **Enable LLM
 analysis** are on; Pass B has nothing to label without semantic edges from
 Pass A. A batch that fails every retry attempt is simply left unlabeled for
-that run rather than blocking the rest of the graph; tick **Retry AI
-labels** to ask again. See [LLM
+that run rather than blocking the rest of the graph; press **Explain … more**
+in **What's happening**, or tick **Retry AI labels**, to ask again. See [LLM
 enrichment](llm-enrichment.md#retrying-missing-labels). The developer
 console's `LLM enrichment:` log lines say exactly which batch failed and
 why.
 
 ## Colors changed after adding or removing notes
 
-Community IDs are stable for an *unchanged* note/edge set, but adding or
-removing notes can shift which community is largest and therefore
-renumber IDs, changing colors. This is expected behavior, not a bug; see
+Community numbers carry over between rebuilds, so colors should normally stay put.
+A community can still change color if it splits or merges with another, since its
+notes then really are in a different group. See
 the "Stability" note in [Graph model](graph-model.md).
 
 ## Notes, tags, or events look incomplete in a very large vault
 
-Several fetches are capped as a safety measure (see [Data
-pipeline](data-pipeline.md) and [Incremental
-updates](incremental-updates.md) for the exact numbers). Hitting a cap logs
-a message and returns a partial result rather than failing outright; a
-subsequent sync sweep picks up anything missed. Check the developer console
-for the corresponding log line.
+Notes and tags are fetched without a cap, and a failed request is retried. If a
+page still fails, the panel shows a notice that the graph is incomplete, and
+that partial graph is not saved over the cached one. Run **Show Note Graph**
+again to retry. If no notes can be read at all, the panel says so and retries
+shortly, and a graph already on screen is left as it is.
+
+The sync sweeps for `/events` and embeddings have their own page safety caps
+(see [Incremental updates](incremental-updates.md)). Hitting one logs a message,
+and the next sync picks up anything missed.
+
+## I don't see "All notebooks", or the graph only shows part of my vault
+
+Above 1500 notes, the vault is too large to draw at once, so the graph shows one
+notebook at a time, plus the notes elsewhere that connect to it. Search covers every
+note. If a large notebook shows only a few notes, check whether **Focus** is on: it
+hides everything except notes near the selected one. See [Large
+vaults](large-vaults.md).
+
+## The panel is empty when Joplin opens
+
+Joplin doesn't fill a plugin's panel until its window has been on screen, for example
+if another window covers it while it starts. Bring Joplin to the front and the panel
+fills straight away.
+
+## Semantic edges don't change right after I edit a note
+
+This is expected. Joplin re-embeds an edit a few minutes later, and the plugin
+updates the edges once it has. See [Incremental
+updates](incremental-updates.md#embedding-sweeps).
 
 ## Reinstalling after a build
 

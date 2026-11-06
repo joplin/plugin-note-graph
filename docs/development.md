@@ -54,6 +54,9 @@ in place of the real `api` module via `jest.config.js`'s
 `moduleNameMapper`; the `api/types` module maps to the real
 `api/types.ts` type declarations (types only, no runtime behavior to mock).
 
+To test at scale, with the real panel in a browser or in real Joplin, see [Large
+vaults](large-vaults.md#testing-at-scale).
+
 ## Formatting
 
 ```sh
@@ -77,17 +80,20 @@ src/
         AnalysisController.ts    Orchestrates graph building.
         embeddings/               Embedding provider resolution, fetching, caching.
         similarity/                Similarity scoring and edge creation.
-        graph/                     Graph assembly, community detection, centrality, diffing.
+        graph/                     Graph assembly, community detection, centrality, views, layout, diffing.
         llm/                       Pass B: LLM enrichment (categories, relationship labels).
         sync/                       Workspace-event listening and incremental updates.
         settings/                   Plugin settings registration and access.
     ui/
         App.ts, components/       Panel HTML shell.
         webview.ts                  Panel lifecycle and plugin<->webview messaging.
-        graph-view.js               Cytoscape client, compiled by webview.webpack.config.js.
+        graph-view.js               Cytoscape client, compiled by webview.webpack.config.js. Never runs a layout.
         setup.js                    Close-button wiring, copied as-is (no imports to bundle).
         styles/panel.css            Panel styling.
     tests/mocks/                Joplin API mock for Jest.
+    types/                      Declarations for dependencies that ship none.
+    utils/                      Shared helpers.
+scripts/perf/                   End-to-end tests at scale.
 api/                            Joplin's plugin API type declarations (vendored, not modified).
 docs/                            This documentation.
 ```

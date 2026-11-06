@@ -18,11 +18,13 @@ instructions, see the [root README](../README.md).
    and relationship explanations via Joplin AI chat.
 6. [Incremental updates](incremental-updates.md) - how the graph stays live
    as you edit, without a full rebuild.
-7. [Caching](caching.md) - the SQLite-backed vector and graph caches.
-8. [Settings reference](settings.md) - every setting, what it does, and
+7. [Large vaults](large-vaults.md) - how the plugin stays smooth at tens of
+   thousands of notes, and how to test that.
+8. [Caching](caching.md) - the SQLite-backed vector and graph caches.
+9. [Settings reference](settings.md) - every setting, what it does, and
    when changing it triggers a rebuild.
-9. [Development](development.md) - building, testing, and project layout.
-10. [Troubleshooting](troubleshooting.md) - common issues and what causes
+10. [Development](development.md) - building, testing, and project layout.
+11. [Troubleshooting](troubleshooting.md) - common issues and what causes
     them.
 
 ## Reading order
