@@ -1,5 +1,6 @@
 import joplin from 'api';
 import { EmbeddingProvider, ProviderId } from '../Types';
+import { retryWithBackoff } from '../../../utils/retryWithBackoff';
 
 /**
  * Mirrors Joplin's official AiIndexState type (joplinapp.org/api/references/plugin_api).
@@ -53,39 +54,6 @@ export function isIndexUsable(state: AiIndexState | undefined): boolean {
 	return !!state && !BLOCKING_STATES.has(state);
 }
 
-export async function retryWithBackoff<T>(
-	label: string,
-	fn: () => Promise<T>,
-	options: { maxAttempts: number; baseDelayMs: number }
-): Promise<T> {
-	let lastError: unknown;
-
-	for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
-		if (attempt > 1) {
-			await delay(options.baseDelayMs * 2 ** (attempt - 2));
-		}
-
-		try {
-			return await fn();
-		} catch (e) {
-			lastError = e;
-			const willRetry = attempt < options.maxAttempts;
-			console.error(
-				`${label} failed on attempt ${attempt}/${options.maxAttempts}${
-					willRetry ? '; retrying.' : '; giving up.'
-				}`,
-				e
-			);
-		}
-	}
-
-	throw lastError;
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export class JoplinNativeProvider implements EmbeddingProvider {
 	public readonly id: ProviderId = 'joplin-native';
 	public static readonly DEFAULT_MODEL_ID = 'joplin-native';
@@ -94,10 +62,10 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 	private static readonly MAX_MODEL_CHANGE_RETRIES = 3;
 	private static readonly MAX_ATTEMPTS_PER_PAGE = 3;
 	private static readonly RETRY_DELAY_MS = 1000;
+	/** Every page of a request repeats its note IDs across IPC, so requests stay small. */
+	private static readonly NOTE_ID_BATCH_SIZE = 200;
 
 	private _modelName: string;
-	private cachedVectors: Map<string, number[]> | null = null;
-	private fetchedModelId: string | null = null;
 
 	public constructor(modelName: string = JoplinNativeProvider.DEFAULT_MODEL_ID) {
 		this._modelName = modelName;
@@ -109,31 +77,41 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 
 	public async fetchVectorsByNoteIds(
 		noteIds: string[],
-		isCancelled: () => boolean = () => false
+		isCancelled: () => boolean = () => false,
+		onProgress?: (done: number, total: number) => void
 	): Promise<Map<string, number[]>> {
 		if (noteIds.length === 0) {
 			return new Map();
 		}
 
-		this.cachedVectors = null;
-		this.fetchedModelId = null;
-
 		const api = this.validateAiApi();
-		const grouped = await this.fetchAllPages(api, noteIds, isCancelled);
+		const result = new Map<string, number[]>();
+		let modelChangeRetries = 0;
 
-		this.fetchedModelId = this._modelName;
+		for (let start = 0; start < noteIds.length; start += JoplinNativeProvider.NOTE_ID_BATCH_SIZE) {
+			if (isCancelled()) break;
 
-		const result = this.poolAndNormalize(grouped);
-		this.cachedVectors = result;
+			const modelBefore = this._modelName;
+			const batch = noteIds.slice(start, start + JoplinNativeProvider.NOTE_ID_BATCH_SIZE);
+			const grouped = await this.fetchAllPages(api, batch, isCancelled);
+
+			if (start > 0 && this._modelName !== modelBefore) {
+				modelChangeRetries++;
+				if (modelChangeRetries > JoplinNativeProvider.MAX_MODEL_CHANGE_RETRIES) {
+					throw new Error('Model changed too many times during pagination.');
+				}
+				result.clear();
+				start = -JoplinNativeProvider.NOTE_ID_BATCH_SIZE;
+				continue;
+			}
+
+			for (const [noteId, vector] of this.poolAndNormalize(grouped)) {
+				result.set(noteId, vector);
+			}
+			onProgress?.(Math.min(start + batch.length, noteIds.length), noteIds.length);
+		}
+
 		return result;
-	}
-
-	public getCachedVectors(): Map<string, number[]> | null {
-		return this.cachedVectors;
-	}
-
-	public getFetchedModelId(): string | null {
-		return this.fetchedModelId;
 	}
 
 	/**

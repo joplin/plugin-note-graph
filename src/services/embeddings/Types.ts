@@ -5,13 +5,11 @@ export type ProviderId = 'joplin-native';
 export interface EmbeddingProvider {
 	readonly id: ProviderId;
 	readonly modelName: string;
-	fetchVectorsByNoteIds(noteIds: string[], isCancelled?: () => boolean): Promise<Map<string, number[]>>;
-	getCachedVectors?(): Map<string, number[]> | null;
-	getFetchedModelId?(): string | null;
-}
-
-export interface ProviderConfig {
-	id: ProviderId;
+	fetchVectorsByNoteIds(
+		noteIds: string[],
+		isCancelled?: () => boolean,
+		onProgress?: (done: number, total: number) => void
+	): Promise<Map<string, number[]>>;
 }
 
 export interface EmbeddedNote {
