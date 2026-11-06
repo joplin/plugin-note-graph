@@ -7,8 +7,9 @@ describe('FolderRepository', () => {
 	let repo: FolderRepository;
 
 	beforeEach(() => {
-		repo = new FolderRepository();
-		jest.clearAllMocks();
+		repo = new FolderRepository({ maxAttempts: 3, baseDelayMs: 0 });
+		mockGet.mockReset();
+		jest.spyOn(console, 'error').mockImplementation(() => undefined);
 	});
 
 	it('fetches all folders when single page', async () => {
@@ -24,9 +25,22 @@ describe('FolderRepository', () => {
 		expect(folders[0].title).toBe('Notebook 1');
 		expect(mockGet).toHaveBeenCalledWith(['folders'], {
 			fields: ['id', 'parent_id', 'title'],
+			order_by: 'id',
+			order_dir: 'ASC',
 			limit: 100,
 			page: 1,
 		});
+	});
+
+	it('retries a failed page before reporting the list as incomplete', async () => {
+		mockGet
+			.mockRejectedValueOnce(new Error('network error'))
+			.mockResolvedValueOnce({ items: [{ id: '1', parent_id: '', title: 'A' }], has_more: false });
+
+		const { folders, truncated } = await repo.getAllFolders();
+
+		expect(truncated).toBe(false);
+		expect(folders).toHaveLength(1);
 	});
 
 	it('fetches all folders across multiple pages', async () => {

@@ -1,4 +1,6 @@
 import joplin from 'api';
+import { DATA_API_RETRY, RetryOptions, retryWithBackoff } from '../utils/retryWithBackoff';
+import { Logger, consoleLogger } from '../utils/Logger';
 
 const FOLDER_FIELDS = ['id', 'parent_id', 'title'];
 
@@ -9,6 +11,11 @@ export interface Folder {
 }
 
 export class FolderRepository {
+	public constructor(
+		private readonly pageRetry: RetryOptions = DATA_API_RETRY,
+		private readonly logger: Logger = consoleLogger
+	) {}
+
 	public async getAllFolders(
 		maxFolders = 5000
 	): Promise<{ folders: Folder[]; truncated: boolean }> {
@@ -22,17 +29,25 @@ export class FolderRepository {
 			}
 
 			try {
-				const response = await joplin.data.get(['folders'], {
-					fields: FOLDER_FIELDS,
-					limit: Math.min(remaining, 100),
-					page,
-				});
+				const limit = Math.min(remaining, 100);
+				const response = await retryWithBackoff(
+					`Notebooks page ${page} fetch`,
+					() =>
+						joplin.data.get(['folders'], {
+							fields: FOLDER_FIELDS,
+							order_by: 'id',
+							order_dir: 'ASC',
+							limit,
+							page,
+						}),
+					{ ...this.pageRetry, logger: this.logger }
+				);
 				const items: Folder[] = response.items ?? [];
 				folders.push(...items.slice(0, remaining));
 				hasMore = response.has_more === true;
 				page++;
 			} catch (error) {
-				console.error('Failed to fetch folders page:', error);
+				this.logger.error('Failed to fetch folders page:', error);
 				return { folders, truncated: true };
 			}
 		}
