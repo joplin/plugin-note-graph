@@ -2,12 +2,15 @@ import joplin from 'api';
 import { ChatMessage, ChatOptions } from 'api/types';
 import { NoteBatchItem, RelationshipBatchItem, buildBatchPrompt } from './PromptBuilder';
 import { NodeEnrichment, EdgeEnrichment, ParsedEnrichment, parseEnrichmentResponse, pairKey } from './ResponseParser';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 const EDGES_PER_BATCH = 4;
 const MAX_ATTEMPTS_PER_BATCH = 4;
 const RETRY_DELAY_MS = 1000;
 const MAX_EXISTING_CATEGORIES = 40;
 const LOG_EXCERPT_LENGTH = 600;
+/** A large vault can have tens of thousands of semantic edges, each a paid request on a remote provider, so one session labels this many at most. */
+const MAX_EDGES_PER_SESSION = 200;
 
 interface ChatApi {
 	chat: (messages: ChatMessage[], options?: ChatOptions) => Promise<unknown>;
@@ -24,6 +27,7 @@ export interface EnrichmentEdgeInput {
 	source: string;
 	target: string;
 	updatedTime: number;
+	score?: number;
 }
 
 export interface EnrichmentInput {
@@ -65,6 +69,8 @@ interface Batch {
 export interface LLMEnricherConfig {
 	edgesPerBatch?: number;
 	maxAttemptsPerBatch?: number;
+	maxEdgesPerSession?: number;
+	logger?: Logger;
 }
 
 export interface CacheSeed<T> {
@@ -80,15 +86,24 @@ export class LLMEnricher {
 	private readonly dirtyEdges = new Map<string, CachedEnrichment<EdgeEnrichment>>();
 	private readonly edgesPerBatch: number;
 	private readonly maxAttemptsPerBatch: number;
+	private readonly maxEdgesPerSession: number;
+	private readonly logger: Logger;
+	private edgesLabeledThisSession = 0;
 
 	public constructor(config: LLMEnricherConfig = {}) {
 		this.edgesPerBatch = config.edgesPerBatch ?? EDGES_PER_BATCH;
 		this.maxAttemptsPerBatch = config.maxAttemptsPerBatch ?? MAX_ATTEMPTS_PER_BATCH;
+		this.maxEdgesPerSession = config.maxEdgesPerSession ?? MAX_EDGES_PER_SESSION;
+		this.logger = config.logger ?? consoleLogger;
 	}
 
-	public clearCache(): void {
-		this.nodeCache.clear();
-		this.edgeCache.clear();
+	/** Lets another batch of edges be labeled, for when the user explicitly asks for more. */
+	public resetSessionBudget(): void {
+		this.edgesLabeledThisSession = 0;
+	}
+
+	public getSessionBudget(): { used: number; limit: number } {
+		return { used: this.edgesLabeledThisSession, limit: this.maxEdgesPerSession };
 	}
 
 	public seedCache(nodeSeeds: CacheSeed<NodeEnrichment>[], edgeSeeds: CacheSeed<EdgeEnrichment>[]): void {
@@ -144,7 +159,7 @@ export class LLMEnricher {
 			edgeEnrichments = hits;
 
 			if (edgeMisses.length === 0) {
-				console.info(`LLM enrichment: nothing to do, all ${input.edges.length} semantic edge(s) already cached.`);
+				this.logger.info(`LLM enrichment: nothing to do, all ${input.edges.length} semantic edge(s) already cached.`);
 				return { nodeEnrichments, edgeEnrichments };
 			}
 
@@ -152,12 +167,20 @@ export class LLMEnricher {
 			try {
 				api = this.validateAiApi();
 			} catch (e) {
-				console.info('LLM enrichment skipped: joplin.ai is not available.', e);
+				this.logger.info('LLM enrichment skipped: joplin.ai is not available.', e);
 				return { nodeEnrichments, edgeEnrichments };
 			}
 
-			const chunks = this.chunk(edgeMisses, this.edgesPerBatch).map((edgeChunk) => this.buildBatch(edgeChunk, input.nodes));
-			console.info(`LLM enrichment: starting, ${edgeMisses.length} edge(s) across ${chunks.length} batch(es).`);
+			const edgesToLabel = this.selectWithinBudget(edgeMisses);
+			if (edgesToLabel.length === 0) {
+				this.logger.info(
+					`LLM enrichment: the limit of ${this.maxEdgesPerSession} labels for this session is used up; ${edgeMisses.length} edge(s) left unlabeled.`
+				);
+				return { nodeEnrichments, edgeEnrichments };
+			}
+
+			const chunks = this.chunk(edgesToLabel, this.edgesPerBatch).map((edgeChunk) => this.buildBatch(edgeChunk, input.nodes));
+			this.logger.info(`LLM enrichment: starting, ${edgesToLabel.length} of ${edgeMisses.length} edge(s) across ${chunks.length} batch(es).`);
 			onProgress?.({ current: 0, total: chunks.length });
 
 			const usedCategories = this.collectCategories();
@@ -170,6 +193,7 @@ export class LLMEnricher {
 				}
 
 				const outcome = await this.runBatch(api, chunks[i], i, chunks.length, this.capCategories(usedCategories), isStale);
+				this.edgesLabeledThisSession += chunks[i].prompt.relationships.length;
 				this.mergeNodeResults(outcome.nodes, chunks[i].index.nodeUpdatedTimeById, nodeEnrichments, nodesWrittenThisRun);
 				this.mergeEdgeResults(outcome.edges, chunks[i].index.edgeUpdatedTimeById, edgeEnrichments);
 				for (const enrichment of outcome.nodes.values()) {
@@ -178,16 +202,23 @@ export class LLMEnricher {
 				onProgress?.({ current: i + 1, total: chunks.length });
 			}
 
-			console.info(
+			this.logger.info(
 				superseded
 					? `LLM enrichment: run superseded; stopping with ${nodeEnrichments.size} note(s) categorized, ${edgeEnrichments.size} edge(s) labeled so far.`
 					: `LLM enrichment: done, ${nodeEnrichments.size} note(s) categorized, ${edgeEnrichments.size} edge(s) labeled.`
 			);
 		} catch (e) {
-			console.error('LLM enrichment: unexpected failure; falling back to Pass A data for the rest of this run.', e);
+			this.logger.error('LLM enrichment: unexpected failure; falling back to Pass A data for the rest of this run.', e);
 		}
 
 		return { nodeEnrichments, edgeEnrichments };
+	}
+
+	/** Strongest connections first, since they're the ones most worth explaining. */
+	private selectWithinBudget(edges: EnrichmentEdgeInput[]): EnrichmentEdgeInput[] {
+		const remaining = this.maxEdgesPerSession - this.edgesLabeledThisSession;
+		if (remaining <= 0) return [];
+		return [...edges].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, remaining);
 	}
 
 	private collectCategories(): Set<string> {
@@ -259,14 +290,14 @@ export class LLMEnricher {
 		const edgeUpdatedTimeById = new Map<string, number>();
 		for (const edge of edgeChunk) {
 			if (!knownNoteIds.has(edge.source) || !knownNoteIds.has(edge.target)) {
-				console.error('LLM enrichment: edge references a note missing from this batch; skipping it.', edge.id);
+				this.logger.error('LLM enrichment: edge references a note missing from this batch; skipping it.', edge.id);
 				continue;
 			}
 
 			const key = pairKey(edge.source, edge.target);
 			const existingEdgeId = edgeIdByPair.get(key);
 			if (existingEdgeId) {
-				console.error(
+				this.logger.error(
 					`LLM enrichment: edges ${existingEdgeId} and ${edge.id} share the note pair ${key}; only ${existingEdgeId} can be matched to a relationship label.`
 				);
 			} else {
@@ -312,7 +343,7 @@ export class LLMEnricher {
 			try {
 				response = await api.chat(messages);
 			} catch (e) {
-				console.error(
+				this.logger.error(
 					`LLM enrichment: chat() call failed on attempt ${attempt}/${this.maxAttemptsPerBatch} for ${batchDescription}${willRetry ? '; retrying.' : '; giving up for this run.'}`,
 					e
 				);
@@ -321,7 +352,7 @@ export class LLMEnricher {
 
 			const raw = this.extractResponseText(response);
 			if (raw === null || raw.trim().length === 0) {
-				console.error(
+				this.logger.error(
 					`LLM enrichment: ${batchDescription} got no usable text back on attempt ${attempt}/${this.maxAttemptsPerBatch} (${
 						raw === null ? `unrecognized response shape: ${this.describeUnexpectedResponse(response)}` : 'empty response'
 					})${willRetry ? '; retrying.' : '; giving up for this run.'}`
@@ -331,7 +362,7 @@ export class LLMEnricher {
 
 			const parsed = parseEnrichmentResponse(raw, knownNodeIds, batch.index.edgeIdByPair);
 			if (!parsed) {
-				console.error(
+				this.logger.error(
 					`LLM enrichment: ${batchDescription} failed schema validation on attempt ${attempt}/${this.maxAttemptsPerBatch}${willRetry ? '; retrying.' : '; giving up for this run.'} ${this.diagnoseMalformedResponse(raw)}`
 				);
 				continue;
@@ -339,7 +370,7 @@ export class LLMEnricher {
 
 			const missing = batch.prompt.relationships.length - parsed.edges.size;
 			if (missing > 0) {
-				console.info(
+				this.logger.info(
 					`LLM enrichment: ${batchDescription} only labeled ${parsed.edges.size}/${batch.prompt.relationships.length} relationships; accepting the partial result.`
 				);
 			}
@@ -364,7 +395,7 @@ export class LLMEnricher {
 
 			const updatedTime = updatedTimeById.get(id);
 			if (updatedTime === undefined) {
-				console.error('LLM enrichment: parsed note id has no matching batch entry; skipping cache write.', id);
+				this.logger.error('LLM enrichment: parsed note id has no matching batch entry; skipping cache write.', id);
 				continue;
 			}
 			if (enrichment.category !== undefined) {
@@ -384,7 +415,7 @@ export class LLMEnricher {
 		for (const [id, enrichment] of parsed) {
 			const updatedTime = updatedTimeById.get(id);
 			if (updatedTime === undefined) {
-				console.error('LLM enrichment: parsed edge id has no matching batch entry; skipping cache write.', id);
+				this.logger.error('LLM enrichment: parsed edge id has no matching batch entry; skipping cache write.', id);
 				continue;
 			}
 			this.edgeCache.set(id, { enrichment, updatedTime });

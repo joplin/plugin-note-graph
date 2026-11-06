@@ -579,22 +579,6 @@ describe('LLMEnricher', () => {
 		expect(second.nodeEnrichments.get('n1')).toEqual({ category: 'category-n1', centralityAdjustment: 2 });
 	});
 
-	describe('clearCache', () => {
-		it('makes a previously cached edge a cache miss again, re-querying chat()', async () => {
-			const enricher = createEnricher();
-			getChatMock().mockImplementation(async (messages) => respondValid(messages));
-			const input: EnrichmentInput = { nodes: nodes('n1', 'n2'), edges: [edge('n1', 'n2', 100)] };
-			await enricher.enrich(input, NOT_STALE);
-			expect(getChatMock()).toHaveBeenCalledTimes(1);
-
-			enricher.clearCache();
-			const result = await enricher.enrich(input, NOT_STALE);
-
-			expect(getChatMock()).toHaveBeenCalledTimes(2);
-			expect(result.edgeEnrichments.get('n1::n2::semantic')).toEqual({ relationshipLabel: 'label-n1-n2' });
-		});
-	});
-
 	describe('seedCache', () => {
 		it('treats a seeded node/edge as a cache hit, skipping chat() for it', async () => {
 			const enricher = createEnricher();
@@ -694,5 +678,74 @@ describe('LLMEnricher', () => {
 			nodeEnrichments: new Map(),
 			edgeEnrichments: new Map(),
 		});
+	});
+});
+
+describe('LLMEnricher session budget', () => {
+	const chat = (joplin.ai as unknown as { chat: jest.Mock }).chat;
+	const edgeList = (count: number) =>
+		Array.from({ length: count }, (_, i) => ({
+			id: `a${i}::b${i}::semantic`,
+			source: `a${i}`,
+			target: `b${i}`,
+			updatedTime: 1,
+			score: i / count,
+		}));
+	const inputFor = (edges: ReturnType<typeof edgeList>) => {
+		const nodes = new Map();
+		for (const edge of edges) {
+			nodes.set(edge.source, { title: edge.source, body: '', updatedTime: 1 });
+			nodes.set(edge.target, { title: edge.target, body: '', updatedTime: 1 });
+		}
+		return { nodes, edges };
+	};
+
+	beforeEach(() => {
+		chat.mockReset();
+		chat.mockResolvedValue({ text: '{"notes":[],"relationships":[]}' });
+		jest.spyOn(console, 'info').mockImplementation(() => undefined);
+		jest.spyOn(console, 'error').mockImplementation(() => undefined);
+	});
+
+	afterEach(() => {
+		jest.restoreAllMocks();
+	});
+
+	it('sends at most the session limit, however many edges a large vault has', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 4, maxEdgesPerSession: 8 });
+
+		await enricher.enrich(inputFor(edgeList(50000)), () => false);
+
+		expect(chat).toHaveBeenCalledTimes(2);
+	});
+
+	it('labels the strongest connections first', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 1, maxEdgesPerSession: 1, maxAttemptsPerBatch: 1 });
+
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+
+		const prompt = chat.mock.calls[0][0][1].content;
+		expect(prompt).toContain('a9');
+	});
+
+	it('does not ask for more once the limit is used up, across runs', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 4, maxEdgesPerSession: 4, maxAttemptsPerBatch: 1 });
+
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+		chat.mockClear();
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+
+		expect(chat).not.toHaveBeenCalled();
+	});
+
+	it('labels more once the budget is reset', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 4, maxEdgesPerSession: 4, maxAttemptsPerBatch: 1 });
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+		chat.mockClear();
+
+		enricher.resetSessionBudget();
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+
+		expect(chat).toHaveBeenCalledTimes(1);
 	});
 });
