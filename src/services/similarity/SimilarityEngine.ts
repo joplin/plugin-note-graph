@@ -1,7 +1,6 @@
-import joplin from 'api';
-import { SearchOptions, SearchResult } from 'api/types';
 import { Note } from '../../data/Types';
 import { EmbeddedNote } from '../embeddings/Types';
+import { KnnIndex } from './KnnIndex';
 import {
 	SEMANTIC_FLOOR,
 	DEFAULT_THRESHOLD,
@@ -22,17 +21,18 @@ export interface SimilarityPair {
 }
 
 export class SimilarityEngine {
-	private static readonly MAX_SEARCH_ATTEMPTS = 2;
-	private static readonly SEARCH_RETRY_DELAY_MS = 500;
-	private static readonly SEARCH_CIRCUIT_BREAKER_FAILURES = 3;
-
 	private readonly noteIds: string[];
 	private readonly vectors: Map<string, number[]>;
 	private readonly tagMap: Map<string, Set<string>>;
 	private readonly linkSet: Set<string>;
 	private readonly createdTimeMap: Map<string, number>;
 
-	public constructor(notes: Note[], embeddedNotes: EmbeddedNote[]) {
+	/** @param knnIndex - keep the same index between runs, so only changed notes are recomputed. */
+	public constructor(
+		notes: Note[],
+		embeddedNotes: EmbeddedNote[],
+		private readonly knnIndex: KnnIndex = new KnnIndex()
+	) {
 		this.noteIds = notes.map((n) => n.id);
 		this.vectors = new Map<string, number[]>();
 		for (const en of embeddedNotes) {
@@ -96,12 +96,21 @@ export class SimilarityEngine {
 		return topPairs;
 	}
 
-	/** Picks the appropriate similarity strategy based on vault size. */
+	/** Compares every pair in a small vault. Above that, only each note's nearest neighbours are candidates. */
 	private computeRawPairs(isCancelled?: () => boolean): Promise<SimilarityPair[]> {
 		if (this.noteIds.length <= LARGE_VAULT_THRESHOLD) {
 			return Promise.resolve(this.computeCosinePairs(isCancelled));
 		}
-		return this.computeSearchPairs(isCancelled);
+		return this.computeKnnPairs(isCancelled);
+	}
+
+	private async computeKnnPairs(isCancelled?: () => boolean): Promise<SimilarityPair[]> {
+		const entries = this.noteIds
+			.filter((id) => this.vectors.has(id))
+			.map((id) => ({ id, vector: this.vectors.get(id) as number[] }));
+
+		const finished = await this.knnIndex.sync(entries, isCancelled);
+		return finished ? this.knnIndex.pairs() : [];
 	}
 
 	/** O(n²) pairwise cosine similarity via dot product on unit-norm vectors. */
@@ -127,112 +136,6 @@ export class SimilarityEngine {
 		}
 
 		return pairs;
-	}
-
-	/**
-	 * Uses joplin.ai.search({ noteId }) to find candidate pairs via vector index.
-	 * Only checks that joplin.ai itself exists — never probes a specific method
-	 * property without invoking it (see JoplinNativeProvider.validateAiApi for why).
-	 *
-	 * Score-scale assumption: search relevance scores are treated as raw
-	 * similarity scores and flow through the same floor → threshold →
-	 * normalize pipeline as cosine scores.
-	 *
-	 * Failure handling: each note's search call is retried on transient
-	 * failures before being skipped; a partial candidate set is still
-	 * useful. If *every* note's search ultimately fails — e.g. joplin.ai
-	 * exists but search doesn't on this Joplin version — we fall back to
-	 * O(n²) cosine instead of silently returning zero pairs.
-	 */
-	private async computeSearchPairs(isCancelled?: () => boolean): Promise<SimilarityPair[]> {
-		const joplinAi = joplin.ai as unknown as
-			| { search: (options: SearchOptions) => Promise<SearchResult[]> }
-			| undefined;
-		if (!joplinAi) {
-			return this.computeCosinePairs(isCancelled);
-		}
-
-		const pairs = new Map<string, SimilarityPair>();
-		let successCount = 0;
-		let consecutiveFailures = 0;
-		let firstError: unknown = null;
-
-		for (const noteId of this.noteIds) {
-			if (isCancelled?.()) break;
-			let results: SearchResult[];
-			try {
-				results = await this.searchWithRetry(joplinAi, noteId, isCancelled);
-			} catch (e) {
-				if (firstError === null) {
-					firstError = e;
-					console.warn(
-						'joplin.ai.search failed for a note after retrying; skipping it. First error:',
-						e
-					);
-				}
-				consecutiveFailures++;
-				if (successCount === 0 && consecutiveFailures >= SimilarityEngine.SEARCH_CIRCUIT_BREAKER_FAILURES) {
-					console.warn(
-						'joplin.ai.search has failed for every note attempted so far; giving up early and falling back to pairwise cosine similarity.',
-						firstError
-					);
-					return this.computeCosinePairs(isCancelled);
-				}
-				continue;
-			}
-
-			consecutiveFailures = 0;
-			successCount++;
-
-			for (const r of results) {
-				if (!this.vectors.has(r.noteId) || r.noteId === noteId) {
-					continue;
-				}
-
-				const key = this.makePairKey(noteId, r.noteId);
-				const existing = pairs.get(key);
-				if (existing) {
-					existing.score = Math.max(existing.score, r.score);
-					continue;
-				}
-
-				const [source, target] =
-					noteId < r.noteId ? [noteId, r.noteId] : [r.noteId, noteId];
-
-				pairs.set(key, { source, target, score: r.score });
-			}
-		}
-
-		return Array.from(pairs.values());
-	}
-
-	/** Retries a single note's search call on transient failures before giving up on it. */
-	private async searchWithRetry(
-		joplinAi: { search: (options: SearchOptions) => Promise<SearchResult[]> },
-		noteId: string,
-		isCancelled?: () => boolean
-	): Promise<SearchResult[]> {
-		let lastError: unknown;
-
-		for (let attempt = 1; attempt <= SimilarityEngine.MAX_SEARCH_ATTEMPTS; attempt++) {
-			if (isCancelled?.()) return [];
-			if (attempt > 1) {
-				await this.delay(SimilarityEngine.SEARCH_RETRY_DELAY_MS);
-				if (isCancelled?.()) return [];
-			}
-
-			try {
-				return await joplinAi.search({ query: { noteId }, relevance: 'normal' });
-			} catch (e) {
-				lastError = e;
-			}
-		}
-
-		throw lastError;
-	}
-
-	private delay(ms: number): Promise<void> {
-		return new Promise((resolve) => setTimeout(resolve, ms));
 	}
 
 	/** Dot product of two same-length vectors. */

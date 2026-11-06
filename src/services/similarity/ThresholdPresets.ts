@@ -5,7 +5,7 @@ export const DEFAULT_THRESHOLD = 0.7;
 
 export const TOP_K = 5;
 
-/** Vault size above which joplin.ai.search() is used instead of O(n²) cosine. */
+/** Vault size above which only each note's nearest neighbours are compared, instead of every pair. */
 export const LARGE_VAULT_THRESHOLD = 300;
 
 /** Scaled by Jaccard tag overlap between two notes. */
