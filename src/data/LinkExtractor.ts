@@ -1,7 +1,14 @@
 const resourceRegex = /^(joplin:\/\/|:\/)([A-Fa-f0-9]{32})(|#[^\s]*)(|\s".*?")$/;
 
-const urlDecode = (s: string): string =>
-	decodeURIComponent(s.replace(/\+/g, ' '));
+/** Falls back to the undecoded text, because a note can contain a malformed anchor such as `#100%`. */
+const urlDecode = (s: string): string => {
+	const spaced = s.replace(/\+/g, ' ');
+	try {
+		return decodeURIComponent(spaced);
+	} catch {
+		return spaced;
+	}
+};
 
 /** Checks if a URL string matches the Joplin resource format (:/id or joplin://id). */
 export const isResourceUrl = (url: string): boolean =>
