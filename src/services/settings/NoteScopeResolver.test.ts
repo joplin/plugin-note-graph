@@ -26,11 +26,83 @@ describe('NoteScopeResolver', () => {
 		resolver = new NoteScopeResolver(mockFolderRepo);
 	});
 
-	it('returns no filter for "all" without touching the folder tree', async () => {
+	it('returns no notebook in particular for "all", with every notebook\'s title', async () => {
 		const result = await resolver.resolve({ mode: 'all', selectedNotebookIds: [] });
 
-		expect(result).toEqual({ folderIds: null, scopeKey: 'all' });
-		expect(mockFolderRepo.getAllFolders).not.toHaveBeenCalled();
+		expect(result.folderIds).toBeNull();
+		expect(result.scopeKey).toBe('all');
+		expect(result.label).toBe('All notebooks');
+		expect(result.followsSelection).toBe(false);
+		expect(result.wholeVaultUnavailable).toBeUndefined();
+		expect(result.notebookTitles.get('child-a1')).toBe('Projects');
+	});
+
+	it('logs when the notebook list is incomplete, and uses what it has', async () => {
+		const logged = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+		mockFolderRepo.getAllFolders.mockResolvedValue({ folders: folders(), truncated: true });
+
+		const result = await resolver.resolve({
+			mode: 'selected',
+			selectedNotebookIds: ['root-b'],
+		});
+
+		expect(result.folderIds).toEqual(new Set(['root-b']));
+		expect(logged).toHaveBeenCalled();
+		logged.mockRestore();
+	});
+
+	describe('on a vault too large to draw at once', () => {
+		const large = { wholeVaultAllowed: false };
+
+		it('turns "all" into the current notebook, and says why', async () => {
+			(joplin.workspace.selectedFolder as jest.Mock).mockResolvedValue({
+				id: 'root-b',
+				title: 'Personal',
+			});
+
+			const result = await resolver.resolve({ mode: 'all', selectedNotebookIds: [] }, large);
+
+			expect(result.folderIds).toEqual(new Set(['root-b']));
+			expect(result.label).toBe('Personal');
+			expect(result.followsSelection).toBe(true);
+			expect(result.wholeVaultUnavailable).toBe(true);
+		});
+
+		it('uses the open note when "all" is saved and no notebook is open', async () => {
+			(joplin.workspace.selectedFolder as jest.Mock).mockResolvedValue(null);
+			(joplin.workspace.selectedNote as jest.Mock).mockResolvedValue({ id: 'note-1' });
+
+			const result = await resolver.resolve({ mode: 'all', selectedNotebookIds: [] }, large);
+
+			expect(result.folderIds).toBeNull();
+			expect(result.openNoteId).toBe('note-1');
+			expect(result.wholeVaultUnavailable).toBe(true);
+		});
+
+		it('turns a selection that no longer exists into the current notebook', async () => {
+			(joplin.workspace.selectedFolder as jest.Mock).mockResolvedValue({
+				id: 'root-b',
+				title: 'Personal',
+			});
+
+			const result = await resolver.resolve(
+				{ mode: 'selected', selectedNotebookIds: ['deleted'] },
+				large
+			);
+
+			expect(result.scopeKey).toBe('current:root-b');
+			expect(result.wholeVaultUnavailable).toBe(true);
+		});
+
+		it('leaves a real selection alone', async () => {
+			const result = await resolver.resolve(
+				{ mode: 'selected', selectedNotebookIds: ['root-b'] },
+				large
+			);
+
+			expect(result.folderIds).toEqual(new Set(['root-b']));
+			expect(result.wholeVaultUnavailable).toBeUndefined();
+		});
 	});
 
 	describe('mode: current', () => {
@@ -43,22 +115,41 @@ describe('NoteScopeResolver', () => {
 			expect(result.scopeKey).toBe('current:root-a');
 		});
 
-		it('falls back to all notebooks when no notebook is currently selected', async () => {
-			(joplin.workspace.selectedFolder as jest.Mock).mockResolvedValue(null);
+		it('names itself after the notebook and follows the selection', async () => {
+			(joplin.workspace.selectedFolder as jest.Mock).mockResolvedValue({
+				id: 'root-a',
+				title: 'Work',
+			});
 
 			const result = await resolver.resolve({ mode: 'current', selectedNotebookIds: [] });
 
-			expect(result).toEqual({ folderIds: null, scopeKey: 'all' });
+			expect(result.label).toBe('Work');
+			expect(result.followsSelection).toBe(true);
+			expect(result.notebookTitles.get('root-b')).toBe('Personal');
 		});
 
-		it('falls back to all notebooks when selectedFolder() throws', async () => {
+		it('records the open note when no notebook is selected', async () => {
+			(joplin.workspace.selectedFolder as jest.Mock).mockResolvedValue(null);
+			(joplin.workspace.selectedNote as jest.Mock).mockResolvedValue({ id: 'note-1' });
+
+			const result = await resolver.resolve({ mode: 'current', selectedNotebookIds: [] });
+
+			expect(result.folderIds).toBeNull();
+			expect(result.scopeKey).toBe('all');
+			expect(result.openNoteId).toBe('note-1');
+			expect(result.followsSelection).toBe(true);
+		});
+
+		it('copes with neither a notebook nor a note being available', async () => {
 			(joplin.workspace.selectedFolder as jest.Mock).mockRejectedValue(
 				new Error('no folder')
 			);
+			(joplin.workspace.selectedNote as jest.Mock).mockRejectedValue(new Error('no note'));
 
 			const result = await resolver.resolve({ mode: 'current', selectedNotebookIds: [] });
 
-			expect(result).toEqual({ folderIds: null, scopeKey: 'all' });
+			expect(result.folderIds).toBeNull();
+			expect(result.openNoteId).toBeNull();
 		});
 
 		it('scopes to a leaf notebook with no children as just itself', async () => {
@@ -110,19 +201,41 @@ describe('NoteScopeResolver', () => {
 			expect(result.scopeKey).toBe('selected:work-1');
 		});
 
-		it('falls back to all notebooks when no configured ID matches', async () => {
+		it('names itself after one notebook, or counts several, and stays put', async () => {
+			const one = await resolver.resolve({
+				mode: 'selected',
+				selectedNotebookIds: ['root-a'],
+			});
+			const two = await resolver.resolve({
+				mode: 'selected',
+				selectedNotebookIds: ['root-a', 'root-b'],
+			});
+
+			expect(one.label).toBe('Work');
+			expect(two.label).toBe('2 notebooks');
+			expect(one.followsSelection).toBe(false);
+		});
+
+		it('shows all notebooks when no configured ID matches, on a vault small enough', async () => {
+			const logged = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+
 			const result = await resolver.resolve({
 				mode: 'selected',
 				selectedNotebookIds: ['nonexistent-id'],
 			});
 
-			expect(result).toEqual({ folderIds: null, scopeKey: 'all' });
+			expect(result.folderIds).toBeNull();
+			expect(result.label).toBe('All notebooks');
+			logged.mockRestore();
 		});
 
-		it('falls back to all notebooks when no IDs are configured', async () => {
+		it('shows all notebooks when no IDs are configured, on a vault small enough', async () => {
+			const logged = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+
 			const result = await resolver.resolve({ mode: 'selected', selectedNotebookIds: [] });
 
-			expect(result).toEqual({ folderIds: null, scopeKey: 'all' });
+			expect(result.folderIds).toBeNull();
+			logged.mockRestore();
 		});
 	});
 

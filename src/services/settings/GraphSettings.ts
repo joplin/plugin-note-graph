@@ -75,7 +75,7 @@ export async function registerGraphSettings(): Promise<void> {
 			section: SECTION_NAME,
 			label: 'Enable LLM analysis',
 			description:
-				'Uses Joplin AI chat to add category labels and relationship descriptions to notes/edges already flagged as related by AI analysis. Requires AI-based semantic analysis to be enabled.',
+				'Uses Joplin AI chat to describe how notes already flagged as related by AI analysis are connected, for up to 200 of the strongest connections per session. Requires AI-based semantic analysis to be enabled.',
 		},
 		[RETRY_EMBEDDING_KEY]: {
 			value: false,
@@ -93,7 +93,7 @@ export async function registerGraphSettings(): Promise<void> {
 			section: SECTION_NAME,
 			label: 'Retry AI labels',
 			description:
-				'Tick to immediately retry LLM analysis for any note/edge still missing a label. Unticks itself once the retry starts. No-op if the graph panel has not been opened yet.',
+				'Tick to label up to 200 more connections still missing a label. Unticks itself once the retry starts. No-op if the graph panel has not been opened yet.',
 		},
 		[SCOPE_MODE_KEY]: {
 			value: 'current',
@@ -119,7 +119,7 @@ export async function isLlmEnrichmentEnabled(): Promise<boolean> {
 }
 
 function parseScopeMode(value: unknown): ScopeMode {
-	return value === 'current' || value === 'selected' ? value : 'all';
+	return value === 'all' || value === 'selected' ? value : 'current';
 }
 
 function parseSelectedNotebookIds(raw: string): string[] {
