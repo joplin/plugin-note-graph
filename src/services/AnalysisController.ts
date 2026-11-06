@@ -1,9 +1,9 @@
 import { Note } from '../data/Types';
 import { GraphBuilder } from './graph/GraphBuilder';
 import { GraphData, GraphNode, RenderedEdge } from './graph/types';
-import { GraphDiffer, GraphDiff } from './graph/GraphDiffer';
 import { clampSize } from './graph/CentralityScorer';
 import { VectorRepository } from '../data/Database/VectorRepository';
+import { BODY_EXCERPT_LENGTH } from '../data/NotePreprocessor';
 import { GraphCacheRepository, PersistedEnrichment } from '../data/Database/GraphCacheRepository';
 import { ProviderResolver } from './embeddings/ProviderResolver';
 import { EmbeddingOrchestrator } from './embeddings/Orchestrator';
@@ -15,6 +15,9 @@ import {
 	isLlmEnrichmentEnabled,
 	getSimilaritySettings,
 } from './settings/GraphSettings';
+import { Logger, consoleLogger } from '../utils/Logger';
+
+const EMPTY_GRAPH: GraphData = { nodes: [], edges: [] };
 
 export interface SemanticBuildResult {
 	graphData: GraphData;
@@ -32,31 +35,29 @@ export class AnalysisController {
 	private lastNotes: Note[] | null = null;
 	private lastEmbeddedNotes: EmbeddedNote[] | null = null;
 	private lastGraphData: GraphData | null = null;
-	private lastDiff: GraphDiff | null = null;
 	private runToken = 0;
 	private cancelledAtToken: number | null = null;
-	private lastDeltaSkippedForRetry = false;
+	/** Bumped whenever a change replaces the graph, so a Pass B run started before it knows it is out of date. */
+	private graphVersion = 0;
+	private semanticRunsInFlight = 0;
+	private readonly staleVectorIds = new Set<string>();
+	private persistTimer: ReturnType<typeof setTimeout> | null = null;
 	private currentOrchestrator: EmbeddingOrchestrator | null = null;
 	private enrichmentInFlight: Promise<GraphData | null> | null = null;
-	private currentScopeKey = 'all';
+	private cachePersistenceEnabled = true;
 
 	public constructor(
 		private readonly builder = new GraphBuilder(),
 		private readonly graphCache: GraphCacheRepository = new GraphCacheRepository(),
-		private readonly graphDiffer: GraphDiffer = new GraphDiffer(),
-		private readonly enrichmentService: LLMEnricher = new LLMEnricher()
+		private readonly enrichmentService: LLMEnricher = new LLMEnricher(),
+		private readonly vectorStore: VectorRepository = new VectorRepository(),
+		/** Waits this long and writes only the latest graph, so a burst of changes means one write. */
+		private readonly cachePersistDelayMs: number = 0,
+		private readonly logger: Logger = consoleLogger
 	) {}
-
-	public getLastDiff(): GraphDiff | null {
-		return this.lastDiff;
-	}
 
 	public getLastGraphData(): GraphData | null {
 		return this.lastGraphData;
-	}
-
-	public wasLastDeltaSkippedForRetry(): boolean {
-		return this.lastDeltaSkippedForRetry;
 	}
 
 	public hasNotes(): boolean {
@@ -67,11 +68,27 @@ export class AnalysisController {
 		return this.lastEmbeddedNotes !== null;
 	}
 
+	public isEmbeddingRunning(): boolean {
+		return this.semanticRunsInFlight > 0;
+	}
+
+	public isEnrichmentRunning(): boolean {
+		return this.enrichmentInFlight !== null;
+	}
+
+	public getEmbeddedNoteCount(): number {
+		return this.lastEmbeddedNotes?.length ?? 0;
+	}
+
+	public getLabelBudget(): { used: number; limit: number } {
+		return this.enrichmentService.getSessionBudget();
+	}
+
 	public cancelCurrentRun(): void {
 		if (this.enrichmentInFlight) {
-			console.info('LLM enrichment: cancelled by user.');
+			this.logger.info('LLM enrichment: cancelled by user.');
 		} else if (this.currentOrchestrator) {
-			console.info('AI analysis: cancelled by user.');
+			this.logger.info('AI analysis: cancelled by user.');
 		}
 		this.currentOrchestrator?.cancel();
 		++this.runToken;
@@ -82,24 +99,31 @@ export class AnalysisController {
 		this.cancelledAtToken = null;
 	}
 
+	/** Lets Pass B label another batch of edges, after the user asks for it. */
+	public allowMoreEnrichment(): void {
+		this.enrichmentService.resetSessionBudget();
+	}
+
 	public getCurrentNotes(): Note[] {
 		return this.lastNotes ?? [];
 	}
 
-	public setScopeKey(scopeKey: string): void {
-		this.currentScopeKey = scopeKey;
+	/** Disable while the loaded notes are incomplete, so a partial graph can't replace a good cached one. */
+	public setCachePersistenceEnabled(enabled: boolean): void {
+		this.cachePersistenceEnabled = enabled;
 	}
 
 	public async loadFromCache(): Promise<GraphData | null> {
 		try {
 			const cached = await this.graphCache.loadGraph();
 			if (!cached) return null;
-			this.lastNotes = cached.notes;
+			this.lastNotes = this.trimOversizedBodies(cached.notes);
+			this.builder.rememberCommunities(cached.graphData);
 			this.lastGraphData = cached.graphData;
 			this.seedEnrichmentCache(cached.notes, cached.graphData);
 			return cached.graphData;
 		} catch (e) {
-			console.error('Failed to load cached graph, starting fresh:', e);
+			this.logger.error('Failed to load cached graph, starting fresh:', e);
 			return null;
 		}
 	}
@@ -126,19 +150,20 @@ export class AnalysisController {
 			}
 			this.enrichmentService.seedCache(nodeSeeds, edgeSeeds);
 		} catch (e) {
-			console.error('Failed to seed LLM enrichment cache from disk:', e);
+			this.logger.error('Failed to seed LLM enrichment cache from disk:', e);
 		}
 	}
 
 	public async migrateCachedEnrichment(): Promise<void> {
 		try {
+			if (await this.graphCache.hasEnrichments()) return;
 			const cached = await this.graphCache.loadGraph();
 			if (!cached) return;
 			const records = this.buildEnrichmentRecords(cached.notes, cached.graphData);
 			if (records.length === 0) return;
 			await this.graphCache.saveEnrichments(records);
 		} catch (e) {
-			console.error('Failed to migrate cached LLM enrichment:', e);
+			this.logger.error('Failed to migrate cached LLM enrichment:', e);
 		}
 	}
 
@@ -200,64 +225,68 @@ export class AnalysisController {
 	): Promise<SemanticBuildResult | null> {
 		const token = ++this.runToken;
 		const guardedProgress = onProgress ? this.guardStaleProgress(token, onProgress) : undefined;
-		return this.buildFrom(notes, token, {
-			onProgress: guardedProgress,
-			commitNotes: true,
-			avoidSemanticDowngrade: true,
-		});
+
+		this.semanticRunsInFlight++;
+		try {
+			return await this.buildFrom(notes, token, guardedProgress);
+		} finally {
+			this.semanticRunsInFlight--;
+		}
 	}
 
 	private async buildFrom(
 		notes: Note[],
 		token: number,
-		options: {
-			onProgress?: (progress: BatchProgress) => void;
-			avoidSemanticDowngrade?: boolean;
-			commitNotes?: boolean;
-		}
+		onProgress?: (progress: BatchProgress) => void
 	): Promise<SemanticBuildResult | null> {
 		const hadSemanticGraph = this.hasSemanticEdges();
-		const { embeddedNotes, reason, aiWasEnabled } = await this.tryEmbed(
-			notes,
-			options.onProgress
-		);
-		if (this.isStale(token, options.avoidSemanticDowngrade)) return null;
+		const notesAtStart = this.lastNotes;
+		const { embeddedNotes, reason, aiWasEnabled } = await this.tryEmbed(notes, onProgress);
+		if (token !== this.runToken) return null;
+
+		// Edits that landed during this long run are already in lastNotes, so build from those.
+		const currentNotes = this.lastNotes && this.lastNotes !== notesAtStart ? this.lastNotes : notes;
 
 		if (!embeddedNotes) {
-			if (options.avoidSemanticDowngrade && hadSemanticGraph && aiWasEnabled) {
-				console.info(
-					'Incremental update: AI re-embed failed; keeping the existing semantic graph instead of downgrading it.',
+			if (hadSemanticGraph && aiWasEnabled) {
+				this.logger.info(
+					'AI re-embed failed; keeping the existing semantic graph instead of downgrading it.',
 					reason
 				);
-				this.lastDeltaSkippedForRetry = true;
 				return null;
 			}
-			const graphData = this.builder.build(notes);
-			if (options.commitNotes) this.lastNotes = notes;
+			const graphData = this.builder.build(currentNotes);
+			this.lastNotes = currentNotes;
 			this.lastEmbeddedNotes = null;
 			this.commitGraphData(graphData);
 			return { graphData, usedAi: false, fallbackReason: reason };
 		}
 
-		console.info(
-			`AI analysis: ${embeddedNotes.length}/${notes.length} notes embedded, building semantic graph.`
+		this.logger.info(
+			`AI analysis: ${embeddedNotes.length}/${currentNotes.length} notes embedded, building semantic graph.`
 		);
 		const { threshold, topK } = await getSimilaritySettings();
 		const enrichmentEnabled = await isLlmEnrichmentEnabled();
-		const graphData = await this.builder.buildWithSimilarity(
-			notes,
+		const similarityGraph = await this.builder.buildWithSimilarity(
+			currentNotes,
 			embeddedNotes,
 			threshold,
 			topK,
 			() => token !== this.runToken
 		);
 
-		if (this.isStale(token, options.avoidSemanticDowngrade)) return null;
+		if (token !== this.runToken) return null;
 
-		if (options.commitNotes) this.lastNotes = notes;
+		const latestNotes = this.lastNotes && this.lastNotes !== notesAtStart ? this.lastNotes : notes;
+		const graphData =
+			latestNotes === currentNotes
+				? similarityGraph
+				: this.builder.rebuildStructure(latestNotes, similarityGraph);
+
+		this.lastNotes = latestNotes;
 		this.lastEmbeddedNotes = embeddedNotes;
 		const committedGraph = enrichmentEnabled
-			? this.replayCachedEnrichment(graphData, notes)
+			? this.replayCachedEnrichment(graphData, latestNotes)
 			: graphData;
 		this.commitGraphData(committedGraph);
 		return { graphData: committedGraph, usedAi: true };
@@ -269,17 +298,27 @@ export class AnalysisController {
 	 * LLM enrichment itself — call `enrichCurrentGraph()` afterward.
 	 */
 	public async recompute(): Promise<GraphData | null> {
+		this.semanticRunsInFlight++;
+		try {
+			return await this.recomputeFromCurrentVectors();
+		} finally {
+			this.semanticRunsInFlight--;
+		}
+	}
+
+	private async recomputeFromCurrentVectors(): Promise<GraphData | null> {
 		if (!this.lastNotes || !this.lastEmbeddedNotes) {
 			return null;
 		}
 		const token = ++this.runToken;
+		const notesAtStart = this.lastNotes;
 		const { threshold, topK } = await getSimilaritySettings();
-		console.info(
+		this.logger.info(
 			`Recomputing graph: threshold=${threshold}, topK=${topK}, ${this.lastEmbeddedNotes.length} cached vectors.`
 		);
 		const enrichmentEnabled = await isLlmEnrichmentEnabled();
-		const graphData = await this.builder.buildWithSimilarity(
-			this.lastNotes,
+		const similarityGraph = await this.builder.buildWithSimilarity(
+			notesAtStart,
 			this.lastEmbeddedNotes,
 			threshold,
 			topK,
@@ -288,8 +327,15 @@ export class AnalysisController {
 
 		if (token !== this.runToken) return null;
 
+		// An edit may have landed while similarity was being computed.
+		const latestNotes = this.lastNotes;
+		const graphData =
+			latestNotes === notesAtStart
+				? similarityGraph
+				: this.builder.rebuildStructure(latestNotes, similarityGraph);
+
 		const committedGraph = enrichmentEnabled
-			? this.replayCachedEnrichment(graphData, this.lastNotes)
+			? this.replayCachedEnrichment(graphData, latestNotes)
 			: graphData;
 		this.commitGraphData(committedGraph);
 		return committedGraph;
@@ -307,6 +353,9 @@ export class AnalysisController {
 		}
 
 		const token = this.runToken;
+		const graphVersion = this.graphVersion;
+		const isOutOfDate = (): boolean =>
+			token !== this.runToken || graphVersion !== this.graphVersion;
 		if (token === this.cancelledAtToken) return null;
 		const graphData = this.lastGraphData;
 		const notes = this.lastNotes;
@@ -315,12 +364,12 @@ export class AnalysisController {
 		const task = (async (): Promise<GraphData | null> => {
 			let enriched: GraphData;
 			try {
-				enriched = await this.applyEnrichment(graphData, notes, token, guardedProgress);
+				enriched = await this.applyEnrichment(graphData, notes, isOutOfDate, guardedProgress);
 			} finally {
 				this.enrichmentInFlight = null;
 			}
 
-			if (this.isStale(token) || enriched === graphData) {
+			if (isOutOfDate() || enriched === graphData) {
 				return null;
 			}
 
@@ -332,33 +381,160 @@ export class AnalysisController {
 		return task;
 	}
 
+	/**
+	 * Applies changed and removed notes without touching embeddings: Joplin
+	 * re-embeds an edit minutes later, so there is nothing new to fetch yet. An
+	 * edit that only changes a note's text doesn't change the graph at all.
+	 * @returns the new graph, or null if the graph didn't change.
+	 */
 	public async applyDelta(upserts: Note[], removedIds: string[]): Promise<GraphData | null> {
-		this.lastDeltaSkippedForRetry = false;
 		if (!this.lastNotes) return null;
 
-		const { merged, changed } = this.mergeNotes(this.lastNotes, upserts, removedIds);
+		const { merged, changed, structural } = this.mergeNotes(this.lastNotes, upserts, removedIds);
 		if (!changed) return null;
 
-		const token = ++this.runToken;
-		const result = await this.buildFrom(merged, token, {
-			avoidSemanticDowngrade: true,
-			commitNotes: true,
+		this.lastNotes = merged;
+		this.forgetVectors(removedIds);
+		if (!structural) return null;
+
+		this.graphVersion++;
+		const rebuilt = this.builder.rebuildStructure(merged, this.lastGraphData ?? EMPTY_GRAPH);
+		const committedGraph = (await isLlmEnrichmentEnabled())
+			? this.replayCachedEnrichment(rebuilt, merged)
+			: rebuilt;
+		this.commitGraphData(committedGraph);
+		return committedGraph;
+	}
+
+	/** Records notes whose vectors Joplin has replaced, to be picked up by `refreshStaleVectors`. */
+	public markVectorsStale(noteIds: string[]): void {
+		for (const id of noteIds) this.staleVectorIds.add(id);
+	}
+
+	/**
+	 * Marks only in-scope notes that have no vector at all. For a sweep's first pass:
+	 * Joplin may have embedded some notes since the full load read the vectors, and
+	 * nothing else would ever fetch those.
+	 */
+	public markMissingVectorsStale(noteIds: string[]): void {
+		if (!this.lastNotes) return;
+
+		const embedded = new Set((this.lastEmbeddedNotes ?? []).map((en) => en.note.id));
+		const inScope = new Set(this.lastNotes.map((note) => note.id));
+		for (const id of noteIds) {
+			if (inScope.has(id) && !embedded.has(id)) this.staleVectorIds.add(id);
+		}
+	}
+
+	/**
+	 * Fetches new vectors for the notes marked stale and rebuilds if any of them
+	 * really changed. Notes stay marked if this can't finish, for the next attempt.
+	 * @returns the new graph, or null if nothing changed.
+	 */
+	public async refreshStaleVectors(): Promise<GraphData | null> {
+		if (!this.lastNotes || this.staleVectorIds.size === 0 || this.semanticRunsInFlight > 0) {
+			return null;
+		}
+		if (!(await isAiAnalysisEnabled())) {
+			this.staleVectorIds.clear();
+			return null;
+		}
+
+		const noteIds = Array.from(this.staleVectorIds);
+		const provider = await ProviderResolver.resolveWithValidation();
+		const fresh = await provider.fetchVectorsByNoteIds(noteIds);
+		await this.saveRefreshedVectors(noteIds, fresh, provider.modelName);
+
+		// A run that started during the fetch may have read the old vectors, so the notes
+		// stay marked for the next sweep, and that run isn't cancelled by rebuilding here.
+		if (this.semanticRunsInFlight > 0) return null;
+		for (const id of noteIds) this.staleVectorIds.delete(id);
+
+		if (!this.lastEmbeddedNotes) {
+			const result = await this.embedAndBuildSemantic(this.lastNotes);
+			return result ? result.graphData : null;
+		}
+		return this.applyRefreshedVectors(fresh) ? this.recompute() : null;
+	}
+
+	/** Removes stored data for notes gone from the vault. Only pass a complete, whole-vault list. */
+	public pruneDeletedNotes(noteIdsToKeep: Set<string>): void {
+		this.vectorStore.pruneExcept(noteIdsToKeep).catch((e) => {
+			this.logger.error('Failed to prune the vector cache:', e);
 		});
-		return result ? result.graphData : null;
+		this.graphCache.pruneEnrichments(noteIdsToKeep).catch((e) => {
+			this.logger.error('Failed to prune the label cache:', e);
+		});
+	}
+
+	private forgetVectors(noteIds: string[]): void {
+		if (noteIds.length === 0) return;
+
+		const removed = new Set(noteIds);
+		if (this.lastEmbeddedNotes) {
+			this.lastEmbeddedNotes = this.lastEmbeddedNotes.filter((en) => !removed.has(en.note.id));
+		}
+		for (const id of noteIds) this.staleVectorIds.delete(id);
+		this.vectorStore.removeMany(noteIds).catch((e) => {
+			this.logger.error('Failed to remove vectors for deleted notes:', e);
+		});
+	}
+
+	private async saveRefreshedVectors(
+		noteIds: string[],
+		fresh: Map<string, number[]>,
+		modelId: string
+	): Promise<void> {
+		const updatedTimeById = new Map((this.lastNotes ?? []).map((n) => [n.id, n.updated_time]));
+		await this.vectorStore.saveMany(
+			Array.from(fresh, ([noteId, vector]) => ({
+				noteId,
+				vector,
+				modelId,
+				updatedTime: updatedTimeById.get(noteId) ?? 0,
+			}))
+		);
+		await this.vectorStore.removeMany(noteIds.filter((id) => !fresh.has(id)));
+	}
+
+	/** Returns whether any in-scope note ended up with a different vector. */
+	private applyRefreshedVectors(fresh: Map<string, number[]>): boolean {
+		const embeddedById = new Map((this.lastEmbeddedNotes ?? []).map((en) => [en.note.id, en]));
+		let changed = false;
+
+		for (const note of this.lastNotes ?? []) {
+			const vector = fresh.get(note.id);
+			if (!vector) continue;
+
+			const existing = embeddedById.get(note.id);
+			if (existing && this.sameVector(existing.embedding, vector)) continue;
+
+			embeddedById.set(note.id, { note, embedding: vector });
+			changed = true;
+		}
+
+		if (changed) this.lastEmbeddedNotes = Array.from(embeddedById.values());
+		return changed;
+	}
+
+	private sameVector(a: number[], b: number[]): boolean {
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (Math.fround(a[i]) !== Math.fround(b[i])) return false;
+		}
+		return true;
+	}
+
+	private trimOversizedBodies(notes: Note[]): Note[] {
+		if (notes.every((note) => (note.body ?? '').length <= BODY_EXCERPT_LENGTH)) return notes;
+		return notes.map((note) => ({ ...note, body: (note.body ?? '').slice(0, BODY_EXCERPT_LENGTH) }));
 	}
 
 	private hasSemanticEdges(): boolean {
 		return !!this.lastGraphData?.edges.some((e) => e.data.type === 'semantic');
 	}
 
-	private isStale(token: number, avoidSemanticDowngrade?: boolean): boolean {
-		if (token === this.runToken) return false;
-		if (avoidSemanticDowngrade) this.lastDeltaSkippedForRetry = true;
-		return true;
-	}
-
 	private commitGraphData(graphData: GraphData): void {
-		this.lastDiff = this.graphDiffer.computeDiff(this.lastGraphData, graphData);
 		this.lastGraphData = graphData;
 		this.persistCache();
 	}
@@ -386,7 +562,7 @@ export class AnalysisController {
 		}
 		if (records.length === 0) return;
 		this.graphCache.saveEnrichments(records).catch((e) => {
-			console.error('Failed to persist LLM enrichment cache:', e);
+			this.logger.error('Failed to persist LLM enrichment cache:', e);
 		});
 	}
 
@@ -422,12 +598,21 @@ export class AnalysisController {
 	}
 
 	private persistCache(): void {
-		if (!this.lastNotes || !this.lastGraphData) return;
+		if (this.cachePersistDelayMs === 0) {
+			this.writeCache();
+			return;
+		}
+		if (this.persistTimer) return;
+		this.persistTimer = setTimeout(() => {
+			this.persistTimer = null;
+			this.writeCache();
+		}, this.cachePersistDelayMs);
+	}
+
+	private writeCache(): void {
+		if (!this.cachePersistenceEnabled || !this.lastNotes || !this.lastGraphData) return;
 		this.graphCache.saveGraph(this.lastNotes, this.lastGraphData).catch((e) => {
-			console.error('Failed to persist graph cache:', e);
-		});
-		this.graphCache.saveScopeKey(this.currentScopeKey).catch((e) => {
-			console.error('Failed to persist graph cache scope key:', e);
+			this.logger.error('Failed to persist graph cache:', e);
 		});
 	}
 
@@ -435,22 +620,41 @@ export class AnalysisController {
 		current: Note[],
 		upserts: Note[],
 		removedIds: string[]
-	): { merged: Note[]; changed: boolean } {
+	): { merged: Note[]; changed: boolean; structural: boolean } {
 		const byId = new Map(current.map((n) => [n.id, n]));
 		let changed = false;
+		let structural = false;
 
 		for (const id of removedIds) {
-			if (byId.delete(id)) changed = true;
+			if (byId.delete(id)) {
+				changed = true;
+				structural = true;
+			}
 		}
 		for (const note of upserts) {
 			const existing = byId.get(note.id);
-			if (!existing || !this.notesEqual(existing, note)) {
+			if (!existing) {
 				changed = true;
+				structural = true;
+			} else {
+				const affectsGraph = this.affectsGraph(existing, note);
+				if (affectsGraph) structural = true;
+				if (affectsGraph || !this.notesEqual(existing, note)) changed = true;
 			}
 			byId.set(note.id, note);
 		}
 
-		return { merged: changed ? Array.from(byId.values()) : current, changed };
+		return { merged: changed ? Array.from(byId.values()) : current, changed, structural };
+	}
+
+	/** Whether a change to this note can change a node or an edge, unlike an edit to its text. */
+	private affectsGraph(a: Note, b: Note): boolean {
+		return (
+			a.title !== b.title ||
+			a.parent_id !== b.parent_id ||
+			!this.sameStringSet(a.tags, b.tags) ||
+			!this.sameStringSet(a.links, b.links)
+		);
 	}
 
 	private notesEqual(a: Note, b: Note): boolean {
@@ -484,25 +688,21 @@ export class AnalysisController {
 	private async applyEnrichment(
 		graphData: GraphData,
 		notes: Note[],
-		token: number,
+		isOutOfDate: () => boolean,
 		onProgress?: (progress: EnrichmentProgress) => void
 	): Promise<GraphData> {
 		try {
 			if (!(await isLlmEnrichmentEnabled())) return graphData;
 
 			const input = this.buildEnrichmentInput(graphData, notes);
-			const enrichment = await this.enrichmentService.enrich(
-				input,
-				() => token !== this.runToken,
-				onProgress
-			);
+			const enrichment = await this.enrichmentService.enrich(input, isOutOfDate, onProgress);
 			this.persistNewEnrichments(this.enrichmentService.takeNewEnrichments());
 			if (enrichment.nodeEnrichments.size === 0 && enrichment.edgeEnrichments.size === 0) {
 				return graphData;
 			}
 			return this.applyEnrichmentResult(graphData, enrichment);
 		} catch (e) {
-			console.error('LLM enrichment failed; rendering the graph without it.', e);
+			this.logger.error('LLM enrichment failed; rendering the graph without it.', e);
 			return graphData;
 		}
 	}
@@ -521,7 +721,7 @@ export class AnalysisController {
 			const target = noteById.get(edge.data.target);
 			if (!source || !target) {
 				const missing = [!source && 'source', !target && 'target'].filter(Boolean).join(' and ');
-				console.error(`LLM enrichment: semantic edge is missing its ${missing} note; skipping it.`, edge.data);
+				this.logger.error(`LLM enrichment: semantic edge is missing its ${missing} note; skipping it.`, edge.data);
 				continue;
 			}
 			for (const note of [source, target]) {
@@ -538,6 +738,7 @@ export class AnalysisController {
 				source: edge.data.source,
 				target: edge.data.target,
 				updatedTime: Math.max(source.updated_time, target.updated_time),
+				score: edge.data.score,
 			});
 		}
 		return { nodes: nodeInputs, edges: edgeInputs };
@@ -563,7 +764,7 @@ export class AnalysisController {
 			}
 			return this.applyEnrichmentResult(graphData, enrichment);
 		} catch (e) {
-			console.error('LLM enrichment cache replay failed; keeping the graph without it.', e);
+			this.logger.error('LLM enrichment cache replay failed; keeping the graph without it.', e);
 			return graphData;
 		}
 	}
@@ -604,13 +805,13 @@ export class AnalysisController {
 			provider = await ProviderResolver.resolveWithValidation();
 		} catch (e) {
 			const reason = e instanceof Error ? e.message : String(e);
-			console.error('AI analysis unavailable, falling back to structural graph:', e);
+			this.logger.error('AI analysis unavailable, falling back to structural graph:', e);
 			return { embeddedNotes: null, reason, aiWasEnabled: true };
 		}
 
-		const orchestrator = new EmbeddingOrchestrator();
+		const orchestrator = new EmbeddingOrchestrator(this.logger);
 		orchestrator.setProvider(provider);
-		orchestrator.setCache(new VectorRepository());
+		orchestrator.setCache(this.vectorStore);
 		if (onProgress) {
 			orchestrator.setOnProgress(onProgress);
 		}
@@ -625,7 +826,7 @@ export class AnalysisController {
 		}
 
 		if (embeddedNotes.length === 0) {
-			console.error(
+			this.logger.error(
 				'AI analysis produced no embeddings, falling back to structural graph:',
 				errors
 			);
