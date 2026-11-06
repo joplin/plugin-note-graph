@@ -7,168 +7,130 @@ describe('TagRepository', () => {
 	let repo: TagRepository;
 
 	beforeEach(() => {
-		repo = new TagRepository();
-		jest.clearAllMocks();
+		repo = new TagRepository({ maxAttempts: 3, baseDelayMs: 0 });
+		mockGet.mockReset();
+		jest.spyOn(console, 'error').mockImplementation(() => undefined);
+		jest.spyOn(console, 'info').mockImplementation(() => undefined);
 	});
 
-	it('returns empty map when no tags', async () => {
-		mockGet.mockResolvedValueOnce({
-			items: [],
-			has_more: false,
+	afterEach(() => {
+		jest.restoreAllMocks();
+	});
+
+	describe('getTagsForNotes', () => {
+		const routeWith = (tagsByNote: Record<string, string[]>) => async (path: string[]) => {
+			if (path[0] === 'tags') return { items: [{ id: 't' }], has_more: false };
+			return {
+				items: (tagsByNote[path[1]] ?? []).map((title) => ({ title })),
+				has_more: false,
+			};
+		};
+
+		it('maps each note to its tags', async () => {
+			mockGet.mockImplementation(routeWith({ a: ['one', 'two'], b: ['two'] }));
+
+			const { map, truncated } = await repo.getTagsForNotes(['a', 'b', 'c']);
+
+			expect(truncated).toBe(false);
+			expect(map).toEqual({ a: ['one', 'two'], b: ['two'], c: [] });
 		});
 
-		const { map, truncated } = await repo.getNoteTagsMap();
+		it('never uses the tags/:id/notes route, which gets very slow on large tags', async () => {
+			mockGet.mockImplementation(routeWith({ a: ['one'] }));
 
-		expect(truncated).toBe(false);
-		expect(map).toEqual({});
-		expect(mockGet).toHaveBeenCalledTimes(1);
-	});
+			await repo.getTagsForNotes(['a']);
 
-	it('maps tags to notes for a single tag and single note', async () => {
-		mockGet
-			.mockResolvedValueOnce({
-				items: [{ id: 'tag1', title: 'important' }],
-				has_more: false,
-			})
-			.mockResolvedValueOnce({
-				items: [{ id: 'note1' }],
-				has_more: false,
+			for (const [path] of mockGet.mock.calls) {
+				if (path[0] === 'tags') expect(path).toHaveLength(1);
+			}
+		});
+
+		it('makes a single call when the vault has no tags at all', async () => {
+			mockGet.mockResolvedValue({ items: [], has_more: false });
+
+			const { map, truncated } = await repo.getTagsForNotes(['a', 'b', 'c']);
+
+			expect(truncated).toBe(false);
+			expect(map).toEqual({});
+			expect(mockGet).toHaveBeenCalledTimes(1);
+		});
+
+		it('makes no calls for no notes', async () => {
+			await repo.getTagsForNotes([]);
+
+			expect(mockGet).not.toHaveBeenCalled();
+		});
+
+		it('handles a large vault, a few requests at a time', async () => {
+			let inFlight = 0;
+			let peak = 0;
+			mockGet.mockImplementation(async (path: string[]) => {
+				if (path[0] === 'tags') return { items: [{ id: 't' }], has_more: false };
+				inFlight++;
+				peak = Math.max(peak, inFlight);
+				await Promise.resolve();
+				inFlight--;
+				return { items: [{ title: 'x' }], has_more: false };
+			});
+			const ids = Array.from({ length: 12000 }, (_, i) => `n${i}`);
+
+			const { map } = await repo.getTagsForNotes(ids);
+
+			expect(Object.keys(map)).toHaveLength(12000);
+			expect(peak).toBeLessThanOrEqual(4);
+			expect(peak).toBeGreaterThan(1);
+		});
+
+		it('reports progress every so often, not for every note', async () => {
+			mockGet.mockImplementation(routeWith({}));
+			const onProgress = jest.fn();
+			const ids = Array.from({ length: 1200 }, (_, i) => `n${i}`);
+
+			await repo.getTagsForNotes(ids, onProgress);
+
+			expect(onProgress.mock.calls).toEqual([
+				[500, 1200],
+				[1000, 1200],
+			]);
+		});
+
+		it('retries a failed lookup and carries on', async () => {
+			let failed = false;
+			mockGet.mockImplementation(async (path: string[]) => {
+				if (path[0] === 'tags') return { items: [{ id: 't' }], has_more: false };
+				if (path[1] === 'b' && !failed) {
+					failed = true;
+					throw new Error('network error');
+				}
+				return { items: [{ title: 'x' }], has_more: false };
 			});
 
-		const { map, truncated } = await repo.getNoteTagsMap();
+			const { map, truncated } = await repo.getTagsForNotes(['a', 'b']);
 
-		expect(truncated).toBe(false);
-		expect(map).toEqual({
-			note1: ['important'],
+			expect(truncated).toBe(false);
+			expect(map.b).toEqual(['x']);
 		});
-	});
 
-	it('handles paginated tag notes', async () => {
-		mockGet
-			.mockResolvedValueOnce({
-				items: [{ id: 'tag1', title: 'tag1' }],
-				has_more: false,
-			})
-			.mockResolvedValueOnce({
-				items: [{ id: 'note1' }],
-				has_more: true,
-			})
-			.mockResolvedValueOnce({
-				items: [{ id: 'note2' }],
-				has_more: false,
+		it('stops and reports incomplete when lookups keep failing, instead of retrying every note', async () => {
+			mockGet.mockImplementation(async (path: string[]) => {
+				if (path[0] === 'tags') return { items: [{ id: 't' }], has_more: false };
+				throw new Error('network error');
 			});
+			const ids = Array.from({ length: 1000 }, (_, i) => `n${i}`);
 
-		const { map, truncated } = await repo.getNoteTagsMap();
+			const { truncated } = await repo.getTagsForNotes(ids);
 
-		expect(truncated).toBe(false);
-		expect(map).toEqual({
-			note1: ['tag1'],
-			note2: ['tag1'],
-		});
-	});
-
-	it('maps multiple tags to same note', async () => {
-		mockGet
-			.mockResolvedValueOnce({
-				items: [
-					{ id: 't1', title: 'a' },
-					{ id: 't2', title: 'b' },
-				],
-				has_more: false,
-			})
-			.mockResolvedValueOnce({
-				items: [{ id: 'note1' }],
-				has_more: false,
-			})
-			.mockResolvedValueOnce({
-				items: [{ id: 'note1' }],
-				has_more: false,
-			});
-
-		const { map, truncated } = await repo.getNoteTagsMap();
-
-		expect(truncated).toBe(false);
-		expect(map).toEqual({
-			note1: ['a', 'b'],
-		});
-	});
-
-	it('handles paginated tags list', async () => {
-		mockGet
-			.mockResolvedValueOnce({
-				items: [{ id: 't1', title: 'x' }],
-				has_more: true,
-			})
-			.mockResolvedValueOnce({
-				items: [{ id: 't2', title: 'y' }],
-				has_more: false,
-			})
-			.mockResolvedValueOnce({
-				items: [{ id: 'note1' }],
-				has_more: false,
-			})
-			.mockResolvedValueOnce({
-				items: [{ id: 'note2' }],
-				has_more: false,
-			});
-
-		const { map, truncated } = await repo.getNoteTagsMap();
-
-		expect(truncated).toBe(false);
-		expect(map).toEqual({
-			note1: ['x'],
-			note2: ['y'],
+			expect(truncated).toBe(true);
+			expect(mockGet.mock.calls.length).toBeLessThan(50);
 		});
 
-		expect(mockGet).toHaveBeenCalledTimes(4);
-	});
+		it('reports incomplete when the tag check itself fails', async () => {
+			mockGet.mockRejectedValue(new Error('network error'));
 
-	it('stops at maxTags and returns truncated true', async () => {
-		mockGet
-			.mockResolvedValueOnce({
-				items: Array.from({ length: 50 }, (_, i) => ({ id: `t${i}`, title: `tag${i}` })),
-				has_more: true,
-			})
-			.mockResolvedValue({ items: [], has_more: false });
+			const { truncated } = await repo.getTagsForNotes(['a']);
 
-		const { map, truncated } = await repo.getNoteTagsMap(30);
-
-		expect(truncated).toBe(true);
-		expect(mockGet).toHaveBeenCalledWith(['tags'], expect.objectContaining({ limit: 30 }));
-	});
-
-	it('returns partial map with truncated true when tag fetch fails', async () => {
-		mockGet.mockRejectedValueOnce(new Error('network error'));
-
-		const { map, truncated } = await repo.getNoteTagsMap();
-
-		expect(truncated).toBe(true);
-		expect(map).toEqual({});
-		expect(mockGet).toHaveBeenCalledTimes(1);
-	});
-
-	it('returns partial map when tag-notes fetch fails mid-loop', async () => {
-		mockGet
-			.mockResolvedValueOnce({
-				items: [
-					{ id: 't1', title: 'tag1' },
-					{ id: 't2', title: 'tag2' },
-				],
-				has_more: false,
-			})
-			.mockResolvedValueOnce({
-				items: [{ id: 'n1' }],
-				has_more: false,
-			})
-			.mockRejectedValueOnce(new Error('network error'));
-
-		const { map, truncated } = await repo.getNoteTagsMap();
-
-		expect(truncated).toBe(true);
-		expect(map).toEqual({
-			n1: ['tag1'],
+			expect(truncated).toBe(true);
 		});
-		expect(mockGet).toHaveBeenCalledTimes(3);
 	});
 
 	describe('getTagsForNote', () => {
