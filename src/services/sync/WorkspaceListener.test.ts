@@ -8,11 +8,7 @@ const MockIncrementalUpdater = IncrementalUpdater as jest.MockedClass<typeof Inc
 
 describe('WorkspaceListener', () => {
 	it('registers all three workspace events and forwards them to the matching updater method', async () => {
-		const updater = new MockIncrementalUpdater(
-			{} as never,
-			{} as never,
-			jest.fn()
-		) as jest.Mocked<IncrementalUpdater>;
+		const updater = new MockIncrementalUpdater({} as never) as jest.Mocked<IncrementalUpdater>;
 		updater.handleSyncComplete.mockResolvedValue(undefined);
 		const listener = new WorkspaceListener(updater);
 
@@ -38,11 +34,7 @@ describe('WorkspaceListener', () => {
 
 	it('does not let a handleSyncComplete rejection become an unhandled rejection', async () => {
 		const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-		const updater = new MockIncrementalUpdater(
-			{} as never,
-			{} as never,
-			jest.fn()
-		) as jest.Mocked<IncrementalUpdater>;
+		const updater = new MockIncrementalUpdater({} as never) as jest.Mocked<IncrementalUpdater>;
 		updater.handleSyncComplete.mockRejectedValue(new Error('full reload also failed'));
 		const listener = new WorkspaceListener(updater);
 		await listener.register();
