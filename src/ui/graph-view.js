@@ -793,6 +793,21 @@ function isDarkTheme() {
 	return lum < 128;
 }
 
+var lastThemeBackground = '';
+
+function themeBackground() {
+	return getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
+}
+
+/** Joplin can add its theme after the panel has started, so the graph's colours and font are rebuilt once it arrives or changes. */
+function refreshThemeIfChanged() {
+	var current = themeBackground();
+	if (current === lastThemeBackground) return;
+	lastThemeBackground = current;
+	if (cy) cy.style().fromJson(buildStylesheet()).update();
+	applyThemeToChrome(isDarkTheme());
+}
+
 function applyThemeToChrome(dark) {
 	document.documentElement.classList.toggle('theme-dark', dark);
 }
@@ -1280,6 +1295,7 @@ function refreshEmptyStateStatus() {
  * @param {{ nodes: Array, edges: Array }} message - graph data from the plugin.
  */
 function renderGraph(message) {
+	refreshThemeIfChanged();
 	currentRenderId++;
 	renderInProgress = false;
 	patchesAwaitingRender = [];
@@ -1837,19 +1853,8 @@ function init() {
 		observer.observe(container);
 		observer.observe(document.body);
 
-		var lastBg = getComputedStyle(document.body)
-			.getPropertyValue('--joplin-background-color')
-			.trim();
-		var themeObserver = new MutationObserver(function () {
-			var currentBg = getComputedStyle(document.body)
-				.getPropertyValue('--joplin-background-color')
-				.trim();
-			if (currentBg !== lastBg) {
-				lastBg = currentBg;
-				cy.style().fromJson(buildStylesheet()).update();
-				applyThemeToChrome(isDarkTheme());
-			}
-		});
+		lastThemeBackground = themeBackground();
+		var themeObserver = new MutationObserver(refreshThemeIfChanged);
 		themeObserver.observe(document.documentElement, {
 			attributes: true,
 			attributeFilter: ['style', 'class'],
@@ -1857,6 +1862,11 @@ function init() {
 		themeObserver.observe(document.body, {
 			attributes: true,
 			attributeFilter: ['style', 'class'],
+		});
+		themeObserver.observe(document.head, {
+			childList: true,
+			subtree: true,
+			characterData: true,
 		});
 
 		var fitBtn = document.getElementById('graph-fit');
