@@ -61,18 +61,14 @@ miss/no-op rather than failing the embed, so a corrupt cache degrades to
 fixed pipeline over every candidate note pair:
 
 ```
-raw scores -> floor (absolute) -> percentile cutoff (raw) -> normalize -> bonuses -> top-K
+raw scores -> floor (absolute) -> mutual neighbours -> percentile cutoff (locally scaled) -> normalize -> bonuses -> top-K
 ```
 
-The **percentile cutoff is checked on the raw score, before normalization**.
-Min-max normalization always maps the batch's most-similar pair to exactly
-1.0, so a post-normalization cutoff could never reject it — even in a vault of
-completely unrelated notes, the closest pair would be scaled up and pass.
-Checking the raw cosine first gives the cutoff a relative meaning; it keeps
-only the top `(1 - threshold)` fraction of the surviving raw scores, which is
-what separates a batch whose scores are all compressed into a narrow band
-(for example e5's [0.7, 1]). Normalization then only ranks the pairs that
-already passed.
+The **cutoff is checked before normalization**. Min-max normalization always
+maps the batch's most-similar pair to exactly 1.0, so a post-normalization
+cutoff could never reject it — even in a vault of completely unrelated notes,
+the closest pair would be scaled up and pass. Normalization only ranks the
+pairs that already passed.
 
 ### 1. Raw scores
 
@@ -103,25 +99,35 @@ raw score is what gives 0.3 an absolute, not batch-relative, meaning, and it
 is the small absolute floor that keeps a tiny vault with little data from
 manufacturing edges out of weak scores.
 
-### 3. Percentile cutoff
+### 3. Mutual neighbours
 
-Pairs whose raw score is below the score at the configured percentile
-(`DEFAULT_THRESHOLD` = 0.7, user-adjustable) are dropped. The percentile is
-computed over the above-floor raw scores in this batch, so it keeps only the
-top `(1 - threshold)` fraction — e.g. the strongest 30% at the default 70%.
-Like the floor, this runs on the raw scale, *before* normalization, and it is
-batch-relative on purpose: an unrelated pair that happens to be a batch's
-closest cannot be normalized up to pass, and a batch whose scores all sit in
-a narrow band (the e5 failure mode) is still separated by relative rank.
-Normalization then only ranks the pairs that already cleared it.
+Each note's neighbourhood is its `NEIGHBOURHOOD_SIZE` (10) closest notes. A pair
+is only kept if each note is in the other's neighbourhood, unless they are
+directly linked. A note that is moderately close to everything, without being
+about the same thing, stops being linked to all of them.
 
-### 4. Normalize
+### 4. Percentile cutoff, on locally scaled scores
+
+Each pair is scored by how much closer the two notes are than each of them
+usually is to its neighbourhood: `2 × score − typical(a) − typical(b)`, where
+`typical` is a note's mean score to its neighbourhood (local scaling, as in
+self-tuning spectral clustering and CSLS). The cutoff then keeps the top
+`(1 - threshold)` fraction of pairs by that score: the strongest 30% at the
+default 70% (`DEFAULT_THRESHOLD`, user-adjustable).
+
+A cutoff on the raw score alone lets a dense group of near-identical notes set
+the bar for the whole vault. On a 10,500-note vault with 10,000 generated test
+notes, no real note cleared it. With local scaling, 60 of its 65 real notes got
+connections, and 74% of them joined notes on the same topic, against 56% for
+the raw cutoff on the real notes alone.
+
+### 5. Normalize
 
 Surviving scores are min-max normalized to `[0, 1]` together. If the spread
 between the batch's min and max is under 0.1, normalization is skipped (there
 is nothing meaningful to stretch).
 
-### 5. Bonuses
+### 6. Bonuses
 
 Three additive bonuses nudge the normalized score:
 
@@ -136,11 +142,11 @@ Three additive bonuses nudge the normalized score:
 They are excluded from the tag-overlap bonus because sharing them says
 nothing about content similarity.
 
-Because the floor and the percentile cutoff are checked on the *raw* score,
+Because the floor and the cutoff are checked before the bonuses are added,
 bonuses can rank pairs but can never manufacture an edge out of a weak
 semantic score.
 
-### 6. Top-K
+### 7. Top-K
 
 Each note keeps its K strongest remaining connections
 (`TOP_K` = 5 by default, user-adjustable, "max semantic edges per note" in
