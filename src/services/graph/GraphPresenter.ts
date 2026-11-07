@@ -106,6 +106,10 @@ export class GraphPresenter {
 		this.tag = null;
 	}
 
+	public drawnNoteIds(): Set<string> {
+		return new Set(this.current?.nodes.map((node) => node.data.id) ?? []);
+	}
+
 	public currentScope(): ResolvedScope {
 		return this.scope;
 	}

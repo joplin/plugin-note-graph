@@ -53,7 +53,9 @@ export class AnalysisController {
 		private readonly vectorStore: VectorRepository = new VectorRepository(),
 		/** Waits this long and writes only the latest graph, so a burst of changes means one write. */
 		private readonly cachePersistDelayMs: number = 0,
-		private readonly logger: Logger = consoleLogger
+		private readonly logger: Logger = consoleLogger,
+		/** The notes in the view the user is looking at, whose connections are explained first. */
+		private readonly onScreenNoteIds: () => ReadonlySet<string> = () => new Set()
 	) {}
 
 	public getLastGraphData(): GraphData | null {
@@ -713,6 +715,7 @@ export class AnalysisController {
 	): { nodes: Map<string, EnrichmentNodeInput>; edges: EnrichmentEdgeInput[] } {
 		const noteById = new Map(notes.map((note) => [note.id, note]));
 		const semanticEdges = graphData.edges.filter((edge) => edge.data.type === 'semantic');
+		const onScreen = this.onScreenNoteIds();
 
 		const nodeInputs = new Map<string, EnrichmentNodeInput>();
 		const edgeInputs: EnrichmentEdgeInput[] = [];
@@ -739,6 +742,7 @@ export class AnalysisController {
 				target: edge.data.target,
 				updatedTime: Math.max(source.updated_time, target.updated_time),
 				score: edge.data.score,
+				onScreen: onScreen.has(source.id) && onScreen.has(target.id),
 			});
 		}
 		return { nodes: nodeInputs, edges: edgeInputs };

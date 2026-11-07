@@ -728,6 +728,17 @@ describe('LLMEnricher session budget', () => {
 		expect(prompt).toContain('a9');
 	});
 
+	it('labels connections on screen before stronger ones elsewhere', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 1, maxEdgesPerSession: 1, maxAttemptsPerBatch: 1 });
+		const edges = edgeList(10).map((edge) => ({ ...edge, onScreen: edge.source === 'a2' }));
+
+		await enricher.enrich(inputFor(edges), () => false);
+
+		const prompt = chat.mock.calls[0][0][1].content;
+		expect(prompt).toContain('a2');
+		expect(prompt).not.toContain('a9');
+	});
+
 	it('does not ask for more once the limit is used up, across runs', async () => {
 		const enricher = new LLMEnricher({ edgesPerBatch: 4, maxEdgesPerSession: 4, maxAttemptsPerBatch: 1 });
 

@@ -28,6 +28,8 @@ export interface EnrichmentEdgeInput {
 	target: string;
 	updatedTime: number;
 	score?: number;
+	/** Drawn in the view the user is looking at, so it is explained before the rest. */
+	onScreen?: boolean;
 }
 
 export interface EnrichmentInput {
@@ -218,7 +220,12 @@ export class LLMEnricher {
 	private selectWithinBudget(edges: EnrichmentEdgeInput[]): EnrichmentEdgeInput[] {
 		const remaining = this.maxEdgesPerSession - this.edgesLabeledThisSession;
 		if (remaining <= 0) return [];
-		return [...edges].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, remaining);
+		return [...edges]
+			.sort(
+				(a, b) =>
+					Number(!!b.onScreen) - Number(!!a.onScreen) || (b.score ?? 0) - (a.score ?? 0)
+			)
+			.slice(0, remaining);
 	}
 
 	private collectCategories(): Set<string> {

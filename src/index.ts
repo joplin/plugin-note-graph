@@ -89,7 +89,8 @@ const analysisController = new AnalysisController(
 	new LLMEnricher({ logger }),
 	new VectorRepository(),
 	GRAPH_CACHE_WRITE_DELAY_MS,
-	logger
+	logger,
+	() => graphPresenter.drawnNoteIds()
 );
 const noteScopeResolver = new NoteScopeResolver(
 	new FolderRepository(DATA_API_RETRY, logger),
