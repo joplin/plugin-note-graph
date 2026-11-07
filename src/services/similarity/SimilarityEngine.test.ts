@@ -157,7 +157,7 @@ describe('SimilarityEngine', () => {
 			];
 
 			const engine = new SimilarityEngine(notes, embedded);
-			const pairs = await engine.compute();
+			const pairs = await engine.compute(0);
 
 			const abWithTag = pairs.find(
 				(p) =>
@@ -699,6 +699,58 @@ describe('SimilarityEngine', () => {
 			expect(pairs).toHaveLength(1);
 			expect(pairs[0].source).toBe('a');
 			expect(pairs[0].target).toBe('b');
+		});
+	});
+
+	describe('local scaling and mutual neighbours', () => {
+		const unit = (v: number[]): number[] => {
+			const n = Math.hypot(...v);
+			return v.map((x) => x / n);
+		};
+		const pairOf = (pairs: { source: string; target: string }[], a: string, b: string) =>
+			pairs.find(
+				(p) => (p.source === a && p.target === b) || (p.source === b && p.target === a)
+			);
+
+		it('still connects notes in a sparse part of the vault next to a dense group of near-identical notes', async () => {
+			const clones = Array.from({ length: 12 }, (_, i) => `clone${i}`);
+			const food = ['bread', 'pasta', 'grill'];
+			const fitness = ['run', 'lift', 'stretch'];
+			const notes = [...clones, ...food, ...fitness].map((id) => makeNote(id, id));
+			const embedded = [
+				...clones.map((id, i) => embed(id, unit([1, 0.001 * i, 0, 0]))),
+				embed('bread', unit([0.5, 0.85, 0.1, 0])),
+				embed('pasta', unit([0.45, 0.88, -0.1, 0])),
+				embed('grill', unit([0.55, 0.8, 0, 0.1])),
+				embed('run', unit([0.5, 0, 0.85, 0.1])),
+				embed('lift', unit([0.45, 0, 0.88, -0.1])),
+				embed('stretch', unit([0.55, 0.1, 0.8, 0])),
+			];
+
+			const pairs = await new SimilarityEngine(notes, embedded).compute();
+
+			for (const [a, b] of [
+				['bread', 'pasta'],
+				['bread', 'grill'],
+				['run', 'lift'],
+				['lift', 'stretch'],
+			]) {
+				expect(pairOf(pairs, a, b)).toBeDefined();
+			}
+			expect(pairOf(pairs, 'bread', 'run')).toBeUndefined();
+		});
+
+		it('does not connect a note to a group that has closer neighbours of its own', async () => {
+			const group = Array.from({ length: 11 }, (_, i) => `g${i}`);
+			const notes = [...group, 'loner'].map((id) => makeNote(id, id));
+			const embedded = [
+				...group.map((id, i) => embed(id, unit([1, 0.01 * i, 0]))),
+				embed('loner', unit([0.8, 0, 0.6])),
+			];
+
+			const pairs = await new SimilarityEngine(notes, embedded).compute(0);
+
+			expect(pairs.some((p) => p.source === 'loner' || p.target === 'loner')).toBe(false);
 		});
 	});
 

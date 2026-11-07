@@ -6,6 +6,7 @@ import {
 	DEFAULT_THRESHOLD,
 	TOP_K,
 	LARGE_VAULT_THRESHOLD,
+	NEIGHBOURHOOD_SIZE,
 	TAG_BONUS,
 	LINK_BONUS,
 	ORGANIZATIONAL_TAG_RATIO,
@@ -18,6 +19,12 @@ export interface SimilarityPair {
 	source: string;
 	target: string;
 	score: number;
+}
+
+/** A note's nearest neighbours, and how similar it usually is to them. */
+interface Neighbourhood {
+	ids: Set<string>;
+	typicalScore: number;
 }
 
 export class SimilarityEngine {
@@ -45,21 +52,25 @@ export class SimilarityEngine {
 
 	/**
 	 * Orchestrates the full similarity pipeline:
-	 * compute → floor (raw scores) → percentile cutoff (raw scores) → normalize →
-	 * bonuses → top-K.
+	 * compute → floor (raw scores) → mutual neighbours → percentile cutoff
+	 * (locally scaled scores) → normalize → bonuses → top-K.
 	 *
-	 * Both the floor and the cutoff are checked on the *raw* score, before
-	 * normalization. Min-max normalization always maps the batch's most-similar
-	 * pair to exactly 1.0, so a post-normalization threshold could never reject
-	 * it — even in a vault of completely unrelated notes, the closest pair
-	 * would be scaled up and pass. Checking the raw cosine first gives the
-	 * cutoff a relative meaning; normalization then only ranks the pairs that
-	 * already passed. SEMANTIC_FLOOR (also raw, before normalization) is the
-	 * small absolute floor that guards tiny vaults with little data: a pair can
-	 * never become an edge on a weak raw score, no matter how relatively close
-	 * it is. The percentile cutoff keeps only the top (1 - threshold) fraction
-	 * of the surviving raw scores, which is what separates a batch whose scores
-	 * are all compressed into a narrow band (e.g. e5's [0.7, 1]).
+	 * Both the floor and the cutoff are checked before normalization. Min-max
+	 * normalization always maps the batch's most-similar pair to exactly 1.0, so
+	 * a post-normalization threshold could never reject it — even in a vault of
+	 * completely unrelated notes, the closest pair would be scaled up and pass.
+	 * SEMANTIC_FLOOR is the small absolute floor on the raw score that guards
+	 * tiny vaults with little data.
+	 *
+	 * Two notes must each be among the other's nearest neighbours. A note that
+	 * is close to everything, without being about the same thing, stops being
+	 * linked to all of them.
+	 *
+	 * The percentile cutoff keeps the top (1 - threshold) fraction of pairs by
+	 * locally scaled score: how much closer two notes are than each of them
+	 * usually is to its neighbours. A single cutoff on the raw score lets a
+	 * dense group of near-identical notes set the bar for the whole vault, so
+	 * notes elsewhere get no edges at all.
 	 */
 	public async compute(
 		threshold: number = DEFAULT_THRESHOLD,
@@ -76,14 +87,18 @@ export class SimilarityEngine {
 			return [];
 		}
 
+		const neighbourhoods = this.findNeighbourhoods(rawPairs);
 		const aboveFloor = this.filterBelowFloor(rawPairs, SEMANTIC_FLOOR);
+		const mutual = aboveFloor.filter(
+			(p) => this.isDirectlyLinked(p) || this.areMutualNeighbours(p, neighbourhoods)
+		);
 
-		if (aboveFloor.length === 0) {
+		if (mutual.length === 0) {
 			return [];
 		}
 
-		const cutoff = this.percentileCutoff(aboveFloor, threshold);
-		const aboveThreshold = this.filterBelowThreshold(aboveFloor, cutoff);
+		const cutoff = this.percentileCutoff(mutual, threshold, neighbourhoods);
+		const aboveThreshold = this.filterBelowThreshold(mutual, cutoff, neighbourhoods);
 
 		if (aboveThreshold.length === 0) {
 			return [];
@@ -229,14 +244,58 @@ export class SimilarityEngine {
 		return pairs.filter((p) => p.score >= floor || this.isDirectlyLinked(p));
 	}
 
-	private percentileCutoff(pairs: SimilarityPair[], percentile: number): number {
+	private findNeighbourhoods(pairs: SimilarityPair[]): Map<string, Neighbourhood> {
+		const candidates = new Map<string, Array<{ id: string; score: number }>>();
+		const add = (noteId: string, other: string, score: number): void => {
+			const list = candidates.get(noteId);
+			if (list) list.push({ id: other, score });
+			else candidates.set(noteId, [{ id: other, score }]);
+		};
+		for (const p of pairs) {
+			add(p.source, p.target, p.score);
+			add(p.target, p.source, p.score);
+		}
+
+		const neighbourhoods = new Map<string, Neighbourhood>();
+		for (const [noteId, list] of candidates) {
+			const nearest = list.sort((a, b) => b.score - a.score).slice(0, NEIGHBOURHOOD_SIZE);
+			neighbourhoods.set(noteId, {
+				ids: new Set(nearest.map((n) => n.id)),
+				typicalScore: nearest.reduce((sum, n) => sum + n.score, 0) / nearest.length,
+			});
+		}
+		return neighbourhoods;
+	}
+
+	private areMutualNeighbours(
+		pair: SimilarityPair,
+		neighbourhoods: Map<string, Neighbourhood>
+	): boolean {
+		return (
+			!!neighbourhoods.get(pair.source)?.ids.has(pair.target) &&
+			!!neighbourhoods.get(pair.target)?.ids.has(pair.source)
+		);
+	}
+
+	/** How much closer two notes are than each of them usually is to its neighbours. */
+	private localScore(pair: SimilarityPair, neighbourhoods: Map<string, Neighbourhood>): number {
+		const typical = (noteId: string): number =>
+			neighbourhoods.get(noteId)?.typicalScore ?? pair.score;
+		return 2 * pair.score - typical(pair.source) - typical(pair.target);
+	}
+
+	private percentileCutoff(
+		pairs: SimilarityPair[],
+		percentile: number,
+		neighbourhoods: Map<string, Neighbourhood>
+	): number {
 		const scores = pairs
 			.filter((p) => p.score >= SEMANTIC_FLOOR)
-			.map((p) => p.score)
+			.map((p) => this.localScore(p, neighbourhoods))
 			.sort((a, b) => a - b);
 
 		if (scores.length === 0) {
-			return SEMANTIC_FLOOR;
+			return Infinity;
 		}
 
 		const clamped = Math.min(1, Math.max(0, percentile));
@@ -247,9 +306,13 @@ export class SimilarityEngine {
 		return scores[index];
 	}
 
-	/** Keeps only pairs whose raw score clears the cutoff, before normalization. */
-	private filterBelowThreshold(pairs: SimilarityPair[], threshold: number): SimilarityPair[] {
-		return pairs.filter((p) => p.score >= threshold);
+	/** Keeps only pairs whose locally scaled score clears the cutoff, before normalization. */
+	private filterBelowThreshold(
+		pairs: SimilarityPair[],
+		threshold: number,
+		neighbourhoods: Map<string, Neighbourhood>
+	): SimilarityPair[] {
+		return pairs.filter((p) => this.localScore(p, neighbourhoods) >= threshold);
 	}
 
 	/**

@@ -5,6 +5,9 @@ export const DEFAULT_THRESHOLD = 0.7;
 
 export const TOP_K = 5;
 
+/** How many of a note's nearest neighbours count as its neighbourhood: a pair must be in each other's, and their typical similarity sets the local scale. */
+export const NEIGHBOURHOOD_SIZE = 10;
+
 /** Vault size above which only each note's nearest neighbours are compared, instead of every pair. */
 export const LARGE_VAULT_THRESHOLD = 300;
 
