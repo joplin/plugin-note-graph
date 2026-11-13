@@ -6,6 +6,7 @@ describe('BackgroundLabeler', () => {
 	let unlabeled: number;
 	let labeledPerRound: number;
 	let enabled: boolean;
+	let labeling: boolean;
 	let labelRound: jest.Mock;
 	let labeler: BackgroundLabeler;
 
@@ -16,12 +17,14 @@ describe('BackgroundLabeler', () => {
 		unlabeled = 500;
 		labeledPerRound = 200;
 		enabled = true;
+		labeling = false;
 		labelRound = jest.fn(async () => {
 			unlabeled = Math.max(0, unlabeled - labeledPerRound);
 		});
 		labeler = new BackgroundLabeler({
 			isEnabled: async () => enabled,
 			countUnlabeled: () => unlabeled,
+			isLabeling: () => labeling,
 			labelRound,
 			pauseMs: PAUSE_MS,
 		});
@@ -108,6 +111,18 @@ describe('BackgroundLabeler', () => {
 		await jest.advanceTimersByTimeAsync(PAUSE_MS * 100);
 
 		expect(labelRound).toHaveBeenCalledTimes(MAX_IDLE_ROUNDS);
+	});
+
+	it('waits a further pause, rather than starting a round, while a labeling run is in progress', async () => {
+		labeling = true;
+		labeler.schedule();
+		await jest.advanceTimersByTimeAsync(PAUSE_MS);
+		expect(labelRound).not.toHaveBeenCalled();
+
+		labeling = false;
+		await jest.advanceTimersByTimeAsync(PAUSE_MS);
+
+		expect(labelRound).toHaveBeenCalledTimes(1);
 	});
 
 	it('does not run a round that was due when it was stopped', async () => {

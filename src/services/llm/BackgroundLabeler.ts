@@ -10,6 +10,8 @@ export interface BackgroundLabelerOptions {
 	isEnabled: () => Promise<boolean>;
 	/** Similar-note connections in the current graph that have no label yet. */
 	countUnlabeled: () => number;
+	/** True while a labeling run is in progress, so a round doesn't start on top of it. */
+	isLabeling: () => boolean;
 	/** Labels one more round of connections, up to the enricher's per-round limit. */
 	labelRound: () => Promise<void>;
 	pauseMs?: number;
@@ -60,6 +62,10 @@ export class BackgroundLabeler {
 
 	private async runRound(): Promise<void> {
 		if (this.stopped) return;
+		if (this.options.isLabeling()) {
+			this.schedule();
+			return;
+		}
 		this.running = true;
 		let carryOn = false;
 		try {

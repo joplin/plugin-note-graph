@@ -210,6 +210,7 @@ const countUnlabeledInCurrentGraph = (): number => {
 const backgroundLabeler = new BackgroundLabeler({
 	isEnabled: isLlmEnrichmentEnabled,
 	countUnlabeled: countUnlabeledInCurrentGraph,
+	isLabeling: () => analysisController.isEnrichmentRunning(),
 	labelRound: async () => {
 		analysisController.allowMoreEnrichment();
 		await runEnrichmentFollowUp();
