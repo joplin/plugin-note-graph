@@ -19,11 +19,22 @@ describe('webview', () => {
 	let onRequestFolders: jest.Mock;
 	let onGetScopeState: jest.Mock;
 	let onSetScope: jest.Mock;
+	let onOpenView: jest.Mock;
+	let onSetLayout: jest.Mock;
+	let onSetTagFilter: jest.Mock;
+	let onSearchNotes: jest.Mock;
+	let mockExecute: jest.Mock;
 	let onMessageHandler: (message: {
 		type?: string;
 		version?: number;
 		mode?: string;
 		selectedIds?: string[];
+		request?: { kind: string; noteId?: string };
+		tag?: string | null;
+		layout?: string;
+		grouped?: boolean;
+		query?: string;
+		nodeId?: string;
 	}) => Promise<unknown>;
 
 	beforeEach(async () => {
@@ -52,6 +63,9 @@ describe('webview', () => {
 		mockPostMessage = freshJoplin!.views.panels.postMessage;
 		mockPanelsShow = freshJoplin!.views.panels.show;
 		mockPanelsVisible = freshJoplin!.views.panels.visible;
+		mockExecute = (freshJoplin! as unknown as { commands: { execute: jest.Mock } }).commands
+			.execute;
+		mockExecute.mockReset();
 
 		mockPanelsCreate.mockResolvedValue('panel-handle');
 		mockPanelsVisible.mockResolvedValue(false);
@@ -65,13 +79,51 @@ describe('webview', () => {
 		onRequestFolders = jest.fn().mockResolvedValue([]);
 		onGetScopeState = jest.fn().mockResolvedValue({ mode: 'all', selectedNotebookIds: [] });
 		onSetScope = jest.fn().mockResolvedValue(undefined);
-		await webview.initializeAiNoteGraphPanel(
+		onOpenView = jest.fn().mockResolvedValue(undefined);
+		onSetLayout = jest.fn().mockResolvedValue(undefined);
+		onSetTagFilter = jest.fn().mockResolvedValue(undefined);
+		onSearchNotes = jest.fn().mockReturnValue([]);
+		await webview.initializeAiNoteGraphPanel({
 			onNoData,
 			onCancel,
 			onRequestFolders,
 			onGetScopeState,
-			onSetScope
-		);
+			onSetScope,
+			onOpenView,
+			onSetLayout,
+			onSetTagFilter,
+			onSearchNotes,
+		});
+	});
+
+	describe('node-clicked', () => {
+		const NOTE_ID = '0123456789abcdef0123456789abcdef';
+
+		it('opens the clicked note', async () => {
+			await onMessageHandler({ type: 'node-clicked', nodeId: NOTE_ID });
+
+			expect(mockExecute).toHaveBeenCalledWith('openNote', NOTE_ID);
+		});
+
+		it('falls back to openItem when openNote fails', async () => {
+			mockExecute.mockRejectedValueOnce(new Error('no such command'));
+
+			await onMessageHandler({ type: 'node-clicked', nodeId: NOTE_ID });
+
+			expect(mockExecute).toHaveBeenLastCalledWith('openItem', NOTE_ID);
+		});
+
+		it('ignores anything that is not a note ID, so the panel cannot open a link', async () => {
+			mockExecute.mockRejectedValue(new Error('no such note'));
+
+			const response = await onMessageHandler({
+				type: 'node-clicked',
+				nodeId: 'https://example.com',
+			});
+
+			expect(mockExecute).not.toHaveBeenCalled();
+			expect(response).toEqual({ done: false });
+		});
 	});
 
 	it('calls onCancel and acknowledges a cancel-analysis message', async () => {
@@ -132,6 +184,54 @@ describe('webview', () => {
 		const response = await onMessageHandler({ type: 'request-data', version: 1 });
 
 		expect(response).toEqual({ type: 'no-change', progress: null });
+	});
+
+	describe('view requests from the panel', () => {
+		it('opens the requested view', async () => {
+			const request = { kind: 'neighborhood', noteId: 'note-1' };
+
+			await expect(onMessageHandler({ type: 'open-view', request })).resolves.toEqual({ done: true });
+
+			expect(onOpenView).toHaveBeenCalledWith(request);
+		});
+
+		it('changes the layout', async () => {
+			await onMessageHandler({ type: 'set-layout', layout: 'hierarchical', grouped: true });
+
+			expect(onSetLayout).toHaveBeenCalledWith('hierarchical', true);
+		});
+
+		it('sets a tag filter, and treats the empty choice as none', async () => {
+			await onMessageHandler({ type: 'set-tag-filter', tag: 'work' });
+			expect(onSetTagFilter).toHaveBeenLastCalledWith('work');
+
+			await onMessageHandler({ type: 'set-tag-filter', tag: '' });
+			expect(onSetTagFilter).toHaveBeenLastCalledWith(null);
+		});
+
+		it('answers a search across all notes', async () => {
+			onSearchNotes.mockReturnValue([{ noteId: 'n1', label: 'Found' }]);
+
+			const response = await onMessageHandler({ type: 'search-notes', query: 'fou' });
+
+			expect(onSearchNotes).toHaveBeenCalledWith('fou');
+			expect(response).toEqual({
+				type: 'search-results',
+				results: [{ noteId: 'n1', label: 'Found' }],
+			});
+		});
+	});
+
+	it('sends view details with a patch, so the panel can update its totals', async () => {
+		await webview.postGraphData({ nodes: [], edges: [] });
+		const graph = { nodes: [], edges: [], view: { key: 'full' } } as never;
+
+		await webview.postGraphPatch(emptyDiff, graph);
+
+		expect(mockPostMessage).toHaveBeenLastCalledWith(
+			expect.anything(),
+			expect.objectContaining({ type: 'graph-patch', view: { key: 'full' } })
+		);
 	});
 
 	describe('setGraphNotice', () => {

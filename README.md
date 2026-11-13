@@ -14,22 +14,26 @@ labels and one-line explanations for those connections.
 - **Semantic connections.** With Joplin AI enabled, the plugin
   embeds your notes and adds edges between notes that are related in
   content even when nothing links them. Tunable threshold and edge count.
-- **Optional LLM enrichment (Pass B).** Labels each note with a short topic
-  category and each semantic connection with a one-line explanation of why
-  it exists, using Joplin AI chat. Off by default.
+- **Optional LLM enrichment (Pass B).** Labels each semantic connection with a
+  one-line explanation of why it exists, using Joplin AI chat. Off by default.
 - **Community detection.** Notes cluster into color-coded groups using the
   Louvain method, with a keyword-based fallback for small or sparse vaults.
 - **Centrality-scaled nodes.** More connected notes render larger, so hubs
   stand out at a glance.
 - **Live updates.** The graph updates as you edit, create, and delete
   notes, without a full rebuild, and catches up automatically after a sync.
+- **Built for large vaults.** The plugin reads your whole vault in the background,
+  but only draws what fits: a notebook, including nested ones, plus the notes in
+  other notebooks that connect to it. Search reaches every note, and a note's
+  connections can be widened with a depth slider. Layout runs away from Joplin's UI
+  thread, so a large vault doesn't freeze the app.
 - **Local and instant.** Embeddings, labels, and the last built graph are
   cached in a local SQLite database, so reopening the panel doesn't mean
   waiting again. Nothing is sent anywhere except to Joplin's own AI
   subsystem, and only when semantic analysis or LLM enrichment is on.
-- **A panel built for exploring, not just looking.** Search, focus mode
-  (isolate a note's neighborhood), per-edge-type toggles, zoom, and
-  PNG/SVG/JSON export.
+- **A panel built for exploring, not just looking.** Search, a depth slider, a tag
+  filter, focus mode (isolate a note's neighborhood), per-edge-type toggles, zoom, and
+  PNG/SVG/JSON export. It follows Joplin's theme and adapts down to a narrow panel.
 
 ## Requirements
 
@@ -66,12 +70,20 @@ installing an update.
 Open it from the **Tools** menu: **Show Note Graph**. The graph builds from
 your current notes, tags and links; if AI analysis is enabled in the
 plugin's settings, semantic edges are added once your notes are embedded.
-If LLM enrichment is also enabled, category badges and relationship labels
-appear on hover once Pass B finishes labeling them.
+If LLM enrichment is also enabled, relationship labels appear on hover once
+Pass B finishes labeling them.
 
-Click a node to open that note. Double-click to zoom in on it. Use the
-legend at the top of the panel to search, toggle edge types, enter focus
-mode on a selected note, or export the current view.
+The note open in Joplin is highlighted, and the highlight follows as you move between
+notes. Click a node to open that note, or right-click it for more. Double-click to
+zoom in on it.
+
+- **Top of the panel:** choose which notebooks to show, and search every note. Press
+  Enter to open the top result, or Escape to clear the search.
+- **Toolbar:** turn links, similar notes and tags on or off, show only one tag, choose
+  how notes are colored, focus on the selected note, or export the view.
+- **On the graph:** choose how notes are arranged, zoom, and fit the graph to the panel.
+- **A note's connections:** open them from a search result or the right-click menu, and
+  use the depth slider to widen or narrow them.
 
 ## Configuration
 
@@ -82,7 +94,7 @@ Available in the Configuration screen's **Note Graph** section:
 | Enable AI-based semantic analysis | Off | Adds semantic similarity edges using Joplin AI |
 | Similarity threshold | 70% | Only the strongest (100 − value)% of candidate pairs become edges, ranked by how much closer two notes are than each usually is to its nearest notes. Lower values surface more semantic edges |
 | Max semantic edges per note | 5 | Caps how many semantic connections each note keeps |
-| Enable LLM analysis | Off | Adds Pass B category labels and relationship explanations |
+| Enable LLM analysis | Off | Adds Pass B relationship explanations |
 | Retry AI embedding | Off | One-shot: re-runs AI-based semantic analysis, reusing cached embeddings |
 | Retry AI labels | Off | One-shot: retries Pass B for anything still unlabeled |
 

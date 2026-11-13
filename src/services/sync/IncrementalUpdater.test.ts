@@ -7,7 +7,6 @@ import { EventsRepository } from '../../data/EventsRepository';
 import { GraphCacheRepository } from '../../data/Database/GraphCacheRepository';
 import { Note } from '../../data/Types';
 import { GraphData } from '../graph/types';
-import { ResolvedScope } from '../settings/NoteScopeResolver';
 
 jest.mock('../AnalysisController');
 jest.mock('../../data/NoteRepository');
@@ -48,20 +47,12 @@ describe('IncrementalUpdater', () => {
 	let preprocessor: jest.Mocked<NotePreprocessor>;
 	let eventsRepository: jest.Mocked<EventsRepository>;
 	let graphCache: jest.Mocked<GraphCacheRepository>;
-	let onGraphPatch: jest.Mock;
+	let onGraphChanged: jest.Mock;
 	let onFullReloadNeeded: jest.Mock;
 	let checkAiEnabled: jest.Mock<Promise<boolean>, []>;
 	let onRetriesExhausted: jest.Mock;
-	let getCurrentScope: jest.Mock<ResolvedScope, []>;
 	let ai: { getIndexStatus: jest.Mock; getEmbeddings: jest.Mock };
 	let updater: IncrementalUpdater;
-
-	const fakeDiff = {
-		upsertedNodes: [],
-		upsertedEdges: [],
-		removedNodeIds: [],
-		removedEdgeIds: [],
-	};
 
 	beforeEach(() => {
 		jest.useFakeTimers();
@@ -70,7 +61,6 @@ describe('IncrementalUpdater', () => {
 		analysisController = new MockAnalysisController() as jest.Mocked<AnalysisController>;
 		analysisController.hasNotes.mockReturnValue(true);
 		analysisController.applyDelta.mockResolvedValue({ nodes: [], edges: [] });
-		analysisController.getLastDiff.mockReturnValue(fakeDiff);
 
 		noteRepository = new MockNoteRepository() as jest.Mocked<NoteRepository>;
 		preprocessor = new MockPreprocessor() as jest.Mocked<NotePreprocessor>;
@@ -85,11 +75,10 @@ describe('IncrementalUpdater', () => {
 		graphCache.loadEmbeddingsCursor.mockResolvedValue(null);
 		graphCache.saveEmbeddingsCursor.mockResolvedValue(undefined);
 
-		onGraphPatch = jest.fn();
+		onGraphChanged = jest.fn();
 		onFullReloadNeeded = jest.fn().mockResolvedValue(undefined);
 		checkAiEnabled = jest.fn().mockResolvedValue(false);
 		onRetriesExhausted = jest.fn();
-		getCurrentScope = jest.fn().mockReturnValue({ folderIds: null, scopeKey: 'all' });
 
 		ai = joplin.ai as unknown as { getIndexStatus: jest.Mock; getEmbeddings: jest.Mock };
 		ai.getIndexStatus.mockResolvedValue({ ready: true, state: 'ready', modelId: 'test-model' });
@@ -102,7 +91,7 @@ describe('IncrementalUpdater', () => {
 
 		updater = new IncrementalUpdater(
 			analysisController,
-			onGraphPatch,
+			onGraphChanged,
 			onFullReloadNeeded,
 			noteRepository,
 			preprocessor,
@@ -111,8 +100,7 @@ describe('IncrementalUpdater', () => {
 			COALESCE_WINDOW_MS,
 			checkAiEnabled,
 			onRetriesExhausted,
-			Date.now,
-			getCurrentScope
+			Date.now
 		);
 	});
 
@@ -132,7 +120,7 @@ describe('IncrementalUpdater', () => {
 			expect(noteRepository.getNote).toHaveBeenCalledWith('a');
 			expect(preprocessor.processOne).toHaveBeenCalledWith(note('a'));
 			expect(analysisController.applyDelta).toHaveBeenCalledWith([note('a')], []);
-			expect(onGraphPatch).toHaveBeenCalledWith(fakeDiff, { nodes: [], edges: [] });
+			expect(onGraphChanged).toHaveBeenCalledWith({ nodes: [], edges: [] });
 		});
 
 		it('logs a summary once a new note is successfully upserted', async () => {
@@ -198,7 +186,7 @@ describe('IncrementalUpdater', () => {
 			updater.handleNoteChange({ id: 'a', event: 2 });
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
-			expect(onGraphPatch).not.toHaveBeenCalled();
+			expect(onGraphChanged).not.toHaveBeenCalled();
 			expect(consoleInfoSpy).not.toHaveBeenCalledWith(
 				expect.stringContaining('Incremental update applied')
 			);
@@ -213,7 +201,7 @@ describe('IncrementalUpdater', () => {
 			updater.handleNoteChange({ id: 'a', event: 2 });
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
-			expect(onGraphPatch).not.toHaveBeenCalled();
+			expect(onGraphChanged).not.toHaveBeenCalled();
 
 			analysisController.applyDelta.mockResolvedValue({ nodes: [], edges: [] });
 			analysisController.wasLastDeltaSkippedForRetry.mockReturnValue(false);
@@ -221,7 +209,7 @@ describe('IncrementalUpdater', () => {
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
 			expect(analysisController.applyDelta).toHaveBeenLastCalledWith([note('a')], []);
-			expect(onGraphPatch).toHaveBeenCalled();
+			expect(onGraphChanged).toHaveBeenCalled();
 		});
 
 		it('gives up automatically retrying after 5 consecutive retryable skips, instead of retrying forever', async () => {
@@ -303,16 +291,6 @@ describe('IncrementalUpdater', () => {
 			expect(analysisController.applyDelta).toHaveBeenLastCalledWith([note('c')], []);
 		});
 
-		it('does not push a patch if applyDelta succeeds but no diff is available', async () => {
-			noteRepository.getNote.mockResolvedValue(note('a'));
-			analysisController.getLastDiff.mockReturnValue(null);
-
-			updater.handleNoteChange({ id: 'a', event: 2 });
-			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
-
-			expect(onGraphPatch).not.toHaveBeenCalled();
-		});
-
 		it('treats a note that no longer exists by fetch time as a removal, not a dropped upsert', async () => {
 			noteRepository.getNote.mockResolvedValue(null);
 
@@ -320,36 +298,6 @@ describe('IncrementalUpdater', () => {
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
 			expect(analysisController.applyDelta).toHaveBeenCalledWith([], ['a']);
-		});
-
-		it('treats an edited note outside the configured scope as a removal instead of leaking it in', async () => {
-			getCurrentScope.mockReturnValue({
-				folderIds: new Set(['scoped-folder']),
-				scopeKey: 'current:scoped-folder',
-			});
-			noteRepository.getNote.mockResolvedValue({ ...note('a'), parent_id: 'other-folder' });
-
-			updater.handleNoteChange({ id: 'a', event: 2 });
-			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
-
-			expect(preprocessor.processOne).not.toHaveBeenCalled();
-			expect(analysisController.applyDelta).toHaveBeenCalledWith([], ['a']);
-		});
-
-		it('upserts an edited note that is inside the configured scope', async () => {
-			getCurrentScope.mockReturnValue({
-				folderIds: new Set(['scoped-folder']),
-				scopeKey: 'current:scoped-folder',
-			});
-			noteRepository.getNote.mockResolvedValue({ ...note('a'), parent_id: 'scoped-folder' });
-
-			updater.handleNoteChange({ id: 'a', event: 2 });
-			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
-
-			expect(analysisController.applyDelta).toHaveBeenCalledWith(
-				[{ ...note('a'), parent_id: 'scoped-folder' }],
-				[]
-			);
 		});
 
 		it('falls back to a full reload if the debounced flush fails to fetch the changed note', async () => {
@@ -411,30 +359,27 @@ describe('IncrementalUpdater', () => {
 			consoleErrorSpy.mockRestore();
 		});
 
-		it('pushes a second patch for Pass B enrichment after the Pass A patch, when enrichCurrentGraph finds something to label', async () => {
+		it('publishes again for Pass B enrichment after the Pass A update, when enrichCurrentGraph finds something to label', async () => {
 			noteRepository.getNote.mockResolvedValue(note('a'));
 			const enrichedGraphData = { nodes: [], edges: [] };
 			analysisController.enrichCurrentGraph.mockResolvedValue(enrichedGraphData);
-			analysisController.getLastDiff
-				.mockReturnValueOnce(fakeDiff)
-				.mockReturnValueOnce(fakeDiff);
 
 			updater.handleNoteChange({ id: 'a', event: 1 });
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
-			expect(onGraphPatch).toHaveBeenCalledTimes(2);
-			expect(onGraphPatch).toHaveBeenNthCalledWith(1, fakeDiff, { nodes: [], edges: [] });
-			expect(onGraphPatch).toHaveBeenNthCalledWith(2, fakeDiff, enrichedGraphData);
+			expect(onGraphChanged).toHaveBeenCalledTimes(2);
+			expect(onGraphChanged).toHaveBeenNthCalledWith(1, { nodes: [], edges: [] });
+			expect(onGraphChanged).toHaveBeenNthCalledWith(2, enrichedGraphData);
 		});
 
-		it('does not push a second patch when enrichCurrentGraph has nothing to label', async () => {
+		it('does not publish again when enrichCurrentGraph has nothing to label', async () => {
 			noteRepository.getNote.mockResolvedValue(note('a'));
 			analysisController.enrichCurrentGraph.mockResolvedValue(null);
 
 			updater.handleNoteChange({ id: 'a', event: 1 });
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
-			expect(onGraphPatch).toHaveBeenCalledTimes(1);
+			expect(onGraphChanged).toHaveBeenCalledTimes(1);
 		});
 	});
 
@@ -639,7 +584,7 @@ describe('IncrementalUpdater', () => {
 			let now = 10 * 60 * 1000;
 			const throttledUpdater = new IncrementalUpdater(
 				analysisController,
-				onGraphPatch,
+				onGraphChanged,
 				onFullReloadNeeded,
 				noteRepository,
 				preprocessor,
@@ -648,8 +593,7 @@ describe('IncrementalUpdater', () => {
 				COALESCE_WINDOW_MS,
 				checkAiEnabled,
 				onRetriesExhausted,
-				() => now,
-				getCurrentScope
+				() => now
 			);
 			ai.getEmbeddings.mockResolvedValue({
 				modelId: 'test-model',
@@ -746,14 +690,14 @@ describe('IncrementalUpdater', () => {
 			updater.handleNoteChange({ id: 'a', event: 1 });
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
-			expect(onGraphPatch).toHaveBeenCalledTimes(1);
+			expect(onGraphChanged).toHaveBeenCalledTimes(1);
 			expect(enrichCalls).toBe(1);
 
 			updater.handleNoteChange({ id: 'b', event: 1 });
 			await jest.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
 			expect(analysisController.applyDelta).toHaveBeenCalledTimes(2);
-			expect(onGraphPatch).toHaveBeenCalledTimes(2);
+			expect(onGraphChanged).toHaveBeenCalledTimes(2);
 
 			resolveFirstEnrich(null);
 			await flushMicrotasks();

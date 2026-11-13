@@ -17,8 +17,13 @@ that callback-based driver: it owns the connection and runs the schema's
 wrapper. Each database has one shared connection for the life of the plugin, with
 a busy timeout so concurrent writes wait instead of failing.
 
+Schema changes are migrations: statements applied in order, once each, tracked
+with SQLite's `user_version`. Only ever add to the end of a migration list. Each
+migration and its `user_version` bump run in one transaction, so a crash can't leave a
+migration applied but unrecorded, which would fail when it ran again.
+
 `open()` is safe to call repeatedly and concurrently. Every caller waits until the
-schema is in place, not just until the connection exists. If opening fails, both
+schema and migrations are in place, not just until the connection exists. If opening fails, both
 the in-progress promise and the (possibly half-created) connection are
 reset, so a later call retries cleanly instead of replaying a stale
 rejection or treating a half-open database as ready.
@@ -75,6 +80,11 @@ CREATE TABLE IF NOT EXISTS sync_state (
     events_cursor TEXT,
     embeddings_cursor TEXT
 );
+
+CREATE TABLE IF NOT EXISTS layout_cache (
+    layout_key TEXT PRIMARY KEY,
+    positions_json TEXT NOT NULL
+);
 ```
 
 Managed by `GraphCacheRepository` (`src/data/Database/GraphCacheRepository.ts`).
@@ -92,6 +102,9 @@ state," not history.
   `relationshipLabel` fields on that graph ride along in the same JSON, and
   `AnalysisController` reseeds `LLMEnricher`'s in-memory cache from them on
   load; see [LLM enrichment](llm-enrichment.md).
+- `layout_cache` holds computed node positions for each notebook's main view, keyed by
+  view, layout and grouping, so reopening a graph needs no new layout. Only the 30 most
+  recently saved are kept. See [Large vaults](large-vaults.md).
 - `sync_state` holds the two pagination cursors used by
   `IncrementalUpdater`'s sync-complete sweep: `events_cursor` for
   `/events` (deletions and the AI-off change-detection fallback) and

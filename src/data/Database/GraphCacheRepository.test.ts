@@ -10,7 +10,7 @@ class FakeConnection implements IVectorDatabase {
 		events_cursor: string | null;
 		embeddings_cursor: string | null;
 	} | null = null;
-	private scopeStateRow: { scope_key: string | null } | null = null;
+	private layouts = new Map<string, string>();
 	private enrichmentRows: {
 		kind: string;
 		id: string;
@@ -25,6 +25,19 @@ class FakeConnection implements IVectorDatabase {
 	public async run(sql: string, params: unknown[]): Promise<void> {
 		if (sql.includes('DELETE FROM graph_cache')) {
 			this.graphRow = null;
+		} else if (sql.includes('DELETE FROM layout_cache WHERE layout_key')) {
+			this.layouts.delete((params as [string])[0]);
+		} else if (sql.includes('DELETE FROM layout_cache WHERE rowid')) {
+			const [limit] = params as [number];
+			const keys = Array.from(this.layouts.keys());
+			for (const key of keys.slice(0, Math.max(0, keys.length - limit))) {
+				this.layouts.delete(key);
+			}
+		} else if (sql.includes('DELETE FROM layout_cache')) {
+			this.layouts.clear();
+		} else if (sql.includes('INTO layout_cache')) {
+			const [key, json] = params as [string, string];
+			this.layouts.set(key, json);
 		} else if (sql.includes('DELETE FROM enrichment_cache')) {
 			const [kind, id] = params as [string, string];
 			this.enrichmentRows = this.enrichmentRows.filter(
@@ -45,9 +58,6 @@ class FakeConnection implements IVectorDatabase {
 				events_cursor: cursor,
 				embeddings_cursor: this.syncStateRow?.embeddings_cursor ?? null,
 			};
-		} else if (sql.includes('INTO scope_state')) {
-			const [scopeKey] = params as [string];
-			this.scopeStateRow = { scope_key: scopeKey };
 		} else if (sql.includes('INTO enrichment_cache')) {
 			const [kind, id, updatedTime, enrichmentJson] = params as [
 				string,
@@ -70,15 +80,16 @@ class FakeConnection implements IVectorDatabase {
 		}
 	}
 
-	public async all<T>(sql: string): Promise<T[]> {
+	public async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+		if (sql.includes('FROM layout_cache')) {
+			const json = this.layouts.get((params as [string])[0]);
+			return (json ? [{ positions_json: json }] : []) as unknown as T[];
+		}
 		if (sql.includes('FROM graph_cache')) {
 			return (this.graphRow ? [this.graphRow] : []) as unknown as T[];
 		}
 		if (sql.includes('FROM sync_state')) {
 			return (this.syncStateRow ? [this.syncStateRow] : []) as unknown as T[];
-		}
-		if (sql.includes('FROM scope_state')) {
-			return (this.scopeStateRow ? [this.scopeStateRow] : []) as unknown as T[];
 		}
 		if (sql.includes('FROM enrichment_cache')) {
 			return this.enrichmentRows as unknown as T[];
@@ -104,6 +115,38 @@ const graphData: GraphData = {
 };
 
 describe('GraphCacheRepository lifecycle', () => {
+	it('stores and reloads a layout by key', async () => {
+		const repo = new GraphCacheRepository(new FakeConnection());
+
+		await repo.saveLayout('view', { a: { x: 1, y: 2 } });
+
+		await expect(repo.loadLayout('view')).resolves.toEqual({ a: { x: 1, y: 2 } });
+		await expect(repo.loadLayout('other')).resolves.toBeNull();
+	});
+
+	it('keeps only the most recently saved layouts, counting a re-save as recent', async () => {
+		const repo = new GraphCacheRepository(new FakeConnection());
+
+		await repo.saveLayout('oldest', { a: { x: 1, y: 1 } });
+		await repo.saveLayout('resaved', { a: { x: 2, y: 2 } });
+		for (let i = 0; i < 28; i++) await repo.saveLayout(`view-${i}`, { a: { x: i, y: i } });
+		await repo.saveLayout('resaved', { a: { x: 3, y: 3 } });
+		await repo.saveLayout('newest', { a: { x: 4, y: 4 } });
+
+		await expect(repo.loadLayout('oldest')).resolves.toBeNull();
+		await expect(repo.loadLayout('resaved')).resolves.toEqual({ a: { x: 3, y: 3 } });
+		await expect(repo.loadLayout('newest')).resolves.toEqual({ a: { x: 4, y: 4 } });
+	});
+
+	it('discards saved layouts along with the cached graph', async () => {
+		const repo = new GraphCacheRepository(new FakeConnection());
+		await repo.saveLayout('view', { a: { x: 1, y: 2 } });
+
+		await repo.clearGraph();
+
+		await expect(repo.loadLayout('view')).resolves.toBeNull();
+	});
+
 	it('prunes labels for notes that no longer exist, for both nodes and edges', async () => {
 		const repo = new GraphCacheRepository(new FakeConnection());
 		const enrichment = { updatedTime: 1, enrichment: {} };
@@ -228,23 +271,6 @@ describe('GraphCacheRepository', () => {
 
 			expect(await repo.loadEventsCursor()).toBe('events-cursor-2');
 			expect(await repo.loadEmbeddingsCursor()).toBe('embeddings-cursor-1');
-		});
-	});
-
-	describe('scope key', () => {
-		it('returns null when no scope has ever been saved', async () => {
-			expect(await repo.loadScopeKey()).toBeNull();
-		});
-
-		it('round-trips the scope key through save/load', async () => {
-			await repo.saveScopeKey('current:folder-1');
-			expect(await repo.loadScopeKey()).toBe('current:folder-1');
-		});
-
-		it('overwrites the previous scope key on a second save', async () => {
-			await repo.saveScopeKey('all');
-			await repo.saveScopeKey('current:folder-2');
-			expect(await repo.loadScopeKey()).toBe('current:folder-2');
 		});
 	});
 

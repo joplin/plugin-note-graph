@@ -129,9 +129,9 @@ Back in `AnalysisController.applyEnrichment()`, a node's `category` and
 retry handling above, the error is logged and the graph is returned exactly
 as Pass A built it.
 
-In the panel, a category renders as a badge at the top of a node's hover
-tooltip, and a relationship label renders in a tooltip on hovering its
-semantic edge, the same mechanism tag edges use for their tag names. While
+Categories are still generated and stored, but the panel doesn't currently show
+them: `CATEGORIES_SHOWN` in `graph-view.js` turns the filter and the tooltip badge
+back on. A relationship label renders in a tooltip on hovering its semantic edge, the same mechanism tag edges use for their tag names. While
 Pass B runs, the panel's progress bar reads "Enriching notes" instead of
 "Building graph." Neither affects selection, search, focus mode, or export.
 

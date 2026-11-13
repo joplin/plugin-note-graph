@@ -28,9 +28,11 @@ export class VectorDatabase implements IVectorDatabase {
 	private db: Sqlite3Database | null = null;
 	private opening: Promise<void> | null = null;
 
+	/** @param migrations - statements applied in order, once each, tracked with SQLite's `user_version`. Only ever add to the end. */
 	public constructor(
 		private readonly dbFileName: string,
-		private readonly schemaStatements: string[]
+		private readonly schemaStatements: string[],
+		private readonly migrations: string[] = []
 	) {}
 
 	/**
@@ -42,7 +44,7 @@ export class VectorDatabase implements IVectorDatabase {
 	 * ready forever.
 	 */
 	public async open(): Promise<void> {
-		// `db` is set as soon as the connection opens, before the schema is created, so it can't mean ready.
+		// `db` is set as soon as the connection opens, before the schema and migrations run, so it can't mean ready.
 		if (!this.opening) {
 			this.opening = this.openInternal().catch((e) => {
 				this.opening = null;
@@ -85,6 +87,29 @@ export class VectorDatabase implements IVectorDatabase {
 		await this.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`, []);
 		for (const statement of this.schemaStatements) {
 			await this.run(statement, []);
+		}
+		await this.runMigrations();
+	}
+
+	private async runMigrations(): Promise<void> {
+		if (this.migrations.length === 0) return;
+
+		const rows = await this.all<{ user_version: number }>('PRAGMA user_version', []);
+		for (let version = rows[0]?.user_version ?? 0; version < this.migrations.length; version++) {
+			await this.applyMigration(this.migrations[version], version + 1);
+		}
+	}
+
+	/** In one transaction, so a crash can't leave a migration applied but unrecorded, to fail when it runs again. */
+	private async applyMigration(statement: string, version: number): Promise<void> {
+		await this.run('BEGIN TRANSACTION', []);
+		try {
+			await this.run(statement, []);
+			await this.run(`PRAGMA user_version = ${version}`, []);
+			await this.run('COMMIT', []);
+		} catch (e) {
+			await this.run('ROLLBACK', []).catch(() => undefined);
+			throw e;
 		}
 	}
 

@@ -24,7 +24,10 @@ import { FolderRepository } from './data/FolderRepository';
 import { GraphCacheRepository } from './data/Database/GraphCacheRepository';
 import { VectorRepository } from './data/Database/VectorRepository';
 import { GraphBuilder } from './services/graph/GraphBuilder';
+import { GraphLayoutEngine, LayoutName } from './services/graph/GraphLayoutEngine';
+import { GraphPresenter, PresentedView } from './services/graph/GraphPresenter';
 import { GraphDiffer } from './services/graph/GraphDiffer';
+import { GraphViewBuilder, GraphViewRequest } from './services/graph/GraphViewBuilder';
 import { LLMEnricher } from './services/llm/LLMEnricher';
 import { Note } from './data/Types';
 import { GraphData } from './services/graph/types';
@@ -45,7 +48,8 @@ import {
 	SCOPE_MODE_KEY,
 	SCOPE_SELECTED_NOTEBOOKS_KEY,
 } from './services/settings/GraphSettings';
-import { NoteScopeResolver, ResolvedScope, ScopeMode, currentScopeKey } from './services/settings/NoteScopeResolver';
+import { NoteScopeResolver, ResolvedScope } from './services/settings/NoteScopeResolver';
+import { ScopeFollower, WorkspaceSelection } from './services/settings/ScopeFollower';
 import { EdgeFactory } from './services/similarity/EdgeFactory';
 import {
 	DEFAULT_NEIGHBORS_PER_NOTE,
@@ -54,6 +58,7 @@ import {
 } from './services/similarity/KnnIndex';
 import { LouvainDetector } from './services/graph/LouvainDetector';
 import { CentralityScorer } from './services/graph/CentralityScorer';
+import { CommunityIdStabilizer } from './services/graph/CommunityIdStabilizer';
 import { Logger, consoleLogger } from './utils/Logger';
 
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
@@ -68,10 +73,10 @@ const analysisController = new AnalysisController(
 		new LouvainDetector(logger),
 		new CentralityScorer(),
 		new KnnIndex(DEFAULT_NEIGHBORS_PER_NOTE, WORK_SLICE_MS, logger),
+		new CommunityIdStabilizer(),
 		logger
 	),
 	graphCache,
-	new GraphDiffer(),
 	new LLMEnricher({ logger }),
 	new VectorRepository(),
 	logger
@@ -90,8 +95,33 @@ const noteLoader = new NoteLoader(
 	logger
 );
 
-let currentScope: ResolvedScope = { folderIds: null, scopeKey: 'all' };
-let currentScopeMode: ScopeMode = 'current';
+const resolveViewScope = async (isLargeVault: boolean): Promise<ResolvedScope> =>
+	noteScopeResolver.resolve(await getScopeSettings(), { wholeVaultAllowed: !isLargeVault });
+
+const graphPresenter = new GraphPresenter(
+	new GraphViewBuilder(),
+	new GraphLayoutEngine(logger),
+	graphCache,
+	resolveViewScope,
+	new GraphDiffer(),
+	logger
+);
+
+const deliverView = ({ payload, patch }: PresentedView): Promise<void> =>
+	patch ? postGraphPatch(patch, payload) : postGraphData(payload);
+
+const readWorkspaceSelection = async (): Promise<WorkspaceSelection> => {
+	const folder = await joplin.workspace.selectedFolder().catch(() => null);
+	const note = await joplin.workspace.selectedNote().catch(() => null);
+	return { folderId: folder?.id ?? null, noteId: note?.id ?? null };
+};
+
+const scopeFollower = new ScopeFollower(graphPresenter, readWorkspaceSelection, deliverView);
+
+/** Sends a new version of the graph to the panel, as whichever view the user is on. */
+const showGraph = async (graphData: GraphData): Promise<void> => {
+	await deliverView(await graphPresenter.setGraph(graphData));
+};
 
 let lastLoadIncomplete = false;
 
@@ -108,26 +138,6 @@ const applyLoadedNotes = (loaded: LoadedNotes): void => {
 	}
 };
 
-/**
- * Narrows the loaded notes to the notebooks in the current scope.
- * @returns the notes to build the graph from, and the key of their scope.
- */
-const scopeNotes = async (enrichedNotes: Note[]): Promise<{ notes: Note[]; scopeKey: string }> => {
-	const scopeSettings = await getScopeSettings();
-	const resolvedScope = await noteScopeResolver.resolve(scopeSettings);
-	currentScope = resolvedScope;
-	currentScopeMode = scopeSettings.mode;
-	const { folderIds, scopeKey } = resolvedScope;
-	const scopedNotes = folderIds
-		? enrichedNotes.filter((n) => folderIds.has(n.parent_id))
-		: enrichedNotes;
-
-	if (folderIds) {
-		logger.info(`Scoped ${enrichedNotes.length} notes to ${scopedNotes.length} (${scopeKey}).`);
-	}
-	return { notes: scopedNotes, scopeKey };
-};
-
 const logPanelPostFailure = (e: unknown): void => {
 	logger.error('Failed to push update to panel:', e);
 };
@@ -140,16 +150,13 @@ const logPanelPostFailure = (e: unknown): void => {
  * also means cancelling Pass B can never discard an already-good Pass A
  * graph, since it was already posted.
  */
-const runEnrichmentFollowUp = async (): Promise<void> => {
-	const enriched = await analysisController.enrichCurrentGraph((progress) => {
-		postEnrichmentProgress(progress.current, progress.total).catch(logPanelPostFailure);
-	});
-	if (!enriched) return;
+const reportEnrichmentProgress = (progress: { current: number; total: number }): void => {
+	postEnrichmentProgress(progress.current, progress.total).catch(logPanelPostFailure);
+};
 
-	const diff = analysisController.getLastDiff();
-	if (diff) {
-		await postGraphPatch(diff, enriched);
-	}
+const runEnrichmentFollowUp = async (): Promise<void> => {
+	const enriched = await analysisController.enrichCurrentGraph(reportEnrichmentProgress);
+	if (enriched) await showGraph(enriched);
 };
 
 /**
@@ -166,7 +173,7 @@ const runSemanticAnalysis = async (notes: Note[]): Promise<void> => {
 	}
 
 	const { graphData, usedAi, fallbackReason } = result;
-	await postGraphData(graphData);
+	await showGraph(graphData);
 	if (!usedAi && (await isAiAnalysisEnabled())) {
 		await postStatus(fallbackReason ?? 'AI analysis unavailable - showing structural graph.');
 	}
@@ -250,10 +257,8 @@ const performFullReload = (): Promise<void> => {
 			await analysisController.seedEnrichmentFromStore();
 			const loaded = await loadNotesShowingProgress();
 			applyLoadedNotes(loaded);
-			const { notes: enrichedNotes, scopeKey } = await scopeNotes(loaded.notes);
-			analysisController.setScopeKey(scopeKey);
-			await postGraphData(analysisController.buildStructural(enrichedNotes));
-			await runSemanticAnalysis(enrichedNotes);
+			await showGraph(analysisController.buildStructural(loaded.notes));
+			await runSemanticAnalysis(loaded.notes);
 		} while (fullReloadQueued);
 	})().finally(() => {
 		fullReloadInFlight = null;
@@ -262,23 +267,30 @@ const performFullReload = (): Promise<void> => {
 	return fullReloadInFlight;
 };
 
-let scopeReloadTimer: ReturnType<typeof setTimeout> | null = null;
+const showCurrentView = async (): Promise<void> => {
+	const presented = await graphPresenter.refresh();
+	if (presented) await deliverView(presented);
+};
 
-const scheduleScopeReload = (): void => {
-	if (scopeReloadTimer) clearTimeout(scopeReloadTimer);
-	scopeReloadTimer = setTimeout(() => {
-		scopeReloadTimer = null;
-		performFullReload().catch((e) => {
-			logger.error('Failed to reload after a scope change:', e);
+let scopeChangeTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** The mode and the notebook list are saved as two settings, so this waits for both. */
+const scheduleScopeChange = (): void => {
+	if (scopeChangeTimer) clearTimeout(scopeChangeTimer);
+	scopeChangeTimer = setTimeout(() => {
+		scopeChangeTimer = null;
+		graphPresenter.resetView();
+		showCurrentView().catch((e) => {
+			logger.error('Failed to show the graph after a scope change:', e);
 		});
 	}, 200);
 };
 
 const incrementalUpdater = new IncrementalUpdater(
 	analysisController,
-	(diff, graphData) => {
-		postGraphPatch(diff, graphData).catch((e) => {
-			logger.error('Failed to push graph patch to panel:', e);
+	(graphData) => {
+		showGraph(graphData).catch((e) => {
+			logger.error('Failed to push graph update to panel:', e);
 		});
 	},
 	performFullReload,
@@ -294,10 +306,7 @@ const incrementalUpdater = new IncrementalUpdater(
 		).catch(logPanelPostFailure);
 	},
 	Date.now,
-	() => currentScope,
-	(progress) => {
-		postEnrichmentProgress(progress.current, progress.total).catch(logPanelPostFailure);
-	},
+	reportEnrichmentProgress,
 	logger
 );
 const workspaceListener = new WorkspaceListener(incrementalUpdater, logger);
@@ -306,29 +315,11 @@ let inFlightLoad: Promise<void> | null = null;
 let lastLoadFailureTime = 0;
 const LOAD_RETRY_COOLDOWN_MS = 30_000;
 
-const syncScopeWithCache = async (): Promise<void> => {
+const migrateCachedEnrichment = async (): Promise<void> => {
 	try {
-		const scopeSettings = await getScopeSettings();
-		const resolvedScope = await noteScopeResolver.resolve(scopeSettings);
-		currentScope = resolvedScope;
-		currentScopeMode = scopeSettings.mode;
-		const { scopeKey } = resolvedScope;
-		analysisController.setScopeKey(scopeKey);
-
 		await analysisController.migrateCachedEnrichment();
-
-		const cachedScopeKey = await graphCache.loadScopeKey();
-		if (cachedScopeKey !== null && cachedScopeKey !== scopeKey) {
-			logger.info(
-				`Note Graph scope changed (${cachedScopeKey} -> ${scopeKey}); discarding the cached graph.`
-			);
-			await graphCache.clearGraph();
-		}
 	} catch (e) {
-		logger.error(
-			'Failed to check the note graph scope against the cache; proceeding with the cache as-is.',
-			e
-		);
+		logger.error('Failed to migrate cached labels; proceeding with the cache as-is.', e);
 	}
 };
 
@@ -347,14 +338,14 @@ const ensureGraphLoaded = (): Promise<void> => {
 				return;
 			}
 
-			await syncScopeWithCache();
+			await migrateCachedEnrichment();
 			const cached = await analysisController.loadFromCache();
 			if (cached) {
 				logger.info(
 					`Loaded graph from cache: ${cached.nodes.length} notes, no recompute.`
 				);
 				setGraphNotice(null);
-				await postGraphData(cached);
+				await showGraph(cached);
 				await postStatus(
 					'Loaded from local cache - not recomputed. Refreshes as you edit or sync.'
 				);
@@ -391,6 +382,7 @@ const noteGraphCommand = {
 		try {
 			await showAiNoteGraphPanel();
 			await focusOnOpenNote();
+			if (analysisController.hasNotes()) await showCurrentView();
 			await ensureGraphLoaded();
 		} catch (error) {
 			logger.error('Failed to load note graph:', error);
@@ -407,19 +399,13 @@ const focusPanelOnNoteSelectionChange = async (noteIds: string[]): Promise<void>
 	}
 };
 
-const refreshCurrentNotebookScope = async (): Promise<void> => {
-	if (currentScopeMode !== 'current') return;
+const followSelection = async (): Promise<void> => {
 	try {
 		if (!analysisController.hasNotes()) return;
 		if (!(await isNoteGraphPanelVisible())) return;
-
-		const selectedFolder = await joplin.workspace.selectedFolder().catch(() => null);
-		const scopeKey = currentScopeKey(selectedFolder?.id ?? null);
-		if (scopeKey === currentScope.scopeKey) return;
-
-		await performFullReload();
+		await scopeFollower.onSelectionChanged();
 	} catch (error) {
-		logger.error('Failed to refresh current-notebook scope:', error);
+		logger.error('Failed to follow the selected notebook:', error);
 	}
 };
 
@@ -427,7 +413,7 @@ const recomputeAndPost = async (): Promise<void> => {
 	const graphData = await analysisController.recompute();
 	if (!graphData) return;
 
-	await postGraphData(graphData);
+	await showGraph(graphData);
 	await runEnrichmentFollowUp();
 };
 
@@ -457,7 +443,7 @@ const handleSettingsChange = async (event: { keys: string[] }): Promise<void> =>
 		}
 
 		if (event.keys.some((key) => SCOPE_SETTING_KEYS.includes(key))) {
-			scheduleScopeReload();
+			scheduleScopeChange();
 			return;
 		}
 
@@ -493,6 +479,11 @@ const retryEnrichment = async (): Promise<void> => {
 	}
 };
 
+const cancelAnalysis = (): void => {
+	analysisController.cancelCurrentRun();
+	postStatus('Analysis cancelled.').catch(logPanelPostFailure);
+};
+
 const recomputeGraph = async (): Promise<void> => {
 	if (!analysisController.hasEmbeddedNotes()) {
 		await runSemanticAnalysis(analysisController.getCurrentNotes());
@@ -507,7 +498,11 @@ const registerCommands = async (): Promise<void> => {
 
 const onRequestFolders = async (): Promise<NotebookOption[]> => {
 	const { folders } = await new FolderRepository(DATA_API_RETRY, logger).getAllFolders();
-	return folders.map((folder) => ({ id: folder.id, title: folder.title }));
+	return folders.map((folder) => ({
+		id: folder.id,
+		title: folder.title,
+		parentId: folder.parent_id,
+	}));
 };
 
 const onGetScopeState = async (): Promise<ScopeState> => {
@@ -525,6 +520,21 @@ const onSetScope = async (
 	);
 };
 
+const onOpenView = async (request: GraphViewRequest): Promise<void> => {
+	const presented = await graphPresenter.openView(request);
+	if (presented) await deliverView(presented);
+};
+
+const onSetLayout = async (layout: LayoutName, grouped: boolean): Promise<void> => {
+	const presented = await graphPresenter.setLayout(layout, grouped);
+	if (presented) await deliverView(presented);
+};
+
+const onSetTagFilter = async (tag: string | null): Promise<void> => {
+	const presented = await graphPresenter.setTagFilter(tag);
+	if (presented) await deliverView(presented);
+};
+
 const registerMenuItems = async (): Promise<void> => {
 	await joplin.views.menuItems.create(
 		SHOW_NOTE_GRAPH_MENU_ITEM,
@@ -538,25 +548,26 @@ joplin.plugins.register({
 		logger.info('Note Graph plugin started.');
 		await registerGraphSettings();
 		await joplin.settings.onChange(handleSettingsChange);
-		await initializeAiNoteGraphPanel(
-			() => {
+		await initializeAiNoteGraphPanel({
+			onNoData: () => {
 				if (Date.now() - lastLoadFailureTime < LOAD_RETRY_COOLDOWN_MS) return;
 				void ensureGraphLoaded();
 			},
-			() => {
-				analysisController.cancelCurrentRun();
-				postStatus('Analysis cancelled.').catch(logPanelPostFailure);
-			},
+			onCancel: cancelAnalysis,
 			onRequestFolders,
 			onGetScopeState,
-			onSetScope
-		);
+			onSetScope,
+			onOpenView,
+			onSetLayout,
+			onSetTagFilter,
+			onSearchNotes: (query) => graphPresenter.search(query),
+		});
 		await registerCommands();
 		await registerMenuItems();
 		await workspaceListener.register();
 		await joplin.workspace.onNoteSelectionChange((event) => {
 			void focusPanelOnNoteSelectionChange(event.value);
-			void refreshCurrentNotebookScope();
+			void followSelection();
 		});
 	},
 });

@@ -70,7 +70,7 @@ pasted as an example inside a code block is not treated as a real
 connection. `extractLinks()` returns the deduplicated set of linked item
 IDs; whether that ID is actually another note (versus an attached image or
 file) is decided later, by `EdgeFactory` checking it against the set of
-notes currently in scope.
+notes in the vault.
 
 ## Enrichment
 
@@ -88,10 +88,12 @@ notes currently in scope.
 ## Where this feeds in
 
 `NoteLoader` (`src/services/NoteLoader.ts`) runs `NoteRepository.getAllNotes()`,
-then `NotePreprocessor.process()`, over the whole vault. While this runs, the panel shows how far it has got.
+then `NotePreprocessor.process()`. It always reads the whole vault, because a note in
+another notebook can link to, share a tag with, or be similar to the notes on screen.
+Which notes get drawn is decided later, by the view; see [Large vaults](large-vaults.md). While this runs, the panel shows how far it has got.
 After links are extracted, `body` is cut to a 600-character excerpt to keep memory and the cache small.
-`NoteLoader` also reports whether the load was complete. `index.ts` narrows
-the notes to the current scope and hands them to `AnalysisController.buildStructural()` and
+`NoteLoader` also reports whether the load was complete. `index.ts` hands
+the notes to `AnalysisController.buildStructural()` and
 `.embedAndBuildSemantic()`. While a load is incomplete, the panel shows a
 notice and the graph is not written to the cache. See [Graph
 model](graph-model.md) for what happens next.

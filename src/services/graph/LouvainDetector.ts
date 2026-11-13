@@ -122,9 +122,8 @@ class DisjointSet {
  * largest community) for a *fixed* note/edge set, so re-running on an
  * unchanged graph never reshuffles colors. That guarantee does not extend
  * across rebuilds where the corpus itself changes: adding or removing notes
- * can change relative community sizes and therefore reassign ids. Anchoring
- * ids to a previous rebuild (so unrelated communities don't change color
- * when the vault grows) is left for the incremental-update work.
+ * can change relative community sizes and therefore reassign ids, which
+ * CommunityIdStabilizer then anchors to the previous rebuild.
  */
 export class LouvainDetector {
 	public constructor(private readonly logger: Logger = consoleLogger) {}
