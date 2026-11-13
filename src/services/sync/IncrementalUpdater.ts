@@ -5,15 +5,11 @@ import { NotePreprocessor } from '../../data/NotePreprocessor';
 import { EventsRepository } from '../../data/EventsRepository';
 import { GraphCacheRepository } from '../../data/Database/GraphCacheRepository';
 import { AnalysisController } from '../AnalysisController';
-import { GraphDiff } from '../graph/GraphDiffer';
 import { GraphData } from '../graph/types';
 import { JoplinAiApi, isIndexUsable } from '../embeddings/providers/JoplinNativeProvider';
 import { retryWithBackoff } from '../../utils/retryWithBackoff';
 import { isAiAnalysisEnabled } from '../settings/GraphSettings';
-import { ResolvedScope } from '../settings/NoteScopeResolver';
 import { Logger, consoleLogger } from '../../utils/Logger';
-
-const UNSCOPED: ResolvedScope = { folderIds: null, scopeKey: 'all' };
 
 const ITEM_CHANGE_DELETE = 3;
 
@@ -37,7 +33,7 @@ export class IncrementalUpdater {
 
 	public constructor(
 		private readonly analysisController: AnalysisController,
-		private readonly onGraphPatch: (diff: GraphDiff, fullGraphData: GraphData) => void,
+		private readonly onGraphChanged: (graphData: GraphData) => void,
 		private readonly onFullReloadNeeded: () => Promise<void>,
 		private readonly noteRepository = new NoteRepository(),
 		private readonly preprocessor = new NotePreprocessor(),
@@ -47,7 +43,6 @@ export class IncrementalUpdater {
 		private readonly checkAiEnabled: () => Promise<boolean> = isAiAnalysisEnabled,
 		private readonly onRetriesExhausted: () => void = () => {},
 		private readonly now: () => number = Date.now,
-		private readonly getCurrentScope: () => ResolvedScope = () => UNSCOPED,
 		private readonly onEnrichmentProgress: (progress: { current: number; total: number }) => void = () => {},
 		private readonly logger: Logger = consoleLogger
 	) {}
@@ -259,11 +254,7 @@ export class IncrementalUpdater {
 			this.logger.info(
 				`Incremental update applied: ${upserts.length} upserted, ${removedCount} removed.`
 			);
-
-			const diff = this.analysisController.getLastDiff();
-			if (diff) {
-				this.onGraphPatch(diff, graphData);
-			}
+			this.onGraphChanged(graphData);
 
 			this.runEnrichmentFollowUp().catch((e) => {
 				this.logger.error('LLM enrichment follow-up failed:', e);
@@ -286,18 +277,13 @@ export class IncrementalUpdater {
 
 	/**
 	 * Runs LLM enrichment (Pass B) against the graph `applyDelta` just
-	 * committed and pushes a further patch if it changed anything. Kept
-	 * separate from `applyDelta` itself so the structural/semantic patch
+	 * committed and publishes it again if it changed anything. Kept
+	 * separate from `applyDelta` itself so the structural/semantic update
 	 * reaches the panel immediately, before the much slower LLM pass runs.
 	 */
 	private async runEnrichmentFollowUp(): Promise<void> {
 		const enriched = await this.analysisController.enrichCurrentGraph(this.onEnrichmentProgress);
-		if (!enriched) return;
-
-		const diff = this.analysisController.getLastDiff();
-		if (diff) {
-			this.onGraphPatch(diff, enriched);
-		}
+		if (enriched) this.onGraphChanged(enriched);
 	}
 
 	private async fetchAndEnrich(
@@ -309,15 +295,9 @@ export class IncrementalUpdater {
 			return { upserts, discoveredRemovals };
 		}
 
-		const { folderIds } = this.getCurrentScope();
-
 		for (const id of ids) {
 			const raw = await this.noteRepository.getNote(id);
 			if (!raw) {
-				discoveredRemovals.push(id);
-				continue;
-			}
-			if (folderIds && !folderIds.has(raw.parent_id)) {
 				discoveredRemovals.push(id);
 				continue;
 			}

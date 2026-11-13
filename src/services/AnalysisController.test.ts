@@ -99,7 +99,6 @@ describe('AnalysisController', () => {
 		mockGetSimilaritySettings.mockResolvedValue({ threshold: 0.5, topK: 5 });
 		mockGraphCache = new MockGraphCacheRepository() as jest.Mocked<GraphCacheRepository>;
 		mockGraphCache.saveGraph.mockResolvedValue(undefined);
-		mockGraphCache.saveScopeKey.mockResolvedValue(undefined);
 		mockGraphCache.loadGraph.mockResolvedValue(null);
 		mockGraphCache.saveEnrichments.mockResolvedValue(undefined);
 		mockGraphCache.loadEnrichments.mockResolvedValue([]);
@@ -117,7 +116,6 @@ describe('AnalysisController', () => {
 		controller = new AnalysisController(
 			mockBuilder,
 			mockGraphCache,
-			undefined,
 			mockEnricher,
 			mockVectorStore as unknown as VectorRepository
 		);
@@ -139,6 +137,15 @@ describe('AnalysisController', () => {
 			const notes = [note('a')];
 			controller.buildStructural(notes);
 			expect(mockBuilder.build).toHaveBeenCalledWith(notes);
+		});
+
+		it('remembers the community numbers of the graph it commits, so later builds stay on them', () => {
+			const graphData = { nodes: [], edges: [] };
+			mockBuilder.build.mockReturnValue(graphData);
+
+			controller.buildStructural([note('a')]);
+
+			expect(mockBuilder.rememberCommunities).toHaveBeenCalledWith(graphData);
 		});
 	});
 
@@ -989,20 +996,6 @@ describe('AnalysisController', () => {
 			expect(mockGraphCache.saveGraph).toHaveBeenCalledWith(notes, graphData);
 		});
 
-		it('defaults to the "all" scope key when none has been set', () => {
-			controller.buildStructural([note('a')]);
-
-			expect(mockGraphCache.saveScopeKey).toHaveBeenCalledWith('all');
-		});
-
-		it('persists whichever scope key was set via setScopeKey', () => {
-			controller.setScopeKey('current:folder-1');
-
-			controller.buildStructural([note('a')]);
-
-			expect(mockGraphCache.saveScopeKey).toHaveBeenCalledWith('current:folder-1');
-		});
-
 		it('does not save the graph while persistence is disabled', () => {
 			controller.setCachePersistenceEnabled(false);
 
@@ -1613,58 +1606,14 @@ describe('AnalysisController', () => {
 		});
 	});
 
-	describe('getLastDiff', () => {
-		it('is null before anything has been built', () => {
-			expect(controller.getLastDiff()).toBeNull();
-		});
+	describe('after loading from the cache', () => {
+		it('carries on the community numbers of the cached graph', async () => {
+			const graphData = { nodes: [], edges: [] };
+			mockGraphCache.loadGraph.mockResolvedValue({ notes: [note('a')], graphData });
 
-		it('treats the first build as entirely new (no previous graph to diff against)', () => {
-			const graphData = {
-				nodes: [
-					{
-						data: {
-							id: 'a',
-							label: 'a',
-							noteId: 'a',
-							degree: 0,
-							community: 0,
-							size: 1,
-						},
-					},
-				],
-				edges: [],
-			};
-			mockBuilder.build.mockReturnValue(graphData);
+			await controller.loadFromCache();
 
-			controller.buildStructural([note('a')]);
-
-			expect(controller.getLastDiff()).toEqual({
-				upsertedNodes: graphData.nodes,
-				upsertedEdges: [],
-				removedNodeIds: [],
-				removedEdgeIds: [],
-			});
-		});
-
-		it('reports only what changed between two builds', () => {
-			const nodeA = {
-				data: { id: 'a', label: 'a', noteId: 'a', degree: 0, community: 0, size: 1 },
-			};
-			const nodeB = {
-				data: { id: 'b', label: 'b', noteId: 'b', degree: 0, community: 0, size: 1 },
-			};
-			mockBuilder.build.mockReturnValueOnce({ nodes: [nodeA], edges: [] });
-			controller.buildStructural([note('a')]);
-
-			mockBuilder.build.mockReturnValueOnce({ nodes: [nodeA, nodeB], edges: [] });
-			controller.buildStructural([note('a'), note('b')]);
-
-			expect(controller.getLastDiff()).toEqual({
-				upsertedNodes: [nodeB],
-				upsertedEdges: [],
-				removedNodeIds: [],
-				removedEdgeIds: [],
-			});
+			expect(mockBuilder.rememberCommunities).toHaveBeenCalledWith(graphData);
 		});
 	});
 

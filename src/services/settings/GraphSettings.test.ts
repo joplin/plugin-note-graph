@@ -187,7 +187,7 @@ describe('GraphSettings', () => {
 			});
 		});
 
-		it('falls back to "all" for an unrecognized or missing mode', async () => {
+		it('falls back to "current" for an unrecognized or missing mode', async () => {
 			(joplin.settings.values as jest.Mock).mockResolvedValue({
 				'noteGraph.scopeMode': undefined,
 				'noteGraph.scopeSelectedNotebooks': '',
@@ -195,7 +195,7 @@ describe('GraphSettings', () => {
 
 			const result = await getScopeSettings();
 
-			expect(result).toEqual({ mode: 'all', selectedNotebookIds: [] });
+			expect(result).toEqual({ mode: 'current', selectedNotebookIds: [] });
 		});
 
 		it('reads the "current" mode', async () => {

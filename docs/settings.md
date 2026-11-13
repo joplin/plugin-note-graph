@@ -12,7 +12,7 @@ normal.
 | Enable AI-based semantic analysis | `noteGraph.aiAnalysisEnabled` | Boolean | `false` | Turns semantic edges on or off. Requires Joplin AI to be enabled with a ready embedding index (Configuration screen's AI page). |
 | Similarity threshold (%) | `noteGraph.similarityThreshold` | Integer, 0-100, step 5 | `70` | Only the strongest (100 − value)% of candidate pairs become edges, ranked by how much closer two notes are than each usually is to its nearest notes. Lower = more edges. Only applies when AI analysis is enabled. |
 | Max semantic edges per note (top-K) | `noteGraph.maxEdgesPerNote` | Integer, 1-20, step 1 | `5` | Caps how many of each note's strongest semantic connections are kept. Only applies when AI analysis is enabled. |
-| Enable LLM analysis | `noteGraph.llmEnrichmentEnabled` | Boolean | `false` | Turns on Pass B: category labels and relationship explanations via Joplin AI chat. Requires AI-based semantic analysis to also be enabled. See [LLM enrichment](llm-enrichment.md). |
+| Enable LLM analysis | `noteGraph.llmEnrichmentEnabled` | Boolean | `false` | Turns on Pass B: relationship explanations via Joplin AI chat. Requires AI-based semantic analysis to also be enabled. See [LLM enrichment](llm-enrichment.md). |
 | Retry AI embedding | `noteGraph.retryEmbedding` | Boolean | `false` | One-shot trigger, not a persistent toggle: ticking it immediately retries AI-based semantic analysis (for example, after cancelling it), then unticks itself. No-op if the graph panel hasn't been opened yet. |
 | Retry AI labels | `noteGraph.retryEnrichment` | Boolean | `false` | One-shot trigger, not a persistent toggle: ticking it retries Pass B for any note/edge still missing a label, then unticks itself. No-op if the graph panel hasn't been opened yet. |
 
@@ -38,6 +38,9 @@ and the change touched one of the six keys above (`NOTE_GRAPH_SETTING_KEYS`):
 - **Ticking "Retry AI labels"** is handled next, the same way: reset to
   `false`, then a Pass B retry pass runs. See [LLM
   enrichment](llm-enrichment.md#retrying-missing-labels).
+- **Choosing a different scope** in the panel's notebook menu only changes which
+  notes are drawn. Every note is already loaded, so nothing is read again; see [Large
+  vaults](large-vaults.md).
 - **Toggling AI analysis** re-runs the full semantic analysis
   (`runSemanticAnalysis`), which re-embeds if turning on, or drops back to
   the structural graph if turning off. This also determines whether Pass B

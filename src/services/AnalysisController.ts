@@ -1,7 +1,6 @@
 import { Note } from '../data/Types';
 import { GraphBuilder } from './graph/GraphBuilder';
 import { GraphData, GraphNode, RenderedEdge } from './graph/types';
-import { GraphDiffer, GraphDiff } from './graph/GraphDiffer';
 import { clampSize } from './graph/CentralityScorer';
 import { VectorRepository } from '../data/Database/VectorRepository';
 import { BODY_EXCERPT_LENGTH } from '../data/NotePreprocessor';
@@ -34,27 +33,20 @@ export class AnalysisController {
 	private lastNotes: Note[] | null = null;
 	private lastEmbeddedNotes: EmbeddedNote[] | null = null;
 	private lastGraphData: GraphData | null = null;
-	private lastDiff: GraphDiff | null = null;
 	private runToken = 0;
 	private cancelledAtToken: number | null = null;
 	private lastDeltaSkippedForRetry = false;
 	private currentOrchestrator: EmbeddingOrchestrator | null = null;
 	private enrichmentInFlight: Promise<GraphData | null> | null = null;
-	private currentScopeKey = 'all';
 	private cachePersistenceEnabled = true;
 
 	public constructor(
 		private readonly builder = new GraphBuilder(),
 		private readonly graphCache: GraphCacheRepository = new GraphCacheRepository(),
-		private readonly graphDiffer: GraphDiffer = new GraphDiffer(),
 		private readonly enrichmentService: LLMEnricher = new LLMEnricher(),
 		private readonly vectorStore: VectorRepository = new VectorRepository(),
 		private readonly logger: Logger = consoleLogger
 	) {}
-
-	public getLastDiff(): GraphDiff | null {
-		return this.lastDiff;
-	}
 
 	public getLastGraphData(): GraphData | null {
 		return this.lastGraphData;
@@ -91,10 +83,6 @@ export class AnalysisController {
 		return this.lastNotes ?? [];
 	}
 
-	public setScopeKey(scopeKey: string): void {
-		this.currentScopeKey = scopeKey;
-	}
-
 	/** Disable while the loaded notes are incomplete, so a partial graph can't replace a good cached one. */
 	public setCachePersistenceEnabled(enabled: boolean): void {
 		this.cachePersistenceEnabled = enabled;
@@ -105,6 +93,7 @@ export class AnalysisController {
 			const cached = await this.graphCache.loadGraph();
 			if (!cached) return null;
 			this.lastNotes = this.trimOversizedBodies(cached.notes);
+			this.builder.rememberCommunities(cached.graphData);
 			this.lastGraphData = cached.graphData;
 			this.seedEnrichmentCache(cached.notes, cached.graphData);
 			return cached.graphData;
@@ -384,8 +373,8 @@ export class AnalysisController {
 	}
 
 	private commitGraphData(graphData: GraphData): void {
-		this.lastDiff = this.graphDiffer.computeDiff(this.lastGraphData, graphData);
 		this.lastGraphData = graphData;
+		this.builder.rememberCommunities(graphData);
 		this.persistCache();
 	}
 
@@ -451,9 +440,6 @@ export class AnalysisController {
 		if (!this.cachePersistenceEnabled || !this.lastNotes || !this.lastGraphData) return;
 		this.graphCache.saveGraph(this.lastNotes, this.lastGraphData).catch((e) => {
 			this.logger.error('Failed to persist graph cache:', e);
-		});
-		this.graphCache.saveScopeKey(this.currentScopeKey).catch((e) => {
-			this.logger.error('Failed to persist graph cache scope key:', e);
 		});
 	}
 

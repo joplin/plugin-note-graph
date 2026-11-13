@@ -8,7 +8,16 @@ module.exports = {
 		filename: 'ui/graph-view.js',
 		path: path.resolve(__dirname, 'dist'),
 	},
+	module: {
+		rules: [
+			{
+				test: /\.tsx?$/,
+				use: 'ts-loader',
+				exclude: /node_modules/,
+			},
+		],
+	},
 	resolve: {
-		extensions: ['.js'],
+		extensions: ['.ts', '.js'],
 	},
 };

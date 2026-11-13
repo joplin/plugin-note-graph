@@ -119,7 +119,7 @@ export async function isLlmEnrichmentEnabled(): Promise<boolean> {
 }
 
 function parseScopeMode(value: unknown): ScopeMode {
-	return value === 'current' || value === 'selected' ? value : 'all';
+	return value === 'all' || value === 'selected' ? value : 'current';
 }
 
 function parseSelectedNotebookIds(raw: string): string[] {

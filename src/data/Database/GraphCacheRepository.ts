@@ -22,13 +22,6 @@ const SYNC_STATE_SCHEMA = `
 	)
 `;
 
-const SCOPE_STATE_SCHEMA = `
-	CREATE TABLE IF NOT EXISTS scope_state (
-		id INTEGER PRIMARY KEY CHECK (id = 1),
-		scope_key TEXT
-	)
-`;
-
 const ENRICHMENT_CACHE_SCHEMA = `
 	CREATE TABLE IF NOT EXISTS enrichment_cache (
 		kind TEXT NOT NULL,
@@ -38,6 +31,28 @@ const ENRICHMENT_CACHE_SCHEMA = `
 		PRIMARY KEY (kind, id)
 	)
 `;
+
+const LAYOUT_CACHE_SCHEMA = `
+	CREATE TABLE IF NOT EXISTS layout_cache (
+		layout_key TEXT PRIMARY KEY,
+		positions_json TEXT NOT NULL
+	)
+`;
+
+/** Each view of each notebook saves a layout, so keep only the most recent. */
+const MAX_SAVED_LAYOUTS = 30;
+
+/**
+ * Applied in order, once each. Only ever add to the end. The last three date from
+ * when the graph began to hold the whole vault and record each note's notebook: an
+ * older cached graph may cover one notebook and lacks that, so it can't be reused.
+ */
+const MIGRATIONS = [
+	'ALTER TABLE sync_state ADD COLUMN embeddings_model TEXT',
+	'DROP TABLE IF EXISTS scope_state',
+	'DELETE FROM graph_cache',
+	'DELETE FROM layout_cache',
+];
 
 interface GraphCacheRow {
 	notes_json: string;
@@ -49,15 +64,19 @@ interface SyncStateRow {
 	embeddings_cursor: string | null;
 }
 
-interface ScopeStateRow {
-	scope_key: string | null;
-}
-
 interface EnrichmentCacheRow {
 	kind: string;
 	id: string;
 	updated_time: number;
 	enrichment_json: string;
+}
+
+export type NodePositions = Record<string, { x: number; y: number }>;
+
+/** Stores computed node positions, so reopening a graph doesn't need a new layout. */
+export interface LayoutStore {
+	loadLayout(layoutKey: string): Promise<NodePositions | null>;
+	saveLayout(layoutKey: string, positions: NodePositions): Promise<void>;
 }
 
 export interface PersistedEnrichment {
@@ -67,16 +86,15 @@ export interface PersistedEnrichment {
 	enrichment: Record<string, unknown>;
 }
 
-export class GraphCacheRepository {
+export class GraphCacheRepository implements LayoutStore {
 	private writeLock: Promise<void> = Promise.resolve();
 
 	public constructor(
-		private readonly db: IVectorDatabase = new VectorDatabase(DB_FILE_NAME, [
-			GRAPH_CACHE_SCHEMA,
-			SYNC_STATE_SCHEMA,
-			SCOPE_STATE_SCHEMA,
-			ENRICHMENT_CACHE_SCHEMA,
-		]),
+		private readonly db: IVectorDatabase = new VectorDatabase(
+			DB_FILE_NAME,
+			[GRAPH_CACHE_SCHEMA, SYNC_STATE_SCHEMA, ENRICHMENT_CACHE_SCHEMA, LAYOUT_CACHE_SCHEMA],
+			MIGRATIONS
+		),
 		private readonly logger: Logger = consoleLogger
 	) {}
 
@@ -152,23 +170,27 @@ export class GraphCacheRepository {
 		});
 	}
 
-	public async loadScopeKey(): Promise<string | null> {
+	public async loadLayout(layoutKey: string): Promise<NodePositions | null> {
 		await this.db.open();
-		const rows = await this.db.all<ScopeStateRow>(
-			'SELECT scope_key FROM scope_state WHERE id = 1',
-			[]
+		const rows = await this.db.all<{ positions_json: string }>(
+			'SELECT positions_json FROM layout_cache WHERE layout_key = ?',
+			[layoutKey]
 		);
-		return rows[0]?.scope_key ?? null;
+		return rows[0] ? (JSON.parse(rows[0].positions_json) as NodePositions) : null;
 	}
 
-	public saveScopeKey(scopeKey: string): Promise<void> {
+	public saveLayout(layoutKey: string, positions: NodePositions): Promise<void> {
 		return this.enqueueWrite(async () => {
 			await this.db.open();
+			await this.db.run('DELETE FROM layout_cache WHERE layout_key = ?', [layoutKey]);
 			await this.db.run(
-				`INSERT INTO scope_state (id, scope_key)
-				 VALUES (1, ?)
-				 ON CONFLICT(id) DO UPDATE SET scope_key = excluded.scope_key`,
-				[scopeKey]
+				'INSERT INTO layout_cache (layout_key, positions_json) VALUES (?, ?)',
+				[layoutKey, JSON.stringify(positions)]
+			);
+			await this.db.run(
+				`DELETE FROM layout_cache WHERE rowid NOT IN
+				 (SELECT rowid FROM layout_cache ORDER BY rowid DESC LIMIT ?)`,
+				[MAX_SAVED_LAYOUTS]
 			);
 		});
 	}
@@ -177,6 +199,7 @@ export class GraphCacheRepository {
 		return this.enqueueWrite(async () => {
 			await this.db.open();
 			await this.db.run('DELETE FROM graph_cache WHERE id = 1', []);
+			await this.db.run('DELETE FROM layout_cache', []);
 		});
 	}
 

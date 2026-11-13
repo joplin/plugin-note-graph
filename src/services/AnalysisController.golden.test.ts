@@ -15,7 +15,6 @@ jest.mock('../data/Database/GraphCacheRepository', () => ({
 	GraphCacheRepository: jest.fn().mockImplementation(() => ({
 		loadGraph: jest.fn().mockResolvedValue(null),
 		saveGraph: jest.fn().mockResolvedValue(undefined),
-		saveScopeKey: jest.fn().mockResolvedValue(undefined),
 		saveEnrichments: jest.fn().mockResolvedValue(undefined),
 		loadEnrichments: jest.fn().mockResolvedValue([]),
 	})),
