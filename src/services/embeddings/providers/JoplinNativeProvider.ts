@@ -62,10 +62,10 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 	private static readonly MAX_MODEL_CHANGE_RETRIES = 3;
 	private static readonly MAX_ATTEMPTS_PER_PAGE = 3;
 	private static readonly RETRY_DELAY_MS = 1000;
+	/** Every page of a request repeats its note IDs across IPC, so requests stay small. */
+	private static readonly NOTE_ID_BATCH_SIZE = 200;
 
 	private _modelName: string;
-	private cachedVectors: Map<string, number[]> | null = null;
-	private fetchedModelId: string | null = null;
 
 	public constructor(modelName: string = JoplinNativeProvider.DEFAULT_MODEL_ID) {
 		this._modelName = modelName;
@@ -77,31 +77,41 @@ export class JoplinNativeProvider implements EmbeddingProvider {
 
 	public async fetchVectorsByNoteIds(
 		noteIds: string[],
-		isCancelled: () => boolean = () => false
+		isCancelled: () => boolean = () => false,
+		onProgress?: (done: number, total: number) => void
 	): Promise<Map<string, number[]>> {
 		if (noteIds.length === 0) {
 			return new Map();
 		}
 
-		this.cachedVectors = null;
-		this.fetchedModelId = null;
-
 		const api = this.validateAiApi();
-		const grouped = await this.fetchAllPages(api, noteIds, isCancelled);
+		const result = new Map<string, number[]>();
+		let modelChangeRetries = 0;
 
-		this.fetchedModelId = this._modelName;
+		for (let start = 0; start < noteIds.length; start += JoplinNativeProvider.NOTE_ID_BATCH_SIZE) {
+			if (isCancelled()) break;
 
-		const result = this.poolAndNormalize(grouped);
-		this.cachedVectors = result;
+			const modelBefore = this._modelName;
+			const batch = noteIds.slice(start, start + JoplinNativeProvider.NOTE_ID_BATCH_SIZE);
+			const grouped = await this.fetchAllPages(api, batch, isCancelled);
+
+			if (start > 0 && this._modelName !== modelBefore) {
+				modelChangeRetries++;
+				if (modelChangeRetries > JoplinNativeProvider.MAX_MODEL_CHANGE_RETRIES) {
+					throw new Error('Model changed too many times during pagination.');
+				}
+				result.clear();
+				start = -JoplinNativeProvider.NOTE_ID_BATCH_SIZE;
+				continue;
+			}
+
+			for (const [noteId, vector] of this.poolAndNormalize(grouped)) {
+				result.set(noteId, vector);
+			}
+			onProgress?.(Math.min(start + batch.length, noteIds.length), noteIds.length);
+		}
+
 		return result;
-	}
-
-	public getCachedVectors(): Map<string, number[]> | null {
-		return this.cachedVectors;
-	}
-
-	public getFetchedModelId(): string | null {
-		return this.fetchedModelId;
 	}
 
 	/**

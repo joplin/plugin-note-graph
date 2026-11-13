@@ -96,7 +96,6 @@ describe('EmbeddingOrchestrator', () => {
 
 			expect(progressUpdates).toEqual([
 				{ current: 0, total: 2 },
-				{ current: 1, total: 2 },
 				{ current: 2, total: 2 },
 			]);
 		});
@@ -192,7 +191,7 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 999)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function));
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function), expect.any(Function));
 			expect(result.embeddedNotes[0].embedding).toEqual([0.9, 0.9]);
 		});
 
@@ -217,11 +216,30 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 999)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function));
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function), expect.any(Function));
 			expect(result.embeddedNotes).toHaveLength(0);
 			expect(result.errors).toEqual([
 				{ noteId: 'n1', error: 'Note not yet indexed by Joplin AI.' },
 			]);
+		});
+
+		it('sends one progress message per fetched batch rather than one per note', async () => {
+			const progressUpdates: BatchProgress[] = [];
+			orchestrator.setOnProgress((progress) => progressUpdates.push(progress));
+			const notes = Array.from({ length: 1000 }, (_, i) => makeNote(`n${i}`, 'T', 'B'));
+			orchestrator.setProvider({
+				id: 'joplin-native',
+				modelName: 'm1',
+				fetchVectorsByNoteIds: jest.fn(async (_ids, _isCancelled, onProgress) => {
+					onProgress?.(500, 1000);
+					onProgress?.(1000, 1000);
+					return new Map();
+				}),
+			});
+
+			await orchestrator.embedNotes(notes);
+
+			expect(progressUpdates.length).toBeLessThanOrEqual(4);
 		});
 
 		it('re-fetches a note whose cached entry belongs to a different embedding model', async () => {
@@ -244,7 +262,7 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 50)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function));
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function), expect.any(Function));
 			expect(result.embeddedNotes[0].embedding).toEqual([0.9, 0.9]);
 		});
 
@@ -271,7 +289,7 @@ describe('EmbeddingOrchestrator', () => {
 				makeNote('n2', 'T2', 'B2', 20),
 			]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n2'], expect.any(Function));
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n2'], expect.any(Function), expect.any(Function));
 			expect(result.embeddedNotes).toHaveLength(2);
 			expect(result.errors).toHaveLength(0);
 		});
@@ -293,6 +311,23 @@ describe('EmbeddingOrchestrator', () => {
 			expect(saveMany).toHaveBeenCalledWith([
 				{ noteId: 'n1', vector: [0.4, 0.5], modelId: 'm1', updatedTime: 42 },
 			]);
+		});
+
+		it('does not save what a cancelled fetch returned, since a note may be missing chunks', async () => {
+			const saveMany = jest.fn().mockResolvedValue(undefined);
+			orchestrator.setProvider({
+				id: 'joplin-native',
+				modelName: 'm1',
+				fetchVectorsByNoteIds: jest.fn().mockImplementation(async () => {
+					orchestrator.cancel();
+					return new Map([['n1', [0.4, 0.5]]]);
+				}),
+			});
+			orchestrator.setCache({ getMany: jest.fn().mockResolvedValue(new Map()), saveMany });
+
+			await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 42)]);
+
+			expect(saveMany).not.toHaveBeenCalled();
 		});
 
 		it('does not save notes the provider failed to return', async () => {
@@ -326,7 +361,7 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 42)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function));
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function), expect.any(Function));
 			expect(result.embeddedNotes[0].embedding).toEqual([0.4, 0.5]);
 		});
 
@@ -362,7 +397,7 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 42)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function));
+			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function), expect.any(Function));
 			expect(result.embeddedNotes[0].embedding).toEqual([0.4, 0.5]);
 		});
 	});

@@ -47,6 +47,11 @@ import {
 } from './services/settings/GraphSettings';
 import { NoteScopeResolver, ResolvedScope, ScopeMode, currentScopeKey } from './services/settings/NoteScopeResolver';
 import { EdgeFactory } from './services/similarity/EdgeFactory';
+import {
+	DEFAULT_NEIGHBORS_PER_NOTE,
+	KnnIndex,
+	WORK_SLICE_MS,
+} from './services/similarity/KnnIndex';
 import { LouvainDetector } from './services/graph/LouvainDetector';
 import { CentralityScorer } from './services/graph/CentralityScorer';
 import { Logger, consoleLogger } from './utils/Logger';
@@ -58,7 +63,13 @@ const logger: Logger = consoleLogger;
 
 const graphCache = new GraphCacheRepository();
 const analysisController = new AnalysisController(
-	new GraphBuilder(new EdgeFactory(), new LouvainDetector(logger), new CentralityScorer(), logger),
+	new GraphBuilder(
+		new EdgeFactory(),
+		new LouvainDetector(logger),
+		new CentralityScorer(),
+		new KnnIndex(DEFAULT_NEIGHBORS_PER_NOTE, WORK_SLICE_MS, logger),
+		logger
+	),
 	graphCache,
 	new GraphDiffer(),
 	new LLMEnricher({ logger }),

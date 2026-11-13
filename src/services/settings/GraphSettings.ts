@@ -55,7 +55,7 @@ export async function registerGraphSettings(): Promise<void> {
 			section: SECTION_NAME,
 			label: 'Similarity threshold (%)',
 			description:
-				'Percentile cutoff on raw similarity: only the strongest (100 - value)% of candidate pairs become edges. Lower value = more semantic edges. Only applies when AI analysis is enabled.',
+				'Only the strongest (100 - value)% of candidate pairs become edges, ranked by how much closer two notes are than each usually is to its nearest notes. Lower value = more semantic edges. Only applies when AI analysis is enabled.',
 		},
 		[MAX_EDGES_PER_NOTE_KEY]: {
 			value: TOP_K,
