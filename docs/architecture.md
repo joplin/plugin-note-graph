@@ -38,6 +38,8 @@ webview message bridge:
 | `src/services/sync` | Listens to Joplin workspace events and turns them into incremental graph updates. |
 | `src/services/settings` | Registers and reads the plugin's settings. |
 | `src/services/AnalysisController.ts` | Orchestrates the above into a single graph-building pipeline; the one class `index.ts` talks to. |
+| `src/services/NoteLoader.ts` | Loads every note in the vault, and reports whether the load was complete. |
+| `src/utils` | Shared helpers: retry with backoff, and the `Logger` interface. |
 | `src/ui` | The webview panel: HTML shell, styling, and the Cytoscape-driven `graph-view.js` client. |
 
 ## Request flow: opening the graph
@@ -85,6 +87,12 @@ See [Data pipeline](data-pipeline.md) for how notes are loaded and enriched,
 [Graph model](graph-model.md) for how nodes and edges are assembled, [LLM
 enrichment](llm-enrichment.md) for Pass B, and [Incremental
 updates](incremental-updates.md) for what happens after the initial load.
+
+## Logging
+
+Services never call `console` directly. Each takes a `Logger` (`src/utils/Logger.ts`)
+as a constructor default, `consoleLogger`, so a test can pass its own. `index.ts`
+builds everything with one shared logger.
 
 ## Persistence
 

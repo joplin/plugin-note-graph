@@ -1,5 +1,6 @@
 import joplin from 'api';
 import { EmbeddingProvider, ProviderId } from '../Types';
+import { retryWithBackoff } from '../../../utils/retryWithBackoff';
 
 /**
  * Mirrors Joplin's official AiIndexState type (joplinapp.org/api/references/plugin_api).
@@ -51,39 +52,6 @@ const BLOCKING_STATES: ReadonlySet<AiIndexState> = new Set([
 /** True once the index has enough data to fetch from, even if still indexing. */
 export function isIndexUsable(state: AiIndexState | undefined): boolean {
 	return !!state && !BLOCKING_STATES.has(state);
-}
-
-export async function retryWithBackoff<T>(
-	label: string,
-	fn: () => Promise<T>,
-	options: { maxAttempts: number; baseDelayMs: number }
-): Promise<T> {
-	let lastError: unknown;
-
-	for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
-		if (attempt > 1) {
-			await delay(options.baseDelayMs * 2 ** (attempt - 2));
-		}
-
-		try {
-			return await fn();
-		} catch (e) {
-			lastError = e;
-			const willRetry = attempt < options.maxAttempts;
-			console.error(
-				`${label} failed on attempt ${attempt}/${options.maxAttempts}${
-					willRetry ? '; retrying.' : '; giving up.'
-				}`,
-				e
-			);
-		}
-	}
-
-	throw lastError;
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class JoplinNativeProvider implements EmbeddingProvider {

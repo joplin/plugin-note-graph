@@ -1,5 +1,7 @@
 import joplin from 'api';
 
+const BUSY_TIMEOUT_MS = 5000;
+
 export interface IVectorDatabase {
 	open(): Promise<void>;
 	run(sql: string, params: unknown[]): Promise<void>;
@@ -40,7 +42,7 @@ export class VectorDatabase implements IVectorDatabase {
 	 * ready forever.
 	 */
 	public async open(): Promise<void> {
-		if (this.db) return;
+		// `db` is set as soon as the connection opens, before the schema is created, so it can't mean ready.
 		if (!this.opening) {
 			this.opening = this.openInternal().catch((e) => {
 				this.opening = null;
@@ -80,6 +82,7 @@ export class VectorDatabase implements IVectorDatabase {
 			});
 		});
 
+		await this.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`, []);
 		for (const statement of this.schemaStatements) {
 			await this.run(statement, []);
 		}

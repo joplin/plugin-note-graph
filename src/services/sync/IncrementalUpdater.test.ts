@@ -6,6 +6,7 @@ import { NotePreprocessor } from '../../data/NotePreprocessor';
 import { EventsRepository } from '../../data/EventsRepository';
 import { GraphCacheRepository } from '../../data/Database/GraphCacheRepository';
 import { Note } from '../../data/Types';
+import { GraphData } from '../graph/types';
 import { ResolvedScope } from '../settings/NoteScopeResolver';
 
 jest.mock('../AnalysisController');
@@ -730,7 +731,7 @@ describe('IncrementalUpdater', () => {
 
 		it("applies a second flush's Pass A patch without waiting for an earlier flush's slow Pass B enrichment", async () => {
 			noteRepository.getNote.mockImplementation(async (id) => note(id));
-			let resolveFirstEnrich: (value: unknown) => void = () => undefined;
+			let resolveFirstEnrich: (value: GraphData | null) => void = () => undefined;
 			let enrichCalls = 0;
 			analysisController.enrichCurrentGraph.mockImplementation(() => {
 				enrichCalls++;

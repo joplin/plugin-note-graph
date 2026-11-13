@@ -134,6 +134,43 @@ describe('webview', () => {
 		expect(response).toEqual({ type: 'no-change', progress: null });
 	});
 
+	describe('setGraphNotice', () => {
+		it('includes the notice in a no-data reply', async () => {
+			webview.setGraphNotice('Incomplete');
+
+			const response = await onMessageHandler({ type: 'request-data', version: 0 });
+
+			expect(response).toEqual({ type: 'no-data', progress: null, notice: 'Incomplete' });
+		});
+
+		it('includes the notice in a no-change reply', async () => {
+			await webview.postGraphData({ nodes: [], edges: [] });
+			webview.setGraphNotice('Incomplete');
+
+			const response = await onMessageHandler({ type: 'request-data', version: 1 });
+
+			expect(response).toEqual({ type: 'no-change', progress: null, notice: 'Incomplete' });
+		});
+
+		it('includes the notice alongside graph data', async () => {
+			await webview.postGraphData({ nodes: [], edges: [] });
+			webview.setGraphNotice('Incomplete');
+
+			const response = await onMessageHandler({ type: 'request-data', version: 0 });
+
+			expect(response).toMatchObject({ type: 'graph-data', notice: 'Incomplete' });
+		});
+
+		it('omits the notice once it is cleared', async () => {
+			webview.setGraphNotice('Incomplete');
+			webview.setGraphNotice(null);
+
+			const response = await onMessageHandler({ type: 'request-data', version: 0 });
+
+			expect(response).toEqual({ type: 'no-data', progress: null });
+		});
+	});
+
 	it('delivers a queued focus note with the next graph response, then clears it', async () => {
 		await webview.postGraphData({ nodes: [], edges: [] });
 		await webview.postFocusNote('note-1');

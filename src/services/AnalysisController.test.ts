@@ -1,6 +1,7 @@
 import { AnalysisController } from './AnalysisController';
 import { GraphBuilder } from './graph/GraphBuilder';
 import { GraphCacheRepository } from '../data/Database/GraphCacheRepository';
+import { VectorRepository } from '../data/Database/VectorRepository';
 import { ProviderResolver } from './embeddings/ProviderResolver';
 import { EmbeddingOrchestrator } from './embeddings/Orchestrator';
 import { LLMEnricher } from './llm/LLMEnricher';
@@ -18,7 +19,12 @@ jest.mock('./embeddings/Orchestrator');
 jest.mock('./llm/LLMEnricher');
 jest.mock('./settings/GraphSettings');
 jest.mock('../data/Database/VectorRepository', () => ({
-	VectorRepository: jest.fn(),
+	VectorRepository: jest.fn(() => ({
+		getMany: jest.fn().mockResolvedValue(new Map()),
+		saveMany: jest.fn().mockResolvedValue(undefined),
+		removeMany: jest.fn().mockResolvedValue(undefined),
+		pruneExcept: jest.fn().mockResolvedValue(undefined),
+	})),
 }));
 jest.mock('../data/Database/GraphCacheRepository');
 
@@ -70,6 +76,12 @@ describe('AnalysisController', () => {
 	let mockBuilder: jest.Mocked<GraphBuilder>;
 	let mockGraphCache: jest.Mocked<GraphCacheRepository>;
 	let mockEnricher: jest.Mocked<LLMEnricher>;
+	let mockVectorStore: {
+		getMany: jest.Mock;
+		saveMany: jest.Mock;
+		removeMany: jest.Mock;
+		pruneExcept: jest.Mock;
+	};
 	let controller: AnalysisController;
 	let mockOrchestratorInstance: {
 		setProvider: jest.Mock;
@@ -95,7 +107,20 @@ describe('AnalysisController', () => {
 		mockEnricher.replayCached.mockReturnValue({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
 		mockEnricher.takeNewEnrichments.mockReturnValue({ nodes: [], edges: [] });
 		mockIsLlmEnrichmentEnabled.mockResolvedValue(false);
-		controller = new AnalysisController(mockBuilder, mockGraphCache, undefined, mockEnricher);
+		mockGraphCache.pruneEnrichments.mockResolvedValue(undefined);
+		mockVectorStore = {
+			getMany: jest.fn().mockResolvedValue(new Map()),
+			saveMany: jest.fn().mockResolvedValue(undefined),
+			removeMany: jest.fn().mockResolvedValue(undefined),
+			pruneExcept: jest.fn().mockResolvedValue(undefined),
+		};
+		controller = new AnalysisController(
+			mockBuilder,
+			mockGraphCache,
+			undefined,
+			mockEnricher,
+			mockVectorStore as unknown as VectorRepository
+		);
 
 		mockOrchestratorInstance = {
 			setProvider: jest.fn(),
@@ -697,7 +722,7 @@ describe('AnalysisController', () => {
 
 			await controller.enrichCurrentGraph(onEnrichmentProgress);
 
-			const forwarded = mockEnricher.enrich.mock.calls[0][2];
+			const forwarded = mockEnricher.enrich.mock.calls[0][2]!;
 			forwarded({ current: 1, total: 3 });
 			expect(onEnrichmentProgress).toHaveBeenCalledWith({ current: 1, total: 3 });
 		});
@@ -708,7 +733,7 @@ describe('AnalysisController', () => {
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
 			await controller.enrichCurrentGraph(onEnrichmentProgress);
-			const forwarded = mockEnricher.enrich.mock.calls[0][2];
+			const forwarded = mockEnricher.enrich.mock.calls[0][2]!;
 
 			controller.buildStructural([note('a')]);
 			forwarded({ current: 1, total: 1 });
@@ -976,6 +1001,38 @@ describe('AnalysisController', () => {
 			controller.buildStructural([note('a')]);
 
 			expect(mockGraphCache.saveScopeKey).toHaveBeenCalledWith('current:folder-1');
+		});
+
+		it('does not save the graph while persistence is disabled', () => {
+			controller.setCachePersistenceEnabled(false);
+
+			controller.buildStructural([note('a')]);
+
+			expect(mockGraphCache.saveGraph).not.toHaveBeenCalled();
+		});
+
+		it('still commits the graph in memory while persistence is disabled', () => {
+			const graphData = { nodes: [], edges: [] };
+			mockBuilder.build.mockReturnValue(graphData);
+			controller.setCachePersistenceEnabled(false);
+
+			controller.buildStructural([note('a')]);
+
+			expect(controller.getLastGraphData()).toBe(graphData);
+		});
+
+		it('saves again once persistence is re-enabled', () => {
+			const notes = [note('a')];
+			const graphData = { nodes: [], edges: [] };
+			mockBuilder.build.mockReturnValue(graphData);
+			controller.setCachePersistenceEnabled(false);
+			controller.buildStructural([note('old')]);
+
+			controller.setCachePersistenceEnabled(true);
+			controller.buildStructural(notes);
+
+			expect(mockGraphCache.saveGraph).toHaveBeenCalledTimes(1);
+			expect(mockGraphCache.saveGraph).toHaveBeenCalledWith(notes, graphData);
 		});
 	});
 
@@ -1608,6 +1665,39 @@ describe('AnalysisController', () => {
 				removedNodeIds: [],
 				removedEdgeIds: [],
 			});
+		});
+	});
+
+	describe('cache writes', () => {
+		it('trims full bodies from a cache written by an older version', async () => {
+			const longBody = 'x'.repeat(5000);
+			mockGraphCache.loadGraph.mockResolvedValue({
+				notes: [{ ...note('a'), body: longBody }],
+				graphData: { nodes: [], edges: [] },
+			});
+
+			await controller.loadFromCache();
+
+			expect(controller.getCurrentNotes()[0].body.length).toBeLessThan(1000);
+		});
+
+		it('does not read the whole cached graph to migrate labels once labels are stored', async () => {
+			mockGraphCache.hasEnrichments.mockResolvedValue(true);
+
+			await controller.migrateCachedEnrichment();
+
+			expect(mockGraphCache.loadGraph).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('pruneDeletedNotes', () => {
+		it('prunes both the vector and the label caches', () => {
+			const keep = new Set(['a']);
+
+			controller.pruneDeletedNotes(keep);
+
+			expect(mockVectorStore.pruneExcept).toHaveBeenCalledWith(keep);
+			expect(mockGraphCache.pruneEnrichments).toHaveBeenCalledWith(keep);
 		});
 	});
 });

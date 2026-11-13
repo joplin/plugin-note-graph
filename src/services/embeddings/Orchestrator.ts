@@ -1,12 +1,15 @@
 import { Note } from '../../data/Types';
 import { CachedVector, VectorCache, VectorCacheEntry } from '../../data/Database/VectorRepository';
 import { EmbeddingProvider, EmbeddedNote, EmbeddingResult, BatchProgress } from './Types';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 export class EmbeddingOrchestrator {
 	private provider: EmbeddingProvider | null = null;
 	private cache: VectorCache | null = null;
 	private cancelled: boolean = false;
 	private onProgress: ((progress: BatchProgress) => void) | null = null;
+
+	public constructor(private readonly logger: Logger = consoleLogger) {}
 
 	public setProvider(provider: EmbeddingProvider): void {
 		this.provider = provider;
@@ -121,7 +124,7 @@ export class EmbeddingOrchestrator {
 		try {
 			return await this.cache.getMany(notes.map((n) => n.id));
 		} catch (e) {
-			console.error('Vector cache read failed, falling back to a full fetch:', e);
+			this.logger.error('Vector cache read failed, falling back to a full fetch:', e);
 			return new Map();
 		}
 	}
@@ -145,7 +148,7 @@ export class EmbeddingOrchestrator {
 		try {
 			await this.cache.saveMany(entries);
 		} catch (e) {
-			console.error('Vector cache write failed:', e);
+			this.logger.error('Vector cache write failed:', e);
 		}
 	}
 

@@ -2,6 +2,7 @@ import Graph from 'graphology';
 import louvain from 'graphology-communities-louvain';
 import { Note } from '../../data/Types';
 import { GraphEdge } from './types';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 /** Below this note count there isn't enough structure for Louvain to produce a meaningful result. */
 const MIN_NOTES_FOR_LOUVAIN = 3;
@@ -126,9 +127,11 @@ class DisjointSet {
  * when the vault grows) is left for the incremental-update work.
  */
 export class LouvainDetector {
+	public constructor(private readonly logger: Logger = consoleLogger) {}
+
 	public detectCommunities(notes: Note[], edges: GraphEdge[]): Map<string, number> {
 		if (this.isTooSparse(notes, edges)) {
-			console.info(
+			this.logger.info(
 				`Community detection: graph too sparse for Louvain (${notes.length} notes, ${edges.length} edges), using keyword/link fallback.`
 			);
 			return this.renumberBySize(this.groupByKeyword(notes, edges));
@@ -138,7 +141,7 @@ export class LouvainDetector {
 		try {
 			raw = this.runLouvain(notes, edges);
 		} catch (error) {
-			console.error('Louvain community detection failed, using keyword/link fallback instead:', error);
+			this.logger.error('Louvain community detection failed, using keyword/link fallback instead:', error);
 			return this.renumberBySize(this.groupByKeyword(notes, edges));
 		}
 
@@ -172,7 +175,7 @@ export class LouvainDetector {
 			fallbackCommunityCount < louvainCommunityCount && !this.isCollapsed(fallbackResult, notes.length);
 
 		if (fallbackIsBetter) {
-			console.info(
+			this.logger.info(
 				`Community detection: Louvain result too fragmented (${louvainCommunityCount} communities ` +
 					`for ${notes.length} notes), using keyword/link fallback (${fallbackCommunityCount} communities).`
 			);

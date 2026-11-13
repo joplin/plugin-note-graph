@@ -29,6 +29,7 @@ let currentGraphData: GraphData | null = null;
 let currentVersion = 0;
 let currentProgress: ProgressState | null = null;
 let queuedFocusNoteId: string | null = null;
+let currentNotice: string | undefined;
 
 const createPanel = async (
 	onNoData: () => void,
@@ -62,10 +63,10 @@ const createPanel = async (
 					if (await joplin.views.panels.visible(handle)) {
 						onNoData();
 					}
-					return { type: 'no-data', progress: currentProgress };
+					return { type: 'no-data', progress: currentProgress, notice: currentNotice };
 				}
 				if (message.version === currentVersion) {
-					return { type: 'no-change', progress: currentProgress };
+					return { type: 'no-change', progress: currentProgress, notice: currentNotice };
 				}
 				const focusNoteId = queuedFocusNoteId;
 				queuedFocusNoteId = null;
@@ -74,6 +75,7 @@ const createPanel = async (
 					...currentGraphData,
 					version: currentVersion,
 					progress: currentProgress,
+					notice: currentNotice,
 					focusNoteId,
 				};
 			}
@@ -189,6 +191,11 @@ export const postGraphPatch = async (diff: GraphDiff, fullGraphData: GraphData):
 			version: currentVersion,
 		});
 	}
+};
+
+/** Sets a message that stays visible until cleared, unlike `postStatus`, which the next render replaces. The panel picks it up on its next poll. */
+export const setGraphNotice = (text: string | null): void => {
+	currentNotice = text ?? undefined;
 };
 
 /** Pushes a one-line status message to the panel (e.g. a fallback notice). */

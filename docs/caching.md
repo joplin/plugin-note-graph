@@ -14,9 +14,11 @@ database access goes through Joplin's own bundled `sqlite3` module via
 that callback-based driver: it owns the connection and runs the schema's
 `CREATE TABLE IF NOT EXISTS` statements on open, and exposes `run()` and
 `all()`. Query logic itself lives in the repository classes, not in this
-wrapper.
+wrapper. Each database has one shared connection for the life of the plugin, with
+a busy timeout so concurrent writes wait instead of failing.
 
-`open()` is safe to call repeatedly and concurrently: if opening fails, both
+`open()` is safe to call repeatedly and concurrently. Every caller waits until the
+schema is in place, not just until the connection exists. If opening fails, both
 the in-progress promise and the (possibly half-created) connection are
 reset, so a later call retries cleanly instead of replaying a stale
 rejection or treating a half-open database as ready.
@@ -47,6 +49,8 @@ the caller (`EmbeddingOrchestrator`) also compares `updated_time` against
 the note's current value to decide freshness. Changing the AI model in
 Joplin settings naturally invalidates the whole cache, since every lookup
 will then miss on `model_id`.
+
+Rows for deleted notes are removed on each complete whole-vault load.
 
 Reads are batched (up to 500 note IDs per `SELECT ... WHERE note_id IN (...)`,
 `QUERY_BATCH_SIZE`) to stay under SQLite's bound-parameter limit. Writes run
@@ -79,9 +83,11 @@ Both tables are single-row (`CHECK (id = 1)`), upserted with
 state," not history.
 
 - `graph_cache` holds the last successfully built `GraphData` plus the note
-  list it was built from, serialized as JSON. `AnalysisController` writes
+  list it was built from, serialized as JSON. Note bodies are kept only as
+  600-character excerpts. `AnalysisController` writes
   this after every successful build (fire-and-forget; a write failure is
-  logged, not propagated) and `index.ts` reads it on panel open to render
+  logged, not propagated), except while the loaded notes are incomplete, so
+  a partial graph can't replace a good cached one, and `index.ts` reads it on panel open to render
   instantly before a background sync sweep runs. Any Pass B `category` and
   `relationshipLabel` fields on that graph ride along in the same JSON, and
   `AnalysisController` reseeds `LLMEnricher`'s in-memory cache from them on

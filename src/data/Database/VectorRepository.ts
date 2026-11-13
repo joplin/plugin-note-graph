@@ -1,4 +1,5 @@
 import { IVectorDatabase, VectorDatabase } from './VectorDatabase';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 const DB_FILE_NAME = 'note-graph-vectors.sqlite';
 const SCHEMA = `
@@ -28,6 +29,12 @@ export interface VectorCache {
 	saveMany(entries: VectorCacheEntry[]): Promise<void>;
 }
 
+/** Removes vectors for notes that no longer exist. */
+export interface VectorPruner {
+	removeMany(noteIds: string[]): Promise<void>;
+	pruneExcept(noteIdsToKeep: Set<string>): Promise<void>;
+}
+
 interface VectorRow {
 	note_id: string;
 	model_id: string;
@@ -41,7 +48,7 @@ interface VectorRow {
  * when both its note_id and model_id match, since staleness is decided by
  * the caller comparing `updatedTime` against the note's current updated_time.
  */
-export class VectorRepository implements VectorCache {
+export class VectorRepository implements VectorCache, VectorPruner {
 	/** SQLite caps bound parameters per statement (as low as 999 on some builds); stay well under it. */
 	private static readonly QUERY_BATCH_SIZE = 500;
 
@@ -52,7 +59,8 @@ export class VectorRepository implements VectorCache {
 	private writeLock: Promise<void> = Promise.resolve();
 
 	public constructor(
-		private readonly db: IVectorDatabase = new VectorDatabase(DB_FILE_NAME, [SCHEMA])
+		private readonly db: IVectorDatabase = new VectorDatabase(DB_FILE_NAME, [SCHEMA]),
+		private readonly logger: Logger = consoleLogger
 	) {}
 
 	/** Returns cached vectors for the given note IDs, keyed by note ID. Missing notes are omitted. */
@@ -92,6 +100,32 @@ export class VectorRepository implements VectorCache {
 		return task;
 	}
 
+	public removeMany(noteIds: string[]): Promise<void> {
+		if (noteIds.length === 0) return Promise.resolve();
+
+		const task = this.writeLock.then(() => this.removeManyInternal(noteIds));
+		this.writeLock = task.then(
+			() => undefined,
+			() => undefined
+		);
+		return task;
+	}
+
+	/** Removes every vector whose note is not in `noteIdsToKeep`. Only call this with a complete, whole-vault list. */
+	public async pruneExcept(noteIdsToKeep: Set<string>): Promise<void> {
+		await this.db.open();
+		const rows = await this.db.all<{ note_id: string }>('SELECT note_id FROM note_vectors', []);
+		await this.removeMany(rows.map((row) => row.note_id).filter((id) => !noteIdsToKeep.has(id)));
+	}
+
+	private async removeManyInternal(noteIds: string[]): Promise<void> {
+		await this.db.open();
+		for (const batch of this.chunk(noteIds, VectorRepository.QUERY_BATCH_SIZE)) {
+			const placeholders = batch.map(() => '?').join(',');
+			await this.db.run(`DELETE FROM note_vectors WHERE note_id IN (${placeholders})`, batch);
+		}
+	}
+
 	private async saveManyInternal(entries: VectorCacheEntry[]): Promise<void> {
 		await this.db.open();
 
@@ -120,7 +154,7 @@ export class VectorRepository implements VectorCache {
 			try {
 				await this.db.run('ROLLBACK', []);
 			} catch (rollbackError) {
-				console.error('Vector cache rollback failed after a write error:', rollbackError);
+				this.logger.error('Vector cache rollback failed after a write error:', rollbackError);
 			}
 			throw e;
 		}
