@@ -1,4 +1,4 @@
-import { NotePreprocessor } from './NotePreprocessor';
+import { BODY_EXCERPT_LENGTH, NotePreprocessor } from './NotePreprocessor';
 import { LinkExtractor } from './LinkExtractor';
 import { TagRepository } from './TagRepository';
 
@@ -27,7 +27,7 @@ describe('NotePreprocessor', () => {
 	it('enriches notes with links and tags', async () => {
 		mockLinkExtractorInstance.extractLinks.mockReturnValue(['abc']);
 
-		mockTagRepositoryInstance.getNoteTagsMap.mockResolvedValue({
+		mockTagRepositoryInstance.getTagsForNotes.mockResolvedValue({
 			map: {
 				note1: ['tag1'],
 			},
@@ -45,9 +45,10 @@ describe('NotePreprocessor', () => {
 			},
 		];
 
-		const result = await preprocessor.process(notes);
+		const { notes: result, tagsComplete } = await preprocessor.process(notes);
 
 		expect(result).toHaveLength(1);
+		expect(tagsComplete).toBe(true);
 
 		expect(result[0]).toMatchObject({
 			id: 'note1',
@@ -57,13 +58,13 @@ describe('NotePreprocessor', () => {
 
 		expect(mockLinkExtractorInstance.extractLinks).toHaveBeenCalledWith('body :/abc');
 
-		expect(mockTagRepositoryInstance.getNoteTagsMap).toHaveBeenCalled();
+		expect(mockTagRepositoryInstance.getTagsForNotes).toHaveBeenCalled();
 	});
 
 	it('logs, but still returns notes, when the bulk tag fetch was truncated', async () => {
 		const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 		mockLinkExtractorInstance.extractLinks.mockReturnValue([]);
-		mockTagRepositoryInstance.getNoteTagsMap.mockResolvedValue({ map: {}, truncated: true });
+		mockTagRepositoryInstance.getTagsForNotes.mockResolvedValue({ map: {}, truncated: true });
 
 		const notes = [
 			{
@@ -76,19 +77,55 @@ describe('NotePreprocessor', () => {
 			},
 		];
 
-		const result = await preprocessor.process(notes);
+		const { notes: result, tagsComplete } = await preprocessor.process(notes);
 
 		expect(result).toHaveLength(1);
+		expect(tagsComplete).toBe(false);
 		expect(consoleErrorSpy).toHaveBeenCalledWith(
 			expect.stringContaining('Tag data is incomplete')
 		);
 		consoleErrorSpy.mockRestore();
 	});
 
+	it('cuts the body to an excerpt, but still finds links past the cut', async () => {
+		const realExtractor = new (jest.requireActual('./LinkExtractor').LinkExtractor)();
+		mockLinkExtractorInstance.extractLinks.mockImplementation((body) =>
+			realExtractor.extractLinks(body)
+		);
+		mockTagRepositoryInstance.getTagsForNotes.mockResolvedValue({ map: {}, truncated: false });
+		const linkedId = 'abcdef0123456789abcdef0123456789';
+		const longBody = `${'x'.repeat(BODY_EXCERPT_LENGTH + 50)} [link](:/${linkedId})`;
+
+		const { notes } = await preprocessor.process([
+			{
+				id: 'n1',
+				parent_id: 'p1',
+				title: 'Long',
+				body: longBody,
+				created_time: 0,
+				updated_time: 1,
+			},
+		]);
+
+		expect(notes[0].body).toHaveLength(BODY_EXCERPT_LENGTH);
+		expect(notes[0].links).toEqual([linkedId]);
+	});
+
+	it('passes tag progress along', async () => {
+		mockLinkExtractorInstance.extractLinks.mockReturnValue([]);
+		mockTagRepositoryInstance.getTagsForNotes.mockResolvedValue({ map: {}, truncated: false });
+		const onProgress = jest.fn();
+		const note = { id: 'n1', parent_id: 'p1', title: 'T', body: '', created_time: 0, updated_time: 1 };
+
+		await preprocessor.process([note], onProgress);
+
+		expect(mockTagRepositoryInstance.getTagsForNotes).toHaveBeenCalledWith(['n1'], onProgress);
+	});
+
 	it('handles notes with no links and no tags', async () => {
 		mockLinkExtractorInstance.extractLinks.mockReturnValue([]);
 
-		mockTagRepositoryInstance.getNoteTagsMap.mockResolvedValue({ map: {}, truncated: false });
+		mockTagRepositoryInstance.getTagsForNotes.mockResolvedValue({ map: {}, truncated: false });
 
 		const notes = [
 			{
@@ -101,7 +138,7 @@ describe('NotePreprocessor', () => {
 			},
 		];
 
-		const result = await preprocessor.process(notes);
+		const { notes: result } = await preprocessor.process(notes);
 
 		expect(result[0]).toMatchObject({
 			id: 'n1',
@@ -113,7 +150,7 @@ describe('NotePreprocessor', () => {
 	it('handles undefined body', async () => {
 		mockLinkExtractorInstance.extractLinks.mockReturnValue([]);
 
-		mockTagRepositoryInstance.getNoteTagsMap.mockResolvedValue({ map: {}, truncated: false });
+		mockTagRepositoryInstance.getTagsForNotes.mockResolvedValue({ map: {}, truncated: false });
 
 		const notes = [
 			{
@@ -126,7 +163,7 @@ describe('NotePreprocessor', () => {
 			} as any,
 		];
 
-		const result = await preprocessor.process(notes);
+		const { notes: result } = await preprocessor.process(notes);
 
 		expect(result[0].links).toEqual([]);
 
@@ -154,7 +191,7 @@ describe('NotePreprocessor', () => {
 
 			expect(result).toMatchObject({ id: 'note1', links: ['abc'], tags: ['tag1'] });
 			expect(mockTagRepositoryInstance.getTagsForNote).toHaveBeenCalledWith('note1');
-			expect(mockTagRepositoryInstance.getNoteTagsMap).not.toHaveBeenCalled();
+			expect(mockTagRepositoryInstance.getTagsForNotes).not.toHaveBeenCalled();
 		});
 
 		it('throws instead of silently committing a truncated tag list', async () => {

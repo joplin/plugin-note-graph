@@ -5,6 +5,7 @@ import { EmbeddedNote } from '../embeddings/Types';
 import { GraphData, GraphEdge, GraphNode, RenderedEdge } from './types';
 import { LouvainDetector } from './LouvainDetector';
 import { CentralityScorer } from './CentralityScorer';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 const VERY_SHORT_BODY_CHARS = 20;
 
@@ -16,7 +17,8 @@ export class GraphBuilder {
 	public constructor(
 		edgeFactory = new EdgeFactory(),
 		louvainDetector = new LouvainDetector(),
-		centralityScorer = new CentralityScorer()
+		centralityScorer = new CentralityScorer(),
+		private readonly logger: Logger = consoleLogger
 	) {
 		this.edgeFactory = edgeFactory;
 		this.louvainDetector = louvainDetector;
@@ -111,7 +113,7 @@ export class GraphBuilder {
 			const community = communities.get(note.id);
 			const size = sizes.get(note.id);
 			if (community === undefined || size === undefined) {
-				console.error(
+				this.logger.error(
 					`Note ${note.id} missing from community or size map (expected every note to be covered); defaulting to community 0, size 1.`
 				);
 			}
@@ -151,7 +153,7 @@ export class GraphBuilder {
 		const maxDegree = Math.max(1, ...degreeMap.values());
 		const communityCount = new Set(communities.values()).size;
 
-		console.info(
+		this.logger.info(
 			`Graph built: ${nodes.length} nodes, ${visibleEdges.length} edges ` +
 				`(${isolatedCount} isolated, max degree ${maxDegree}, ${communityCount} communities)`
 		);

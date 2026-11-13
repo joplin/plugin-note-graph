@@ -25,6 +25,11 @@ class FakeConnection implements IVectorDatabase {
 	public async run(sql: string, params: unknown[]): Promise<void> {
 		if (sql.includes('DELETE FROM graph_cache')) {
 			this.graphRow = null;
+		} else if (sql.includes('DELETE FROM enrichment_cache')) {
+			const [kind, id] = params as [string, string];
+			this.enrichmentRows = this.enrichmentRows.filter(
+				(row) => !(row.kind === kind && row.id === id)
+			);
 		} else if (sql.includes('INTO graph_cache')) {
 			const [notesJson, graphJson] = params as [string, string, number];
 			this.graphRow = { notes_json: notesJson, graph_json: graphJson };
@@ -97,6 +102,55 @@ const graphData: GraphData = {
 	],
 	edges: [],
 };
+
+describe('GraphCacheRepository lifecycle', () => {
+	it('prunes labels for notes that no longer exist, for both nodes and edges', async () => {
+		const repo = new GraphCacheRepository(new FakeConnection());
+		const enrichment = { updatedTime: 1, enrichment: {} };
+		await repo.saveEnrichments([
+			{ kind: 'node', id: 'keep', ...enrichment },
+			{ kind: 'node', id: 'gone', ...enrichment },
+			{ kind: 'edge', id: 'keep::keep2::semantic', ...enrichment },
+			{ kind: 'edge', id: 'keep::gone::semantic', ...enrichment },
+		]);
+
+		await repo.pruneEnrichments(new Set(['keep', 'keep2']));
+
+		const remaining = (await repo.loadEnrichments()).map((record) => record.id);
+		expect(remaining).toEqual(['keep', 'keep::keep2::semantic']);
+	});
+
+	it('prunes in a single transaction, so many deletions cost one disk commit', async () => {
+		const connection = new FakeConnection();
+		const statements: string[] = [];
+		const run = connection.run.bind(connection);
+		connection.run = async (sql: string, params: unknown[]) => {
+			statements.push(sql);
+			return run(sql, params);
+		};
+		const repo = new GraphCacheRepository(connection);
+		await repo.saveEnrichments([
+			{ kind: 'node', id: 'a', updatedTime: 1, enrichment: {} },
+			{ kind: 'node', id: 'b', updatedTime: 1, enrichment: {} },
+		]);
+		statements.length = 0;
+
+		await repo.pruneEnrichments(new Set());
+
+		expect(statements[0]).toBe('BEGIN TRANSACTION');
+		expect(statements[statements.length - 1]).toBe('COMMIT');
+		expect(statements.filter((sql) => sql.includes('DELETE'))).toHaveLength(2);
+	});
+
+	it('reports whether any labels are stored', async () => {
+		const repo = new GraphCacheRepository(new FakeConnection());
+		await expect(repo.hasEnrichments()).resolves.toBe(false);
+
+		await repo.saveEnrichments([{ kind: 'node', id: 'a', updatedTime: 1, enrichment: {} }]);
+
+		await expect(repo.hasEnrichments()).resolves.toBe(true);
+	});
+});
 
 describe('GraphCacheRepository', () => {
 	let db: FakeConnection;

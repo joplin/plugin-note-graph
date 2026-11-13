@@ -1,5 +1,6 @@
 import joplin from 'api';
 import { Folder, FolderRepository } from '../../data/FolderRepository';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 export type ScopeMode = 'all' | 'current' | 'selected';
 
@@ -20,7 +21,10 @@ export function currentScopeKey(folderId: string | null): string {
 }
 
 export class NoteScopeResolver {
-	public constructor(private readonly folderRepository = new FolderRepository()) {}
+	public constructor(
+		private readonly folderRepository = new FolderRepository(),
+		private readonly logger: Logger = consoleLogger
+	) {}
 
 	public async resolve(settings: ScopeSettings): Promise<ResolvedScope> {
 		if (settings.mode === 'all') {
@@ -29,7 +33,7 @@ export class NoteScopeResolver {
 
 		const { folders, truncated } = await this.folderRepository.getAllFolders();
 		if (truncated) {
-			console.error(
+			this.logger.error(
 				'Note Graph scope: notebook list is incomplete; some notebooks may be missing from the scope.'
 			);
 		}
@@ -43,7 +47,7 @@ export class NoteScopeResolver {
 	private async resolveCurrent(folders: Folder[]): Promise<ResolvedScope> {
 		const current = await joplin.workspace.selectedFolder().catch(() => null);
 		if (!current) {
-			console.info(
+			this.logger.info(
 				'Note Graph scope: "current notebook" is selected but no notebook is open; showing all notebooks instead.'
 			);
 			return ALL_SCOPE;
@@ -58,7 +62,7 @@ export class NoteScopeResolver {
 		const roots = folders.filter((f) => wantedIds.has(f.id));
 
 		if (roots.length === 0) {
-			console.info(
+			this.logger.info(
 				'Note Graph scope: none of the selected notebook IDs matched an existing notebook; showing all notebooks instead.'
 			);
 			return ALL_SCOPE;

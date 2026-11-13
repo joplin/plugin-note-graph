@@ -4,6 +4,7 @@ import { GraphData, GraphNode, RenderedEdge } from './graph/types';
 import { GraphDiffer, GraphDiff } from './graph/GraphDiffer';
 import { clampSize } from './graph/CentralityScorer';
 import { VectorRepository } from '../data/Database/VectorRepository';
+import { BODY_EXCERPT_LENGTH } from '../data/NotePreprocessor';
 import { GraphCacheRepository, PersistedEnrichment } from '../data/Database/GraphCacheRepository';
 import { ProviderResolver } from './embeddings/ProviderResolver';
 import { EmbeddingOrchestrator } from './embeddings/Orchestrator';
@@ -15,6 +16,7 @@ import {
 	isLlmEnrichmentEnabled,
 	getSimilaritySettings,
 } from './settings/GraphSettings';
+import { Logger, consoleLogger } from '../utils/Logger';
 
 export interface SemanticBuildResult {
 	graphData: GraphData;
@@ -39,12 +41,15 @@ export class AnalysisController {
 	private currentOrchestrator: EmbeddingOrchestrator | null = null;
 	private enrichmentInFlight: Promise<GraphData | null> | null = null;
 	private currentScopeKey = 'all';
+	private cachePersistenceEnabled = true;
 
 	public constructor(
 		private readonly builder = new GraphBuilder(),
 		private readonly graphCache: GraphCacheRepository = new GraphCacheRepository(),
 		private readonly graphDiffer: GraphDiffer = new GraphDiffer(),
-		private readonly enrichmentService: LLMEnricher = new LLMEnricher()
+		private readonly enrichmentService: LLMEnricher = new LLMEnricher(),
+		private readonly vectorStore: VectorRepository = new VectorRepository(),
+		private readonly logger: Logger = consoleLogger
 	) {}
 
 	public getLastDiff(): GraphDiff | null {
@@ -69,9 +74,9 @@ export class AnalysisController {
 
 	public cancelCurrentRun(): void {
 		if (this.enrichmentInFlight) {
-			console.info('LLM enrichment: cancelled by user.');
+			this.logger.info('LLM enrichment: cancelled by user.');
 		} else if (this.currentOrchestrator) {
-			console.info('AI analysis: cancelled by user.');
+			this.logger.info('AI analysis: cancelled by user.');
 		}
 		this.currentOrchestrator?.cancel();
 		++this.runToken;
@@ -90,16 +95,21 @@ export class AnalysisController {
 		this.currentScopeKey = scopeKey;
 	}
 
+	/** Disable while the loaded notes are incomplete, so a partial graph can't replace a good cached one. */
+	public setCachePersistenceEnabled(enabled: boolean): void {
+		this.cachePersistenceEnabled = enabled;
+	}
+
 	public async loadFromCache(): Promise<GraphData | null> {
 		try {
 			const cached = await this.graphCache.loadGraph();
 			if (!cached) return null;
-			this.lastNotes = cached.notes;
+			this.lastNotes = this.trimOversizedBodies(cached.notes);
 			this.lastGraphData = cached.graphData;
 			this.seedEnrichmentCache(cached.notes, cached.graphData);
 			return cached.graphData;
 		} catch (e) {
-			console.error('Failed to load cached graph, starting fresh:', e);
+			this.logger.error('Failed to load cached graph, starting fresh:', e);
 			return null;
 		}
 	}
@@ -126,19 +136,20 @@ export class AnalysisController {
 			}
 			this.enrichmentService.seedCache(nodeSeeds, edgeSeeds);
 		} catch (e) {
-			console.error('Failed to seed LLM enrichment cache from disk:', e);
+			this.logger.error('Failed to seed LLM enrichment cache from disk:', e);
 		}
 	}
 
 	public async migrateCachedEnrichment(): Promise<void> {
 		try {
+			if (await this.graphCache.hasEnrichments()) return;
 			const cached = await this.graphCache.loadGraph();
 			if (!cached) return;
 			const records = this.buildEnrichmentRecords(cached.notes, cached.graphData);
 			if (records.length === 0) return;
 			await this.graphCache.saveEnrichments(records);
 		} catch (e) {
-			console.error('Failed to migrate cached LLM enrichment:', e);
+			this.logger.error('Failed to migrate cached LLM enrichment:', e);
 		}
 	}
 
@@ -225,7 +236,7 @@ export class AnalysisController {
 
 		if (!embeddedNotes) {
 			if (options.avoidSemanticDowngrade && hadSemanticGraph && aiWasEnabled) {
-				console.info(
+				this.logger.info(
 					'Incremental update: AI re-embed failed; keeping the existing semantic graph instead of downgrading it.',
 					reason
 				);
@@ -239,7 +250,7 @@ export class AnalysisController {
 			return { graphData, usedAi: false, fallbackReason: reason };
 		}
 
-		console.info(
+		this.logger.info(
 			`AI analysis: ${embeddedNotes.length}/${notes.length} notes embedded, building semantic graph.`
 		);
 		const { threshold, topK } = await getSimilaritySettings();
@@ -274,7 +285,7 @@ export class AnalysisController {
 		}
 		const token = ++this.runToken;
 		const { threshold, topK } = await getSimilaritySettings();
-		console.info(
+		this.logger.info(
 			`Recomputing graph: threshold=${threshold}, topK=${topK}, ${this.lastEmbeddedNotes.length} cached vectors.`
 		);
 		const enrichmentEnabled = await isLlmEnrichmentEnabled();
@@ -347,6 +358,21 @@ export class AnalysisController {
 		return result ? result.graphData : null;
 	}
 
+	/** Removes stored data for notes gone from the vault. Only pass a complete, whole-vault list. */
+	public pruneDeletedNotes(noteIdsToKeep: Set<string>): void {
+		this.vectorStore.pruneExcept(noteIdsToKeep).catch((e) => {
+			this.logger.error('Failed to prune the vector cache:', e);
+		});
+		this.graphCache.pruneEnrichments(noteIdsToKeep).catch((e) => {
+			this.logger.error('Failed to prune the label cache:', e);
+		});
+	}
+
+	private trimOversizedBodies(notes: Note[]): Note[] {
+		if (notes.every((note) => (note.body ?? '').length <= BODY_EXCERPT_LENGTH)) return notes;
+		return notes.map((note) => ({ ...note, body: (note.body ?? '').slice(0, BODY_EXCERPT_LENGTH) }));
+	}
+
 	private hasSemanticEdges(): boolean {
 		return !!this.lastGraphData?.edges.some((e) => e.data.type === 'semantic');
 	}
@@ -386,7 +412,7 @@ export class AnalysisController {
 		}
 		if (records.length === 0) return;
 		this.graphCache.saveEnrichments(records).catch((e) => {
-			console.error('Failed to persist LLM enrichment cache:', e);
+			this.logger.error('Failed to persist LLM enrichment cache:', e);
 		});
 	}
 
@@ -422,12 +448,12 @@ export class AnalysisController {
 	}
 
 	private persistCache(): void {
-		if (!this.lastNotes || !this.lastGraphData) return;
+		if (!this.cachePersistenceEnabled || !this.lastNotes || !this.lastGraphData) return;
 		this.graphCache.saveGraph(this.lastNotes, this.lastGraphData).catch((e) => {
-			console.error('Failed to persist graph cache:', e);
+			this.logger.error('Failed to persist graph cache:', e);
 		});
 		this.graphCache.saveScopeKey(this.currentScopeKey).catch((e) => {
-			console.error('Failed to persist graph cache scope key:', e);
+			this.logger.error('Failed to persist graph cache scope key:', e);
 		});
 	}
 
@@ -502,7 +528,7 @@ export class AnalysisController {
 			}
 			return this.applyEnrichmentResult(graphData, enrichment);
 		} catch (e) {
-			console.error('LLM enrichment failed; rendering the graph without it.', e);
+			this.logger.error('LLM enrichment failed; rendering the graph without it.', e);
 			return graphData;
 		}
 	}
@@ -521,7 +547,7 @@ export class AnalysisController {
 			const target = noteById.get(edge.data.target);
 			if (!source || !target) {
 				const missing = [!source && 'source', !target && 'target'].filter(Boolean).join(' and ');
-				console.error(`LLM enrichment: semantic edge is missing its ${missing} note; skipping it.`, edge.data);
+				this.logger.error(`LLM enrichment: semantic edge is missing its ${missing} note; skipping it.`, edge.data);
 				continue;
 			}
 			for (const note of [source, target]) {
@@ -563,7 +589,7 @@ export class AnalysisController {
 			}
 			return this.applyEnrichmentResult(graphData, enrichment);
 		} catch (e) {
-			console.error('LLM enrichment cache replay failed; keeping the graph without it.', e);
+			this.logger.error('LLM enrichment cache replay failed; keeping the graph without it.', e);
 			return graphData;
 		}
 	}
@@ -604,13 +630,13 @@ export class AnalysisController {
 			provider = await ProviderResolver.resolveWithValidation();
 		} catch (e) {
 			const reason = e instanceof Error ? e.message : String(e);
-			console.error('AI analysis unavailable, falling back to structural graph:', e);
+			this.logger.error('AI analysis unavailable, falling back to structural graph:', e);
 			return { embeddedNotes: null, reason, aiWasEnabled: true };
 		}
 
-		const orchestrator = new EmbeddingOrchestrator();
+		const orchestrator = new EmbeddingOrchestrator(this.logger);
 		orchestrator.setProvider(provider);
-		orchestrator.setCache(new VectorRepository());
+		orchestrator.setCache(this.vectorStore);
 		if (onProgress) {
 			orchestrator.setOnProgress(onProgress);
 		}
@@ -625,7 +651,7 @@ export class AnalysisController {
 		}
 
 		if (embeddedNotes.length === 0) {
-			console.error(
+			this.logger.error(
 				'AI analysis produced no embeddings, falling back to structural graph:',
 				errors
 			);

@@ -68,12 +68,15 @@ the "Stability" note in [Graph model](graph-model.md).
 
 ## Notes, tags, or events look incomplete in a very large vault
 
-Several fetches are capped as a safety measure (see [Data
-pipeline](data-pipeline.md) and [Incremental
-updates](incremental-updates.md) for the exact numbers). Hitting a cap logs
-a message and returns a partial result rather than failing outright; a
-subsequent sync sweep picks up anything missed. Check the developer console
-for the corresponding log line.
+Notes and tags are fetched without a cap, and a failed request is retried. If a
+page still fails, the panel shows a notice that the graph is incomplete, and
+that partial graph is not saved over the cached one. Run **Show Note Graph**
+again to retry. If no notes can be read at all, the panel says so and retries
+shortly, and a graph already on screen is left as it is.
+
+The sync sweeps for `/events` and embeddings have their own page safety caps
+(see [Incremental updates](incremental-updates.md)). Hitting one logs a message,
+and the next sync picks up anything missed.
 
 ## Reinstalling after a build
 

@@ -1,6 +1,7 @@
 import { IVectorDatabase, VectorDatabase } from './VectorDatabase';
 import { Note } from '../Types';
 import { GraphData } from '../../services/graph/types';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 const DB_FILE_NAME = 'note-graph-cache.sqlite';
 
@@ -75,7 +76,8 @@ export class GraphCacheRepository {
 			SYNC_STATE_SCHEMA,
 			SCOPE_STATE_SCHEMA,
 			ENRICHMENT_CACHE_SCHEMA,
-		])
+		]),
+		private readonly logger: Logger = consoleLogger
 	) {}
 
 	public async loadGraph(): Promise<{ notes: Note[]; graphData: GraphData } | null> {
@@ -178,6 +180,44 @@ export class GraphCacheRepository {
 		});
 	}
 
+	public async hasEnrichments(): Promise<boolean> {
+		await this.db.open();
+		const rows = await this.db.all<{ id: string }>(
+			'SELECT id FROM enrichment_cache LIMIT 1',
+			[]
+		);
+		return rows.length > 0;
+	}
+
+	/** Removes labels for notes that no longer exist. Only call this with a complete, whole-vault list. */
+	public async pruneEnrichments(noteIdsToKeep: Set<string>): Promise<void> {
+		await this.db.open();
+		const rows = await this.db.all<{ kind: string; id: string }>(
+			'SELECT kind, id FROM enrichment_cache',
+			[]
+		);
+		const stale = rows.filter((row) =>
+			row.kind === 'node'
+				? !noteIdsToKeep.has(row.id)
+				: row.id
+						.split('::')
+						.slice(0, 2)
+						.some((noteId) => !noteIdsToKeep.has(noteId))
+		);
+		if (stale.length === 0) return;
+
+		await this.enqueueWrite(() =>
+			this.inTransaction(async () => {
+				for (const row of stale) {
+					await this.db.run('DELETE FROM enrichment_cache WHERE kind = ? AND id = ?', [
+						row.kind,
+						row.id,
+					]);
+				}
+			})
+		);
+	}
+
 	public async loadEnrichments(): Promise<PersistedEnrichment[]> {
 		await this.db.open();
 		const rows = await this.db.all<EnrichmentCacheRow>(
@@ -196,8 +236,7 @@ export class GraphCacheRepository {
 		if (records.length === 0) return Promise.resolve();
 		return this.enqueueWrite(async () => {
 			await this.db.open();
-			await this.db.run('BEGIN TRANSACTION', []);
-			try {
+			await this.inTransaction(async () => {
 				for (const record of records) {
 					await this.db.run(
 						`INSERT INTO enrichment_cache (kind, id, updated_time, enrichment_json)
@@ -208,19 +247,27 @@ export class GraphCacheRepository {
 						[record.kind, record.id, record.updatedTime, JSON.stringify(record.enrichment)]
 					);
 				}
-				await this.db.run('COMMIT', []);
-			} catch (e) {
-				try {
-					await this.db.run('ROLLBACK', []);
-				} catch (rollbackError) {
-					console.error(
-						'Enrichment cache rollback failed after a write error:',
-						rollbackError
-					);
-				}
-				throw e;
-			}
+			});
 		});
+	}
+
+	/** Many writes in one transaction cost one disk commit instead of one each, and apply all together or not at all. */
+	private async inTransaction(work: () => Promise<void>): Promise<void> {
+		await this.db.run('BEGIN TRANSACTION', []);
+		try {
+			await work();
+			await this.db.run('COMMIT', []);
+		} catch (e) {
+			try {
+				await this.db.run('ROLLBACK', []);
+			} catch (rollbackError) {
+				this.logger.error(
+					'Enrichment cache rollback failed after a write error:',
+					rollbackError
+				);
+			}
+			throw e;
+		}
 	}
 
 	private enqueueWrite(write: () => Promise<void>): Promise<void> {

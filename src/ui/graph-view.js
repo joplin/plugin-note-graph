@@ -108,6 +108,7 @@ var focusBtnEl;
 var focusActive = false;
 var focusIsAutoFollowing = false;
 var pendingFocusNoteId = null;
+var graphNotice = null;
 
 function focusNeighborhoodOf(node) {
 	var hood = node.closedNeighborhood().add(node.neighborhood().nodes().neighborhood());
@@ -370,8 +371,23 @@ function showStatus(text) {
 }
 
 function hideStatus() {
-	if (statusEl) {
+	if (!statusEl) return;
+	if (graphNotice) {
+		showStatus(graphNotice);
+	} else {
 		statusEl.style.display = 'none';
+	}
+}
+
+function applyGraphNotice(notice) {
+	var next = notice || null;
+	if (next === graphNotice) return;
+	var wasShowingOldNotice = statusEl && statusEl.textContent === graphNotice;
+	graphNotice = next;
+	if (next) {
+		showStatus(next);
+	} else if (wasShowingOldNotice) {
+		hideStatus();
 	}
 }
 
@@ -994,6 +1010,7 @@ function requestData() {
 			if (response && response.type === 'graph-data') {
 				handleGraphUpdate('graph-data', response);
 			}
+			applyGraphNotice(response && response.notice);
 			if (response && response.progress) {
 				var label =
 					response.progress.stage === 'enrichment-progress'

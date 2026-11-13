@@ -7,13 +7,11 @@ import { GraphCacheRepository } from '../../data/Database/GraphCacheRepository';
 import { AnalysisController } from '../AnalysisController';
 import { GraphDiff } from '../graph/GraphDiffer';
 import { GraphData } from '../graph/types';
-import {
-	JoplinAiApi,
-	isIndexUsable,
-	retryWithBackoff,
-} from '../embeddings/providers/JoplinNativeProvider';
+import { JoplinAiApi, isIndexUsable } from '../embeddings/providers/JoplinNativeProvider';
+import { retryWithBackoff } from '../../utils/retryWithBackoff';
 import { isAiAnalysisEnabled } from '../settings/GraphSettings';
 import { ResolvedScope } from '../settings/NoteScopeResolver';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 const UNSCOPED: ResolvedScope = { folderIds: null, scopeKey: 'all' };
 
@@ -50,7 +48,8 @@ export class IncrementalUpdater {
 		private readonly onRetriesExhausted: () => void = () => {},
 		private readonly now: () => number = Date.now,
 		private readonly getCurrentScope: () => ResolvedScope = () => UNSCOPED,
-		private readonly onEnrichmentProgress: (progress: { current: number; total: number }) => void = () => {}
+		private readonly onEnrichmentProgress: (progress: { current: number; total: number }) => void = () => {},
+		private readonly logger: Logger = consoleLogger
 	) {}
 
 	public handleNoteChange(event: { id: string; event: number }): void {
@@ -76,7 +75,7 @@ export class IncrementalUpdater {
 
 			if (aiEnabled) {
 				if (this.now() - this.lastEmbeddingsSweepAt < EMBEDDINGS_SWEEP_MIN_INTERVAL_MS) {
-					console.info('Embeddings sweep throttled; relying on /events for this sync.');
+					this.logger.info('Embeddings sweep throttled; relying on /events for this sync.');
 					embeddingsSweepFailed = true;
 				} else {
 					try {
@@ -84,7 +83,7 @@ export class IncrementalUpdater {
 						this.lastEmbeddingsSweepAt = this.now();
 						for (const id of upsertIds) this.scheduleUpsert(id);
 					} catch (e) {
-						console.error(
+						this.logger.error(
 							'Embeddings sweep failed, falling back to /events for this sync:',
 							e
 						);
@@ -101,7 +100,7 @@ export class IncrementalUpdater {
 
 			await this.flush();
 		} catch (e) {
-			console.error('Incremental sync sweep failed, falling back to a full reload:', e);
+			this.logger.error('Incremental sync sweep failed, falling back to a full reload:', e);
 			await this.onFullReloadNeeded();
 		}
 	}
@@ -131,7 +130,7 @@ export class IncrementalUpdater {
 		}
 
 		if (pageCount >= EMBEDDINGS_MAX_PAGES) {
-			console.info(
+			this.logger.info(
 				`Embeddings sweep hit the ${EMBEDDINGS_MAX_PAGES}-page safety cap; remaining changes will be picked up on the next sync.`
 			);
 		}
@@ -244,7 +243,7 @@ export class IncrementalUpdater {
 					if (this.consecutiveRetrySkips < MAX_CONSECUTIVE_RETRY_SKIPS) {
 						this.scheduleFlush();
 					} else {
-						console.info(
+						this.logger.info(
 							`Giving up automatic retry after ${this.consecutiveRetrySkips} consecutive skipped updates; will retry on the next edit or sync.`
 						);
 						this.onRetriesExhausted();
@@ -257,7 +256,7 @@ export class IncrementalUpdater {
 
 			this.consecutiveRetrySkips = 0;
 			const removedCount = removedIds.length + discoveredRemovals.length;
-			console.info(
+			this.logger.info(
 				`Incremental update applied: ${upserts.length} upserted, ${removedCount} removed.`
 			);
 
@@ -267,15 +266,15 @@ export class IncrementalUpdater {
 			}
 
 			this.runEnrichmentFollowUp().catch((e) => {
-				console.error('LLM enrichment follow-up failed:', e);
+				this.logger.error('LLM enrichment follow-up failed:', e);
 			});
 		} catch (e) {
 			this.consecutiveRetrySkips = 0;
-			console.error('Incremental flush failed, falling back to a full reload:', e);
+			this.logger.error('Incremental flush failed, falling back to a full reload:', e);
 			try {
 				await this.onFullReloadNeeded();
 			} catch (fallbackError) {
-				console.error(
+				this.logger.error(
 					'Full-reload fallback also failed after an incremental flush error:',
 					fallbackError
 				);
