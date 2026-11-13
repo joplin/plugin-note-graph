@@ -84,7 +84,8 @@ const analysisController = new AnalysisController(
 	new LLMEnricher({ logger }),
 	new VectorRepository(),
 	GRAPH_CACHE_WRITE_DELAY_MS,
-	logger
+	logger,
+	() => graphPresenter.drawnNoteIds()
 );
 const noteScopeResolver = new NoteScopeResolver(
 	new FolderRepository(DATA_API_RETRY, logger),
@@ -479,6 +480,7 @@ const retryEmbedding = async (): Promise<void> => {
 const retryEnrichment = async (): Promise<void> => {
 	try {
 		analysisController.clearCancellation();
+		analysisController.allowMoreEnrichment();
 		await runEnrichmentFollowUp();
 	} catch (error) {
 		logger.error('Failed to retry AI enrichment:', error);
