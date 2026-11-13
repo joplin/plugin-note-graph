@@ -9,6 +9,8 @@ const MAX_ATTEMPTS_PER_BATCH = 4;
 const RETRY_DELAY_MS = 1000;
 const MAX_EXISTING_CATEGORIES = 40;
 const LOG_EXCERPT_LENGTH = 600;
+/** A large vault can have tens of thousands of semantic edges, each a paid request on a remote provider, so one round labels this many at most. `BackgroundLabeler` paces the rounds. */
+const MAX_EDGES_PER_SESSION = 200;
 
 interface ChatApi {
 	chat: (messages: ChatMessage[], options?: ChatOptions) => Promise<unknown>;
@@ -25,6 +27,9 @@ export interface EnrichmentEdgeInput {
 	source: string;
 	target: string;
 	updatedTime: number;
+	score?: number;
+	/** Drawn in the view the user is looking at, so it is explained before the rest. */
+	onScreen?: boolean;
 }
 
 export interface EnrichmentInput {
@@ -66,6 +71,7 @@ interface Batch {
 export interface LLMEnricherConfig {
 	edgesPerBatch?: number;
 	maxAttemptsPerBatch?: number;
+	maxEdgesPerSession?: number;
 	logger?: Logger;
 }
 
@@ -82,17 +88,24 @@ export class LLMEnricher {
 	private readonly dirtyEdges = new Map<string, CachedEnrichment<EdgeEnrichment>>();
 	private readonly edgesPerBatch: number;
 	private readonly maxAttemptsPerBatch: number;
+	private readonly maxEdgesPerSession: number;
 	private readonly logger: Logger;
+	private edgesLabeledThisSession = 0;
 
 	public constructor(config: LLMEnricherConfig = {}) {
 		this.edgesPerBatch = config.edgesPerBatch ?? EDGES_PER_BATCH;
 		this.maxAttemptsPerBatch = config.maxAttemptsPerBatch ?? MAX_ATTEMPTS_PER_BATCH;
+		this.maxEdgesPerSession = config.maxEdgesPerSession ?? MAX_EDGES_PER_SESSION;
 		this.logger = config.logger ?? consoleLogger;
 	}
 
-	public clearCache(): void {
-		this.nodeCache.clear();
-		this.edgeCache.clear();
+	/** Lets another batch of edges be labeled, for when the user explicitly asks for more. */
+	public resetSessionBudget(): void {
+		this.edgesLabeledThisSession = 0;
+	}
+
+	public getSessionBudget(): { used: number; limit: number } {
+		return { used: this.edgesLabeledThisSession, limit: this.maxEdgesPerSession };
 	}
 
 	public seedCache(nodeSeeds: CacheSeed<NodeEnrichment>[], edgeSeeds: CacheSeed<EdgeEnrichment>[]): void {
@@ -160,8 +173,16 @@ export class LLMEnricher {
 				return { nodeEnrichments, edgeEnrichments };
 			}
 
-			const chunks = this.chunk(edgeMisses, this.edgesPerBatch).map((edgeChunk) => this.buildBatch(edgeChunk, input.nodes));
-			this.logger.info(`LLM enrichment: starting, ${edgeMisses.length} edge(s) across ${chunks.length} batch(es).`);
+			const edgesToLabel = this.selectWithinBudget(edgeMisses);
+			if (edgesToLabel.length === 0) {
+				this.logger.info(
+					`LLM enrichment: the limit of ${this.maxEdgesPerSession} labels for this round is used up; ${edgeMisses.length} edge(s) left unlabeled.`
+				);
+				return { nodeEnrichments, edgeEnrichments };
+			}
+
+			const chunks = this.chunk(edgesToLabel, this.edgesPerBatch).map((edgeChunk) => this.buildBatch(edgeChunk, input.nodes));
+			this.logger.info(`LLM enrichment: starting, ${edgesToLabel.length} of ${edgeMisses.length} edge(s) across ${chunks.length} batch(es).`);
 			onProgress?.({ current: 0, total: chunks.length });
 
 			const usedCategories = this.collectCategories();
@@ -174,6 +195,10 @@ export class LLMEnricher {
 				}
 
 				const outcome = await this.runBatch(api, chunks[i], i, chunks.length, this.capCategories(usedCategories), isStale);
+				// A batch that got nothing back, such as during an outage, costs no budget, so the edges can be asked for again.
+				if (outcome.edges.size > 0) {
+					this.edgesLabeledThisSession += chunks[i].prompt.relationships.length;
+				}
 				this.mergeNodeResults(outcome.nodes, chunks[i].index.nodeUpdatedTimeById, nodeEnrichments, nodesWrittenThisRun);
 				this.mergeEdgeResults(outcome.edges, chunks[i].index.edgeUpdatedTimeById, edgeEnrichments);
 				for (const enrichment of outcome.nodes.values()) {
@@ -192,6 +217,18 @@ export class LLMEnricher {
 		}
 
 		return { nodeEnrichments, edgeEnrichments };
+	}
+
+	/** Strongest connections first, since they're the ones most worth explaining. */
+	private selectWithinBudget(edges: EnrichmentEdgeInput[]): EnrichmentEdgeInput[] {
+		const remaining = this.maxEdgesPerSession - this.edgesLabeledThisSession;
+		if (remaining <= 0) return [];
+		return [...edges]
+			.sort(
+				(a, b) =>
+					Number(!!b.onScreen) - Number(!!a.onScreen) || (b.score ?? 0) - (a.score ?? 0)
+			)
+			.slice(0, remaining);
 	}
 
 	private collectCategories(): Set<string> {

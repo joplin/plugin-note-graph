@@ -606,6 +606,26 @@ describe('AnalysisController', () => {
 			expect(controller.getLastGraphData()?.edges[0].data.id).toBe('a::c::semantic');
 		});
 
+		it('marks the connections drawn on screen, so they are explained first', async () => {
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+			const onScreen = new AnalysisController(
+				mockBuilder,
+				mockGraphCache,
+				mockEnricher,
+				mockVectorStore as unknown as VectorRepository,
+				0,
+				undefined,
+				() => new Set(['a', 'b'])
+			);
+			await onScreen.embedAndBuildSemantic([note('a'), note('b')]);
+
+			await onScreen.enrichCurrentGraph();
+
+			const input = mockEnricher.enrich.mock.calls[0][0];
+			expect(input.edges.length).toBeGreaterThan(0);
+			expect(input.edges.every((edge: { onScreen?: boolean }) => edge.onScreen)).toBe(true);
+		});
+
 		it('sends the full note title and body, not the graph node label or a pre-truncated body', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			const longTitle = 'A '.repeat(50);
@@ -660,6 +680,7 @@ describe('AnalysisController', () => {
 					source: 'a',
 					target: 'b',
 					updatedTime: note('a').updated_time,
+					onScreen: false,
 				},
 			]);
 		});
@@ -676,7 +697,7 @@ describe('AnalysisController', () => {
 
 			const input = mockEnricher.enrich.mock.calls[0][0];
 			expect(input.edges).toEqual([
-				{ id: 'a::b::semantic', source: 'a', target: 'b', updatedTime: 200 },
+				{ id: 'a::b::semantic', source: 'a', target: 'b', updatedTime: 200, onScreen: false },
 			]);
 		});
 
@@ -783,6 +804,26 @@ describe('AnalysisController', () => {
 			const second = await secondPromise;
 			expect(second).toBeNull();
 			expect(mockEnricher.enrich).toHaveBeenCalledTimes(2);
+		});
+
+		it('reports a Pass B run as running only while it is in flight', async () => {
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			let finish!: (result: Awaited<ReturnType<typeof mockEnricher.enrich>>) => void;
+			mockEnricher.enrich.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						finish = resolve;
+					})
+			);
+
+			const run = controller.enrichCurrentGraph();
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(controller.isEnrichmentRunning()).toBe(true);
+
+			finish({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
+			await run;
+			expect(controller.isEnrichmentRunning()).toBe(false);
 		});
 	});
 

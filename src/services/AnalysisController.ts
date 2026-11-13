@@ -59,7 +59,9 @@ export class AnalysisController {
 		private readonly vectorStore: VectorRepository = new VectorRepository(),
 		/** Waits this long and writes only the latest graph, so a burst of changes means one write. */
 		private readonly cachePersistDelayMs: number = 0,
-		private readonly logger: Logger = consoleLogger
+		private readonly logger: Logger = consoleLogger,
+		/** The notes in the view the user is looking at, whose connections are explained first. */
+		private readonly onScreenNoteIds: () => ReadonlySet<string> = () => new Set()
 	) {}
 
 	public getLastGraphData(): GraphData | null {
@@ -72,6 +74,10 @@ export class AnalysisController {
 
 	public hasEmbeddedNotes(): boolean {
 		return this.lastEmbeddedNotes !== null;
+	}
+
+	public isEnrichmentRunning(): boolean {
+		return this.enrichmentInFlight !== null;
 	}
 
 	public cancelCurrentRun(): void {
@@ -88,6 +94,11 @@ export class AnalysisController {
 
 	public clearCancellation(): void {
 		this.cancelledAtToken = null;
+	}
+
+	/** Lets Pass B label another batch of edges, after the user asks for it. */
+	public allowMoreEnrichment(): void {
+		this.enrichmentService.resetSessionBudget();
 	}
 
 	public getCurrentNotes(): Note[] {
@@ -756,6 +767,7 @@ export class AnalysisController {
 	): { nodes: Map<string, EnrichmentNodeInput>; edges: EnrichmentEdgeInput[] } {
 		const noteById = new Map(notes.map((note) => [note.id, note]));
 		const semanticEdges = graphData.edges.filter((edge) => edge.data.type === 'semantic');
+		const onScreen = this.onScreenNoteIds();
 
 		const nodeInputs = new Map<string, EnrichmentNodeInput>();
 		const edgeInputs: EnrichmentEdgeInput[] = [];
@@ -781,6 +793,8 @@ export class AnalysisController {
 				source: edge.data.source,
 				target: edge.data.target,
 				updatedTime: Math.max(source.updated_time, target.updated_time),
+				score: edge.data.score,
+				onScreen: onScreen.has(source.id) && onScreen.has(target.id),
 			});
 		}
 		return { nodes: nodeInputs, edges: edgeInputs };

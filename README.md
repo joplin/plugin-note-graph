@@ -96,7 +96,7 @@ Available in the Configuration screen's **Note Graph** section:
 | Max semantic edges per note | 5 | Caps how many semantic connections each note keeps |
 | Enable LLM analysis | Off | Adds Pass B relationship explanations |
 | Retry AI embedding | Off | One-shot: re-runs AI-based semantic analysis, reusing cached embeddings |
-| Retry AI labels | Off | One-shot: retries Pass B for anything still unlabeled |
+| Retry AI labels | Off | One-shot: labels up to 200 more connections straight away; the rest are labeled in the background anyway |
 
 Full details, including how the similarity score and Pass B labels are
 computed, are in [docs/settings.md](docs/settings.md),

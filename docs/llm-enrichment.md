@@ -48,7 +48,13 @@ entirely on that provider:
 
 - **How much is sent.** Only notes and edges that already carry a semantic
   edge are ever sent, in batches of 4, with each note body truncated to 300
-  characters (`MAX_BODY_EXCERPT_LENGTH`). Unchanged notes and edges are
+  characters (`MAX_BODY_EXCERPT_LENGTH`). Edges are labeled in rounds of at most 200,
+  the ones on screen first and then the strongest, because a large vault can have tens
+  of thousands of semantic edges and each batch is a request to your provider. After
+  the first round, `BackgroundLabeler` runs one more round every two minutes until
+  every edge has a label. A round that labels nothing, such as during an outage,
+  doubles the pause, and after three in a row it stops until you ask again.
+  Cancelling labeling stops the rounds too. Unchanged notes and edges are
   served from the in-memory cache and never re-sent, so re-running
   enrichment on a mostly unchanged graph sends very little new text.
 
@@ -138,10 +144,9 @@ Pass B runs, the panel's progress bar reads "Enriching notes" instead of
 ## Retrying missing labels
 
 **Retry AI labels** (`noteGraph.retryEnrichment`) is a one-shot trigger, not
-a persistent toggle: ticking it retries Pass B for anything still
-unlabeled, then unticks itself. It's a no-op if the panel hasn't been
-opened yet, and exists because a batch that exhausts its retries is not
-retried automatically afterward.
+a persistent toggle: ticking it labels up to 200 more edges still missing a label
+straight away, restarts background labeling if it stopped, then unticks itself. It's
+a no-op if the panel hasn't been opened yet.
 
 The plugin also runs this backfill once on its own, right after loading a
 cached graph, if that graph has semantic edges without labels and LLM
