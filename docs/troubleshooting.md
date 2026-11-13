@@ -1,5 +1,14 @@
 # Troubleshooting
 
+## See what the plugin is doing
+
+The ⓘ button in the panel's header opens **What's happening**. It says whether
+your notes have loaded, how many notes have AI data, how many connections have
+an explanation, and lists the latest problems with their time. Where something
+can be retried, it has a button: **Load again**, **Run again**, or **Explain …
+more**. An orange dot on the button means something needs a look, or a problem
+happened since you last opened it.
+
 ## "AI analysis unavailable - showing structural graph"
 
 This status message appears when AI analysis is enabled in settings but the
@@ -45,7 +54,8 @@ simply the expected result. See [Settings reference](settings.md).
 
 The panel opened but hasn't received any graph yet. This is normal for a
 moment on first open of a large vault (notes are still loading and being
-embedded); check the progress bar. If it persists, check the developer
+embedded); check the progress bar. If it persists, open **What's happening**
+(the ⓘ button), or check the developer
 console (**Help -> Toggle Development Tools**) for an error logged by
 `index.ts` or `AnalysisController`.
 
@@ -54,8 +64,8 @@ console (**Help -> Toggle Development Tools**) for an error logged by
 Confirm both **Enable AI-based semantic analysis** and **Enable LLM
 analysis** are on; Pass B has nothing to label without semantic edges from
 Pass A. A batch that fails every retry attempt is simply left unlabeled for
-that run rather than blocking the rest of the graph; tick **Retry AI
-labels** to ask again. See [LLM
+that run rather than blocking the rest of the graph; press **Explain … more**
+in **What's happening**, or tick **Retry AI labels**, to ask again. See [LLM
 enrichment](llm-enrichment.md#retrying-missing-labels). The developer
 console's `LLM enrichment:` log lines say exactly which batch failed and
 why.

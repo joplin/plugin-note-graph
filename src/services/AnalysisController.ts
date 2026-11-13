@@ -76,8 +76,20 @@ export class AnalysisController {
 		return this.lastEmbeddedNotes !== null;
 	}
 
+	public isEmbeddingRunning(): boolean {
+		return this.semanticRunsInFlight > 0;
+	}
+
 	public isEnrichmentRunning(): boolean {
 		return this.enrichmentInFlight !== null;
+	}
+
+	public getEmbeddedNoteCount(): number {
+		return this.lastEmbeddedNotes?.length ?? 0;
+	}
+
+	public getLabelBudget(): { used: number; limit: number } {
+		return this.enrichmentService.getSessionBudget();
 	}
 
 	public cancelCurrentRun(): void {
