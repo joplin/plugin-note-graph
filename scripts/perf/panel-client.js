@@ -321,6 +321,44 @@
 				});
 			})
 			.then(function () {
+				return step("What's happening panel", function () {
+					var titles = function () {
+						return Array.prototype.map.call(
+							document.querySelectorAll('#graph-info-items .info-item__title'),
+							function (el) {
+								return el.textContent;
+							}
+						);
+					};
+					clickById('graph-info-btn');
+					return waitFor('the status items', function () {
+						return titles().length >= 3;
+					})
+						.then(function () {
+							expectEqual(
+								'It lists notes, AI and explanations',
+								titles().slice(0, 3).join(' | '),
+								'Notes | Similar notes (AI) | Connection explanations (AI)'
+							);
+							expectTrue(
+								'It says how many notes are loaded',
+								/notes loaded/.test(
+									document.querySelector('#graph-info-items .info-item__text')
+										.textContent
+								)
+							);
+							return snapshot('4-whats-happening');
+						})
+						.then(function () {
+							document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+							expectTrue(
+								'Escape closes it',
+								document.getElementById('graph-info-panel').hidden
+							);
+						});
+				});
+			})
+			.then(function () {
 				return step(
 					'Focus mode on and off',
 					function () {

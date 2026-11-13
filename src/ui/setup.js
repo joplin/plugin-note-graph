@@ -390,10 +390,187 @@
 		});
 	};
 
+	const STATUS_POLL_OPEN_MS = 2000;
+	const STATUS_POLL_CLOSED_MS = 15000;
+
+	const formatTime = (time) =>
+		new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+	const bindInfoPanel = () => {
+		const btn = document.getElementById('graph-info-btn');
+		const panel = document.getElementById('graph-info-panel');
+		const badge = document.getElementById('graph-info-badge');
+		const itemsEl = document.getElementById('graph-info-items');
+		const problemsEl = document.getElementById('graph-info-problems');
+		const clearBtn = document.getElementById('graph-info-clear');
+		const updatedEl = document.getElementById('graph-info-updated');
+		if (
+			!btn ||
+			!panel ||
+			!badge ||
+			!itemsEl ||
+			!problemsEl ||
+			typeof webviewApi === 'undefined'
+		) {
+			return;
+		}
+
+		let report = null;
+		let lastSeenProblemTime = 0;
+		let pollTimer = null;
+
+		const newestProblemTime = () =>
+			report && report.problems.length > 0 ? report.problems[0].time : 0;
+
+		const updateBadge = () => {
+			const needsAttention =
+				!!report &&
+				(report.level === 'attention' || newestProblemTime() > lastSeenProblemTime);
+			badge.hidden = !needsAttention;
+			btn.setAttribute(
+				'aria-label',
+				needsAttention ? "What's happening (needs attention)" : "What's happening"
+			);
+		};
+
+		const renderItem = (item) => {
+			const li = document.createElement('li');
+			li.className = 'info-item info-item--' + item.level;
+			const dot = document.createElement('span');
+			dot.className = 'info-item__dot';
+			const body = document.createElement('div');
+			body.className = 'info-item__body';
+			const title = document.createElement('div');
+			title.className = 'info-item__title';
+			title.textContent = item.title;
+			const text = document.createElement('div');
+			text.className = 'info-item__text';
+			text.textContent = item.text;
+			body.append(title, text);
+			if (item.action) {
+				const action = document.createElement('button');
+				action.type = 'button';
+				action.className = 'info-item__action';
+				action.textContent = item.action.label;
+				action.addEventListener('click', () => runAction(item.action.id));
+				body.append(action);
+			}
+			li.append(dot, body);
+			return li;
+		};
+
+		const renderProblem = (problem) => {
+			const li = document.createElement('li');
+			li.className = 'info-problem info-problem--' + problem.level;
+			const time = document.createElement('span');
+			time.className = 'info-problem__time';
+			time.textContent = formatTime(problem.time);
+			const text = document.createElement('span');
+			text.className = 'info-problem__text';
+			text.textContent = problem.text;
+			li.append(time, text);
+			if (problem.count > 1) {
+				const repeats = document.createElement('span');
+				repeats.className = 'info-problem__count';
+				repeats.textContent = '×' + problem.count;
+				repeats.title = 'Happened ' + problem.count + ' times in a row';
+				li.append(repeats);
+			}
+			return li;
+		};
+
+		const render = () => {
+			if (!report) return;
+			itemsEl.replaceChildren(...report.items.map(renderItem));
+			if (report.problems.length > 0) {
+				problemsEl.replaceChildren(...report.problems.map(renderProblem));
+			} else {
+				const empty = document.createElement('li');
+				empty.className = 'info-problem info-problem--none';
+				empty.textContent = 'Nothing has gone wrong.';
+				problemsEl.replaceChildren(empty);
+			}
+			if (clearBtn) clearBtn.hidden = report.problems.length === 0;
+			if (updatedEl) {
+				updatedEl.textContent = report.lastGraphShownAt
+					? 'Graph updated ' + formatTime(report.lastGraphShownAt)
+					: '';
+			}
+		};
+
+		const isOpen = () => !panel.hidden;
+
+		const refresh = () =>
+			webviewApi
+				.postMessage({ type: 'get-status' })
+				.then((response) => {
+					if (!response || response.type !== 'status-report') return;
+					report = response.report;
+					if (isOpen()) {
+						render();
+						lastSeenProblemTime = newestProblemTime();
+					}
+					updateBadge();
+				})
+				.catch(() => undefined);
+
+		const schedule = () => {
+			clearTimeout(pollTimer);
+			pollTimer = setTimeout(
+				() => {
+					void refresh().then(schedule);
+				},
+				isOpen() ? STATUS_POLL_OPEN_MS : STATUS_POLL_CLOSED_MS
+			);
+		};
+
+		const runAction = (action) => {
+			void webviewApi
+				.postMessage({ type: 'status-action', action })
+				.catch(() => undefined)
+				.then(() => new Promise((resolve) => setTimeout(resolve, 300)))
+				.then(refresh);
+		};
+
+		const open = () => {
+			panel.hidden = false;
+			btn.setAttribute('aria-expanded', 'true');
+			render();
+			void refresh();
+			schedule();
+		};
+
+		const close = () => {
+			panel.hidden = true;
+			btn.setAttribute('aria-expanded', 'false');
+			schedule();
+		};
+
+		btn.addEventListener('click', () => (isOpen() ? close() : open()));
+
+		if (clearBtn) {
+			clearBtn.addEventListener('click', () => runAction('clear-problems'));
+		}
+
+		document.addEventListener('click', (e) => {
+			if (isOpen() && !panel.contains(e.target) && !btn.contains(e.target)) close();
+		});
+
+		document.addEventListener('keydown', (e) => {
+			if (e.key !== 'Escape' || !isOpen()) return;
+			close();
+			btn.focus();
+		});
+
+		void refresh();
+		schedule();
+	};
+
 	const init = () => {
 		bindClose();
 		bindScopePicker();
 		enhanceSelects();
+		bindInfoPanel();
 	};
 
 	if (document.readyState === 'loading') {

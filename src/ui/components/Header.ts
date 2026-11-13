@@ -6,6 +6,8 @@ const ChevronSvg = `<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden=
 
 const SearchSvg = `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M15.5 15.5L21 21"/></svg>`;
 
+const InfoSvg = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 11v6M12 7.5v.01"/></svg>`;
+
 const renderHeader = (): string => {
 	return `
 		<header class="panel-header">
@@ -32,6 +34,24 @@ const renderHeader = (): string => {
 			<div class="panel-search">
 				<span class="panel-search__icon">${SearchSvg}</span>
 				<input id="graph-search" class="panel-search__input" type="text" placeholder="Search notes" aria-label="Search notes" autocomplete="off" />
+			</div>
+			<div class="panel-header__info">
+				<button id="graph-info-btn" class="panel-header__icon-btn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="graph-info-panel" aria-label="What's happening" title="What's happening">
+					${InfoSvg}
+					<span id="graph-info-badge" class="panel-header__info-badge" hidden></span>
+				</button>
+				<div id="graph-info-panel" class="info-panel" role="dialog" aria-label="What's happening" hidden>
+					<div class="info-panel__head">
+						<span class="info-panel__title">What's happening</span>
+						<span id="graph-info-updated" class="info-panel__updated"></span>
+					</div>
+					<ul id="graph-info-items" class="info-panel__items"></ul>
+					<div class="info-panel__head info-panel__head--problems">
+						<span class="info-panel__subtitle">Recent problems</span>
+						<button id="graph-info-clear" class="info-panel__link" type="button" hidden>Clear</button>
+					</div>
+					<ul id="graph-info-problems" class="info-panel__problems"></ul>
+				</div>
 			</div>
 			<button id="graph-close" class="panel-header__icon-btn" type="button" aria-label="Close panel" title="Close">${CloseSvg}</button>
 		</header>

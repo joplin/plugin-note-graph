@@ -23,6 +23,8 @@ describe('webview', () => {
 	let onSetLayout: jest.Mock;
 	let onSetTagFilter: jest.Mock;
 	let onSearchNotes: jest.Mock;
+	let onGetStatus: jest.Mock;
+	let onStatusAction: jest.Mock;
 	let mockExecute: jest.Mock;
 	let onMessageHandler: (message: {
 		type?: string;
@@ -34,6 +36,7 @@ describe('webview', () => {
 		layout?: string;
 		grouped?: boolean;
 		query?: string;
+		action?: string;
 		nodeId?: string;
 	}) => Promise<unknown>;
 
@@ -83,6 +86,8 @@ describe('webview', () => {
 		onSetLayout = jest.fn().mockResolvedValue(undefined);
 		onSetTagFilter = jest.fn().mockResolvedValue(undefined);
 		onSearchNotes = jest.fn().mockReturnValue([]);
+		onGetStatus = jest.fn().mockResolvedValue({ level: 'ok', items: [], problems: [] });
+		onStatusAction = jest.fn().mockResolvedValue(undefined);
 		await webview.initializeAiNoteGraphPanel({
 			onNoData,
 			onCancel,
@@ -93,6 +98,8 @@ describe('webview', () => {
 			onSetLayout,
 			onSetTagFilter,
 			onSearchNotes,
+			onGetStatus,
+			onStatusAction,
 		});
 	});
 
@@ -219,6 +226,30 @@ describe('webview', () => {
 				type: 'search-results',
 				results: [{ noteId: 'n1', label: 'Found' }],
 			});
+		});
+	});
+
+	describe('status messages', () => {
+		it('answers get-status with the status report', async () => {
+			const response = await onMessageHandler({ type: 'get-status' });
+
+			expect(response).toEqual({
+				type: 'status-report',
+				report: { level: 'ok', items: [], problems: [] },
+			});
+		});
+
+		it('runs a known status action', async () => {
+			const response = await onMessageHandler({ type: 'status-action', action: 'retry-ai' });
+
+			expect(onStatusAction).toHaveBeenCalledWith('retry-ai');
+			expect(response).toEqual({ done: true });
+		});
+
+		it('ignores an unknown status action', async () => {
+			await onMessageHandler({ type: 'status-action', action: 'delete-everything' });
+
+			expect(onStatusAction).not.toHaveBeenCalled();
 		});
 	});
 

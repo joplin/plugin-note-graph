@@ -1,6 +1,7 @@
 import joplin from 'api';
 import { MenuItemLocation } from 'api/types';
 import {
+	PanelStatusAction,
 	initializeAiNoteGraphPanel,
 	showAiNoteGraphPanel,
 	postGraphData,
@@ -51,6 +52,10 @@ import {
 } from './services/settings/GraphSettings';
 import { NoteScopeResolver, ResolvedScope } from './services/settings/NoteScopeResolver';
 import { ScopeFollower, WorkspaceSelection } from './services/settings/ScopeFollower';
+import { RecordingLogger } from './services/status/RecordingLogger';
+import { StatusTracker } from './services/status/StatusTracker';
+import { buildStatusReport, StatusReport } from './services/status/StatusReport';
+import { JoplinAiApi, AiIndexStatus } from './services/embeddings/providers/JoplinNativeProvider';
 import { EdgeFactory } from './services/similarity/EdgeFactory';
 import {
 	DEFAULT_NEIGHBORS_PER_NOTE,
@@ -60,7 +65,6 @@ import {
 import { LouvainDetector } from './services/graph/LouvainDetector';
 import { CentralityScorer } from './services/graph/CentralityScorer';
 import { CommunityIdStabilizer } from './services/graph/CommunityIdStabilizer';
-import { Logger, consoleLogger } from './utils/Logger';
 
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
@@ -69,7 +73,8 @@ const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
 const EMBEDDING_SWEEP_INTERVAL_MS = 3 * 60 * 1000;
 const GRAPH_CACHE_WRITE_DELAY_MS = 3000;
 
-const logger: Logger = consoleLogger;
+const logger = new RecordingLogger();
+const statusTracker = new StatusTracker();
 
 const graphCache = new GraphCacheRepository();
 const analysisController = new AnalysisController(
@@ -128,6 +133,7 @@ const scopeFollower = new ScopeFollower(graphPresenter, readWorkspaceSelection, 
 /** Sends a new version of the graph to the panel, as whichever view the user is on. */
 const showGraph = async (graphData: GraphData): Promise<void> => {
 	await deliverView(await graphPresenter.setGraph(graphData));
+	statusTracker.graphShown();
 	backgroundLabeler.schedule();
 };
 
@@ -139,6 +145,7 @@ const FAILED_LOAD_NOTICE = 'Could not load your notes. Retrying shortly.';
 
 const applyLoadedNotes = (loaded: LoadedNotes): void => {
 	lastLoadIncomplete = !loaded.complete;
+	statusTracker.notesLoaded(loaded.complete, false);
 	analysisController.setCachePersistenceEnabled(loaded.complete);
 	setGraphNotice(loaded.complete ? null : INCOMPLETE_LOAD_NOTICE);
 	if (loaded.complete) {
@@ -159,6 +166,7 @@ const logPanelPostFailure = (e: unknown): void => {
  * graph, since it was already posted.
  */
 const reportEnrichmentProgress = (progress: { current: number; total: number }): void => {
+	statusTracker.labelsProgressed(progress);
 	postEnrichmentProgress(progress.current, progress.total).catch(logPanelPostFailure);
 };
 
@@ -173,7 +181,9 @@ const runEnrichmentFollowUp = async (): Promise<void> => {
  * data is stale, so it's dropped instead of overwriting the newer graph.
  */
 const runSemanticAnalysis = async (notes: Note[]): Promise<void> => {
+	statusTracker.aiStarted();
 	const result = await analysisController.embedAndBuildSemantic(notes, (progress) => {
+		statusTracker.aiProgressed(progress);
 		postProgress(progress.current, progress.total).catch(logPanelPostFailure);
 	});
 	if (!result) {
@@ -181,6 +191,7 @@ const runSemanticAnalysis = async (notes: Note[]): Promise<void> => {
 	}
 
 	const { graphData, usedAi, fallbackReason } = result;
+	statusTracker.aiFinished(usedAi ? null : fallbackReason ?? null);
 	await showGraph(graphData);
 	if (!usedAi && (await isAiAnalysisEnabled())) {
 		await postStatus(fallbackReason ?? 'AI analysis unavailable - showing structural graph.');
@@ -266,13 +277,17 @@ const describeLoadProgress = (progress: LoadProgress): string =>
 		: `Reading tags: ${progress.done} of ${progress.total} notes...`;
 
 const showLoadProgress = (progress: LoadProgress): void => {
-	setGraphNotice(describeLoadProgress(progress));
+	const description = describeLoadProgress(progress);
+	statusTracker.noteLoadProgressed(description);
+	setGraphNotice(description);
 };
 
 const loadNotesShowingProgress = async (): Promise<LoadedNotes> => {
+	statusTracker.noteLoadStarted();
 	try {
 		return await noteLoader.load(showLoadProgress);
 	} catch (e) {
+		statusTracker.noteLoadFailed();
 		setGraphNotice(null);
 		throw e;
 	}
@@ -370,10 +385,8 @@ const ensureGraphLoaded = (): Promise<void> => {
 					`Loaded graph from cache: ${cached.nodes.length} notes, no recompute.`
 				);
 				setGraphNotice(null);
+				statusTracker.notesLoaded(true, true);
 				await showGraph(cached);
-				await postStatus(
-					'Loaded from local cache - not recomputed. Refreshes as you edit or sync.'
-				);
 				void runPostCacheLoadFollowUps(cached);
 				return;
 			}
@@ -381,6 +394,7 @@ const ensureGraphLoaded = (): Promise<void> => {
 			await performFullReload();
 		} catch (error) {
 			logger.error('Failed to load note graph:', error);
+			statusTracker.noteLoadFailed();
 			lastLoadFailureTime = Date.now();
 			if (!analysisController.hasNotes()) setGraphNotice(FAILED_LOAD_NOTICE);
 		} finally {
@@ -487,7 +501,9 @@ const handleSettingsChange = async (event: { keys: string[] }): Promise<void> =>
 	}
 };
 
+/** Before the notes are loaded there is nothing to embed, and running on none would commit an empty graph. */
 const retryEmbedding = async (): Promise<void> => {
+	if (!analysisController.hasNotes()) return;
 	try {
 		await runSemanticAnalysis(analysisController.getCurrentNotes());
 	} catch (error) {
@@ -506,8 +522,90 @@ const retryEnrichment = async (): Promise<void> => {
 	}
 };
 
+/** How long a read of Joplin AI's index state is reused, since the open status panel asks every few seconds. */
+const AI_INDEX_STATUS_REUSE_MS = 5000;
+let lastAiIndexRead: { at: number; index: AiIndexStatus | null } | null = null;
+
+/** Reads `joplin.ai` and calls it here, without returning it: an async function returning the proxy would make Joplin look up `then` on it. */
+const readAiIndexStatus = async (): Promise<{
+	index: AiIndexStatus | null;
+	unavailableReason: string | null;
+}> => {
+	const api = joplin.ai as unknown as JoplinAiApi | undefined;
+	if (!api) return { index: null, unavailableReason: 'joplin.ai is not available.' };
+
+	if (!lastAiIndexRead || Date.now() - lastAiIndexRead.at > AI_INDEX_STATUS_REUSE_MS) {
+		const index = await api.getIndexStatus().catch((): null => null);
+		lastAiIndexRead = { at: Date.now(), index };
+	}
+	return { index: lastAiIndexRead.index, unavailableReason: null };
+};
+
+const getStatusReport = async (): Promise<StatusReport> => {
+	const aiEnabled = await isAiAnalysisEnabled();
+	const labelsEnabled = await isLlmEnrichmentEnabled();
+	const aiIndex = aiEnabled
+		? await readAiIndexStatus()
+		: { index: null, unavailableReason: null };
+	const graph = analysisController.getLastGraphData();
+	const semantic = graph ? countUnlabeledSemanticEdges(graph) : { total: 0, unlabeled: 0 };
+	const budget = analysisController.getLabelBudget();
+
+	return buildStatusReport({
+		tracked: statusTracker.snapshot(),
+		noteCount: analysisController.getCurrentNotes().length,
+		ai: {
+			enabled: aiEnabled,
+			...aiIndex,
+			embeddedNotes: analysisController.getEmbeddedNoteCount(),
+			running: analysisController.isEmbeddingRunning(),
+		},
+		labels: {
+			enabled: labelsEnabled,
+			semanticEdges: semantic.total,
+			labeledEdges: semantic.total - semantic.unlabeled,
+			budgetUsed: budget.used,
+			budgetLimit: budget.limit,
+			running: analysisController.isEnrichmentRunning(),
+		},
+		problems: logger.recentProblems(),
+	});
+};
+
+const reloadNotes = async (): Promise<void> => {
+	if (!analysisController.hasNotes()) {
+		await ensureGraphLoaded();
+		return;
+	}
+	try {
+		await performFullReload();
+	} catch (error) {
+		logger.error('Failed to reload notes:', error);
+	}
+};
+
+/** Starts the action and returns at once, since the panel waits for the reply and these can take minutes. */
+const onStatusAction = async (action: PanelStatusAction): Promise<void> => {
+	switch (action) {
+		case 'reload-notes':
+			void reloadNotes();
+			return;
+		case 'retry-ai':
+			void retryEmbedding();
+			return;
+		case 'retry-labels':
+			void retryEnrichment();
+			return;
+		case 'clear-problems':
+			logger.clearProblems();
+			return;
+	}
+};
+
 const cancelAnalysis = (): void => {
-	if (analysisController.isEnrichmentRunning()) backgroundLabeler.stop();
+	const labelsRunning = analysisController.isEnrichmentRunning();
+	statusTracker.cancelled(labelsRunning ? 'labels' : 'ai');
+	if (labelsRunning) backgroundLabeler.stop();
 	analysisController.cancelCurrentRun();
 	postStatus('Analysis cancelled.').catch(logPanelPostFailure);
 };
@@ -593,6 +691,8 @@ joplin.plugins.register({
 			onSetLayout,
 			onSetTagFilter,
 			onSearchNotes: (query) => graphPresenter.search(query),
+			onGetStatus: getStatusReport,
+			onStatusAction,
 		});
 		await registerCommands();
 		await registerMenuItems();

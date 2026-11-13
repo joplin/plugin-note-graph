@@ -5,6 +5,7 @@ import { GraphData } from '../services/graph/types';
 import { GraphDiff } from '../services/graph/GraphDiffer';
 import { GraphViewRequest, NoteSearchResult } from '../services/graph/GraphViewBuilder';
 import { LayoutName } from '../services/graph/GraphLayoutEngine';
+import { StatusAction, StatusReport } from '../services/status/StatusReport';
 
 export interface ScopeState {
 	mode: 'all' | 'current' | 'selected';
@@ -27,7 +28,18 @@ export interface PanelHandlers {
 	onSetLayout: (layout: LayoutName, grouped: boolean) => Promise<void>;
 	onSetTagFilter: (tag: string | null) => Promise<void>;
 	onSearchNotes: (query: string) => NoteSearchResult[];
+	onGetStatus: () => Promise<StatusReport>;
+	onStatusAction: (action: PanelStatusAction) => Promise<void>;
 }
+
+export type PanelStatusAction = StatusAction | 'clear-problems';
+
+const PANEL_STATUS_ACTIONS: readonly PanelStatusAction[] = [
+	'reload-notes',
+	'retry-ai',
+	'retry-labels',
+	'clear-problems',
+];
 
 const PANEL_ID = 'aiNoteGraphPanel';
 /** `openItem` also opens links, so the panel may only ever ask for a Joplin item ID. */
@@ -65,6 +77,7 @@ const createPanel = async (handlers: PanelHandlers): Promise<ViewHandle> => {
 			grouped?: boolean;
 			query?: string;
 			tag?: string | null;
+			action?: string;
 		}) => {
 			if (message?.type === 'close-note-graph') {
 				await joplin.views.panels.hide(handle);
@@ -131,6 +144,16 @@ const createPanel = async (handlers: PanelHandlers): Promise<ViewHandle> => {
 					type: 'search-results',
 					results: handlers.onSearchNotes(message.query ?? ''),
 				};
+			}
+			if (message?.type === 'get-status') {
+				return { type: 'status-report', report: await handlers.onGetStatus() };
+			}
+			if (
+				message?.type === 'status-action' &&
+				PANEL_STATUS_ACTIONS.includes(message.action as PanelStatusAction)
+			) {
+				await handlers.onStatusAction(message.action as PanelStatusAction);
+				return { done: true };
 			}
 		}
 	);

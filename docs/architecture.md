@@ -38,6 +38,7 @@ webview message bridge:
 | `src/services/llm` | Pass B: batches semantic edges to Joplin AI's chat model and parses category/relationship labels back onto the graph. |
 | `src/services/sync` | Listens to Joplin workspace events and turns them into incremental graph updates. |
 | `src/services/settings` | Registers and reads the plugin's settings. |
+| `src/services/status` | What the panel's "What's happening" view shows: the state of each step, in plain words, and the latest problems logged. |
 | `src/services/AnalysisController.ts` | Orchestrates the above into a single graph-building pipeline. |
 | `src/services/NoteLoader.ts` | Loads every note in the vault, and reports whether the load was complete. |
 | `src/utils` | Shared helpers: retry with backoff, and the `Logger` interface. |
@@ -93,7 +94,9 @@ updates](incremental-updates.md) for what happens after the initial load.
 
 Services never call `console` directly. Each takes a `Logger` (`src/utils/Logger.ts`)
 as a constructor default, `consoleLogger`, so a test can pass its own. `index.ts`
-builds everything with one shared logger.
+builds everything with a `RecordingLogger`, which passes each message on to the
+console and keeps the latest warnings and errors for the panel's "What's
+happening" view.
 
 ## Persistence
 
