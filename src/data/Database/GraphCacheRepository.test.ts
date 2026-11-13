@@ -10,6 +10,7 @@ class FakeConnection implements IVectorDatabase {
 		events_cursor: string | null;
 		embeddings_cursor: string | null;
 	} | null = null;
+	private embeddingsModel: string | null = null;
 	private layouts = new Map<string, string>();
 	private enrichmentRows: {
 		kind: string;
@@ -43,6 +44,10 @@ class FakeConnection implements IVectorDatabase {
 			this.enrichmentRows = this.enrichmentRows.filter(
 				(row) => !(row.kind === kind && row.id === id)
 			);
+		} else if (sql.includes('embeddings_model')) {
+			this.embeddingsModel = (params as [string])[0];
+		} else if (sql.includes('SET embeddings_cursor = NULL')) {
+			if (this.syncStateRow) this.syncStateRow.embeddings_cursor = null;
 		} else if (sql.includes('INTO graph_cache')) {
 			const [notesJson, graphJson] = params as [string, string, number];
 			this.graphRow = { notes_json: notesJson, graph_json: graphJson };
@@ -81,6 +86,9 @@ class FakeConnection implements IVectorDatabase {
 	}
 
 	public async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+		if (sql.includes('embeddings_model')) {
+			return (this.syncStateRow ? [{ embeddings_model: this.embeddingsModel }] : []) as unknown as T[];
+		}
 		if (sql.includes('FROM layout_cache')) {
 			const json = this.layouts.get((params as [string])[0]);
 			return (json ? [{ positions_json: json }] : []) as unknown as T[];
@@ -115,6 +123,8 @@ const graphData: GraphData = {
 };
 
 describe('GraphCacheRepository lifecycle', () => {
+	const seedSyncRow = (repo: GraphCacheRepository) => repo.saveEmbeddingsCursor('cursor-1');
+
 	it('stores and reloads a layout by key', async () => {
 		const repo = new GraphCacheRepository(new FakeConnection());
 
@@ -145,6 +155,24 @@ describe('GraphCacheRepository lifecycle', () => {
 		await repo.clearGraph();
 
 		await expect(repo.loadLayout('view')).resolves.toBeNull();
+	});
+
+	it('stores the embedding model alongside the sweep cursor', async () => {
+		const repo = new GraphCacheRepository(new FakeConnection());
+		await seedSyncRow(repo);
+
+		await repo.saveEmbeddingsModel('model-a');
+
+		await expect(repo.loadEmbeddingsModel()).resolves.toBe('model-a');
+	});
+
+	it('clears the sweep cursor', async () => {
+		const repo = new GraphCacheRepository(new FakeConnection());
+		await seedSyncRow(repo);
+
+		await repo.clearEmbeddingsCursor();
+
+		await expect(repo.loadEmbeddingsCursor()).resolves.toBeNull();
 	});
 
 	it('prunes labels for notes that no longer exist, for both nodes and edges', async () => {
@@ -273,6 +301,7 @@ describe('GraphCacheRepository', () => {
 			expect(await repo.loadEmbeddingsCursor()).toBe('embeddings-cursor-1');
 		});
 	});
+
 
 	describe('clearGraph', () => {
 		it('removes the cached graph so a later load returns null', async () => {

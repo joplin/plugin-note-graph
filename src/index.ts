@@ -64,6 +64,10 @@ import { Logger, consoleLogger } from './utils/Logger';
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
 
+/** Joplin picks up re-embedded edits on a three-minute tick. */
+const EMBEDDING_SWEEP_INTERVAL_MS = 3 * 60 * 1000;
+const GRAPH_CACHE_WRITE_DELAY_MS = 3000;
+
 const logger: Logger = consoleLogger;
 
 const graphCache = new GraphCacheRepository();
@@ -79,6 +83,7 @@ const analysisController = new AnalysisController(
 	graphCache,
 	new LLMEnricher({ logger }),
 	new VectorRepository(),
+	GRAPH_CACHE_WRITE_DELAY_MS,
 	logger
 );
 const noteScopeResolver = new NoteScopeResolver(
@@ -178,6 +183,9 @@ const runSemanticAnalysis = async (notes: Note[]): Promise<void> => {
 		await postStatus(fallbackReason ?? 'AI analysis unavailable - showing structural graph.');
 	}
 
+	if (usedAi) {
+		void incrementalUpdater.handleEmbeddingTick();
+	}
 	await runEnrichmentFollowUp();
 };
 
@@ -214,6 +222,12 @@ const runPostCacheLoadFollowUps = async (cached: GraphData): Promise<void> => {
 		await incrementalUpdater.handleSyncComplete();
 	} catch (e) {
 		logger.error('Post-cache-load sync sweep failed:', e);
+	}
+
+	try {
+		await incrementalUpdater.reconcileWithVault();
+	} catch (e) {
+		logger.error('Could not check the cached graph against the vault:', e);
 	}
 
 	try {
@@ -286,29 +300,21 @@ const scheduleScopeChange = (): void => {
 	}, 200);
 };
 
-const incrementalUpdater = new IncrementalUpdater(
+const incrementalUpdater = new IncrementalUpdater({
 	analysisController,
-	(graphData) => {
+	onGraphChanged: (graphData) => {
 		showGraph(graphData).catch((e) => {
 			logger.error('Failed to push graph update to panel:', e);
 		});
 	},
-	performFullReload,
-	new NoteRepository(DATA_API_RETRY, logger),
-	createNotePreprocessor(),
-	new EventsRepository(logger),
+	onFullReloadNeeded: performFullReload,
+	noteRepository: new NoteRepository(DATA_API_RETRY, logger),
+	preprocessor: createNotePreprocessor(),
+	eventsRepository: new EventsRepository(logger),
 	graphCache,
-	undefined,
-	undefined,
-	() => {
-		postStatus(
-			'Note graph update paused after repeated failures; will retry on your next edit.'
-		).catch(logPanelPostFailure);
-	},
-	Date.now,
-	reportEnrichmentProgress,
-	logger
-);
+	onEnrichmentProgress: reportEnrichmentProgress,
+	logger,
+});
 const workspaceListener = new WorkspaceListener(incrementalUpdater, logger);
 
 let inFlightLoad: Promise<void> | null = null;
@@ -535,6 +541,10 @@ const onSetTagFilter = async (tag: string | null): Promise<void> => {
 	if (presented) await deliverView(presented);
 };
 
+const sweepEmbeddingsWhileVisible = async (): Promise<void> => {
+	if (await isNoteGraphPanelVisible()) await incrementalUpdater.handleEmbeddingTick();
+};
+
 const registerMenuItems = async (): Promise<void> => {
 	await joplin.views.menuItems.create(
 		SHOW_NOTE_GRAPH_MENU_ITEM,
@@ -565,6 +575,11 @@ joplin.plugins.register({
 		await registerCommands();
 		await registerMenuItems();
 		await workspaceListener.register();
+		setInterval(() => {
+			sweepEmbeddingsWhileVisible().catch((e) => {
+				logger.error('Scheduled embeddings sweep failed:', e);
+			});
+		}, EMBEDDING_SWEEP_INTERVAL_MS);
 		await joplin.workspace.onNoteSelectionChange((event) => {
 			void focusPanelOnNoteSelectionChange(event.value);
 			void followSelection();

@@ -171,34 +171,9 @@ describe('EmbeddingOrchestrator', () => {
 			expect(result.embeddedNotes[0].embedding).toEqual([0.1, 0.2]);
 		});
 
-		it('re-fetches a note whose updated_time no longer matches the cached entry', async () => {
-			const fetchVectorsByNoteIds = jest
-				.fn()
-				.mockResolvedValue(new Map([['n1', [0.9, 0.9]]]));
-			orchestrator.setProvider({
-				id: 'joplin-native',
-				modelName: 'm1',
-				fetchVectorsByNoteIds,
-			});
-			orchestrator.setCache({
-				getMany: jest
-					.fn()
-					.mockResolvedValue(
-						new Map([['n1', { vector: [0.1, 0.2], modelId: 'm1', updatedTime: 50 }]])
-					),
-				saveMany: jest.fn().mockResolvedValue(undefined),
-			});
-
-			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 999)]);
-
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function), expect.any(Function));
-			expect(result.embeddedNotes[0].embedding).toEqual([0.9, 0.9]);
-		});
-
-		it('does not fall back to a stale cached vector when the re-fetch omits the note', async () => {
-			// The note changed (updated_time no longer matches), so it's correctly
-			// queued for re-fetch — but Joplin's AI index hasn't caught up yet and
-			// returns nothing for it. The stale pre-edit vector must not be used.
+		it('keeps using a cached vector after the note is edited, without asking Joplin', async () => {
+			// Joplin re-embeds an edit minutes later, so asking now would only return the old
+			// chunks and record them as current. Sweeps refresh this vector once Joplin has.
 			const fetchVectorsByNoteIds = jest.fn().mockResolvedValue(new Map());
 			orchestrator.setProvider({
 				id: 'joplin-native',
@@ -216,11 +191,8 @@ describe('EmbeddingOrchestrator', () => {
 
 			const result = await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 999)]);
 
-			expect(fetchVectorsByNoteIds).toHaveBeenCalledWith(['n1'], expect.any(Function), expect.any(Function));
-			expect(result.embeddedNotes).toHaveLength(0);
-			expect(result.errors).toEqual([
-				{ noteId: 'n1', error: 'Note not yet indexed by Joplin AI.' },
-			]);
+			expect(fetchVectorsByNoteIds).not.toHaveBeenCalled();
+			expect(result.embeddedNotes[0].embedding).toEqual([0.1, 0.2]);
 		});
 
 		it('sends one progress message per fetched batch rather than one per note', async () => {

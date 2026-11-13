@@ -65,6 +65,21 @@ export class GraphBuilder {
 		this.communityIds.seed(new Map(graph.nodes.map((node) => [node.data.id, node.data.community])));
 	}
 
+	/**
+	 * Rebuilds links, tags, communities and sizes, keeping the semantic edges
+	 * already computed, for a change that doesn't involve any embedding.
+	 */
+	public rebuildStructure(notes: Note[], previous: GraphData): GraphData {
+		const noteIds = new Set(notes.map((note) => note.id));
+		const semanticEdges = previous.edges
+			.map((edge) => edge.data)
+			.filter(
+				(edge) =>
+					edge.type === 'semantic' && noteIds.has(edge.source) && noteIds.has(edge.target)
+			);
+		return this.buildData(notes, [...this.edgeFactory.createEdges(notes), ...semanticEdges]);
+	}
+
 	private buildData(notes: Note[], edges: GraphEdge[]): GraphData {
 		const degreeMap = this.computeDegreeMap(notes, edges);
 		const communities = this.communityIds.stabilize(this.louvainDetector.detectCommunities(notes, edges));

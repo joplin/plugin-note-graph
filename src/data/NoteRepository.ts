@@ -14,6 +14,8 @@ const NOTE_FIELDS = [
 	'is_conflict',
 ];
 
+const VERSION_FIELDS = ['id', 'updated_time', 'deleted_time', 'is_conflict'];
+
 /** Pages are numbered in units of this size, so it must stay the same for the whole walk. */
 const PAGE_SIZE = 100;
 
@@ -47,6 +49,19 @@ export class NoteRepository {
 		const complete = await this.collectPages(['notes'], notesById, maxNotes, NOTE_FIELDS);
 		this.logger.info(`Fetched ${notesById.size} notes.`);
 		return { notes: Array.from(notesById.values()), truncated: !complete };
+	}
+
+	/**
+	 * Lists which notes exist and when each last changed, without their bodies, so
+	 * comparing against the vault is cheap.
+	 */
+	public async getNoteVersions(): Promise<{ versions: Map<string, number>; complete: boolean }> {
+		const notesById = new Map<string, Note>();
+		const complete = await this.collectPages(['notes'], notesById, Infinity, VERSION_FIELDS);
+
+		const versions = new Map<string, number>();
+		for (const [id, note] of notesById) versions.set(id, note.updated_time);
+		return { versions, complete };
 	}
 
 	public async getNote(id: string): Promise<Note | null> {

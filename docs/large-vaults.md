@@ -95,6 +95,11 @@ edges, the panel switches to a cheaper style: straight solid edges, no arrows, n
 text outlines, and labels only when zoomed in. Each kind of edge keeps its color, so they
 can still be told apart.
 
+## Editing
+
+Saving a note no longer rebuilds much of anything; see [Incremental
+updates](incremental-updates.md).
+
 ## Testing at scale
 
 ```sh

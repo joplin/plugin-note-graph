@@ -170,6 +170,35 @@ export class GraphCacheRepository implements LayoutStore {
 		});
 	}
 
+	public async loadEmbeddingsModel(): Promise<string | null> {
+		await this.db.open();
+		const rows = await this.db.all<{ embeddings_model: string | null }>(
+			'SELECT embeddings_model FROM sync_state WHERE id = 1',
+			[]
+		);
+		return rows[0]?.embeddings_model ?? null;
+	}
+
+	public saveEmbeddingsModel(modelId: string): Promise<void> {
+		return this.enqueueWrite(async () => {
+			await this.db.open();
+			await this.db.run(
+				`INSERT INTO sync_state (id, embeddings_model)
+				 VALUES (1, ?)
+				 ON CONFLICT(id) DO UPDATE SET embeddings_model = excluded.embeddings_model`,
+				[modelId]
+			);
+		});
+	}
+
+	/** Forgets the sweep position, so the next sweep starts over. Needed when the embedding model changes. */
+	public clearEmbeddingsCursor(): Promise<void> {
+		return this.enqueueWrite(async () => {
+			await this.db.open();
+			await this.db.run('UPDATE sync_state SET embeddings_cursor = NULL WHERE id = 1', []);
+		});
+	}
+
 	public async loadLayout(layoutKey: string): Promise<NodePositions | null> {
 		await this.db.open();
 		const rows = await this.db.all<{ positions_json: string }>(

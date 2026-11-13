@@ -48,9 +48,9 @@ reasoning.
 
 `EmbeddingOrchestrator` (`src/services/embeddings/Orchestrator.ts`) sits
 between `AnalysisController` and the provider. For each note it checks
-`VectorRepository` (a SQLite-backed cache) for a vector whose cached
-`updatedTime` and `modelId` still match the note; only notes that miss the
-cache are sent to the provider. Freshly fetched vectors are written back to
+`VectorRepository` (a SQLite-backed cache) for a vector from the current model;
+only notes that miss the cache are sent to the provider. Vectors are kept fresh
+separately, by [embedding sweeps](incremental-updates.md#embedding-sweeps). Freshly fetched vectors are written back to
 the cache. A cache read or write failure is logged and treated as a full
 miss/no-op rather than failing the embed, so a corrupt cache degrades to
 "slower" rather than "broken." See [Caching](caching.md) for the schema.
