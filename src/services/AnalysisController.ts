@@ -76,6 +76,10 @@ export class AnalysisController {
 		return this.lastEmbeddedNotes !== null;
 	}
 
+	public isEnrichmentRunning(): boolean {
+		return this.enrichmentInFlight !== null;
+	}
+
 	public cancelCurrentRun(): void {
 		if (this.enrichmentInFlight) {
 			this.logger.info('LLM enrichment: cancelled by user.');

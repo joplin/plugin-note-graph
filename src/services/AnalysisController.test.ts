@@ -805,6 +805,26 @@ describe('AnalysisController', () => {
 			expect(second).toBeNull();
 			expect(mockEnricher.enrich).toHaveBeenCalledTimes(2);
 		});
+
+		it('reports a Pass B run as running only while it is in flight', async () => {
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			let finish!: (result: Awaited<ReturnType<typeof mockEnricher.enrich>>) => void;
+			mockEnricher.enrich.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						finish = resolve;
+					})
+			);
+
+			const run = controller.enrichCurrentGraph();
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(controller.isEnrichmentRunning()).toBe(true);
+
+			finish({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
+			await run;
+			expect(controller.isEnrichmentRunning()).toBe(false);
+		});
 	});
 
 	describe('hasNotes / getCurrentNotes', () => {

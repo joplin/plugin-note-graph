@@ -75,7 +75,7 @@ export async function registerGraphSettings(): Promise<void> {
 			section: SECTION_NAME,
 			label: 'Enable LLM analysis',
 			description:
-				'Uses Joplin AI chat to describe how notes already flagged as related by AI analysis are connected, for up to 200 of the strongest connections per session. Requires AI-based semantic analysis to be enabled.',
+				'Uses Joplin AI chat to describe how notes already flagged as related by AI analysis are connected, strongest connections first, 200 at a time, with the rest done slowly in the background. Requires AI-based semantic analysis to be enabled.',
 		},
 		[RETRY_EMBEDDING_KEY]: {
 			value: false,
@@ -93,7 +93,7 @@ export async function registerGraphSettings(): Promise<void> {
 			section: SECTION_NAME,
 			label: 'Retry AI labels',
 			description:
-				'Tick to label up to 200 more connections still missing a label. Unticks itself once the retry starts. No-op if the graph panel has not been opened yet.',
+				'Tick to label up to 200 more connections still missing a label straight away, and restart background labeling if it stopped. Unticks itself once the retry starts. No-op if the graph panel has not been opened yet.',
 		},
 		[SCOPE_MODE_KEY]: {
 			value: 'current',

@@ -29,6 +29,7 @@ import { GraphPresenter, PresentedView } from './services/graph/GraphPresenter';
 import { GraphDiffer } from './services/graph/GraphDiffer';
 import { GraphViewBuilder, GraphViewRequest } from './services/graph/GraphViewBuilder';
 import { LLMEnricher } from './services/llm/LLMEnricher';
+import { BackgroundLabeler } from './services/llm/BackgroundLabeler';
 import { Note } from './data/Types';
 import { GraphData } from './services/graph/types';
 import { AnalysisController } from './services/AnalysisController';
@@ -127,6 +128,7 @@ const scopeFollower = new ScopeFollower(graphPresenter, readWorkspaceSelection, 
 /** Sends a new version of the graph to the panel, as whichever view the user is on. */
 const showGraph = async (graphData: GraphData): Promise<void> => {
 	await deliverView(await graphPresenter.setGraph(graphData));
+	backgroundLabeler.schedule();
 };
 
 let lastLoadIncomplete = false;
@@ -199,6 +201,21 @@ const countUnlabeledSemanticEdges = (
 	).length;
 	return { total: semanticEdges.length, unlabeled };
 };
+
+const countUnlabeledInCurrentGraph = (): number => {
+	const graphData = analysisController.getLastGraphData();
+	return graphData ? countUnlabeledSemanticEdges(graphData).unlabeled : 0;
+};
+
+const backgroundLabeler = new BackgroundLabeler({
+	isEnabled: isLlmEnrichmentEnabled,
+	countUnlabeled: countUnlabeledInCurrentGraph,
+	labelRound: async () => {
+		analysisController.allowMoreEnrichment();
+		await runEnrichmentFollowUp();
+	},
+	logger,
+});
 
 const reportAndBackfillEnrichment = async (graphData: GraphData): Promise<void> => {
 	if (!(await isLlmEnrichmentEnabled())) return;
@@ -481,6 +498,7 @@ const retryEnrichment = async (): Promise<void> => {
 	try {
 		analysisController.clearCancellation();
 		analysisController.allowMoreEnrichment();
+		backgroundLabeler.resume();
 		await runEnrichmentFollowUp();
 	} catch (error) {
 		logger.error('Failed to retry AI enrichment:', error);
@@ -488,6 +506,7 @@ const retryEnrichment = async (): Promise<void> => {
 };
 
 const cancelAnalysis = (): void => {
+	if (analysisController.isEnrichmentRunning()) backgroundLabeler.stop();
 	analysisController.cancelCurrentRun();
 	postStatus('Analysis cancelled.').catch(logPanelPostFailure);
 };

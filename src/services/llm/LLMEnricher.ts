@@ -9,7 +9,7 @@ const MAX_ATTEMPTS_PER_BATCH = 4;
 const RETRY_DELAY_MS = 1000;
 const MAX_EXISTING_CATEGORIES = 40;
 const LOG_EXCERPT_LENGTH = 600;
-/** A large vault can have tens of thousands of semantic edges, each a paid request on a remote provider, so one session labels this many at most. */
+/** A large vault can have tens of thousands of semantic edges, each a paid request on a remote provider, so one round labels this many at most. `BackgroundLabeler` paces the rounds. */
 const MAX_EDGES_PER_SESSION = 200;
 
 interface ChatApi {
@@ -176,7 +176,7 @@ export class LLMEnricher {
 			const edgesToLabel = this.selectWithinBudget(edgeMisses);
 			if (edgesToLabel.length === 0) {
 				this.logger.info(
-					`LLM enrichment: the limit of ${this.maxEdgesPerSession} labels for this session is used up; ${edgeMisses.length} edge(s) left unlabeled.`
+					`LLM enrichment: the limit of ${this.maxEdgesPerSession} labels for this round is used up; ${edgeMisses.length} edge(s) left unlabeled.`
 				);
 				return { nodeEnrichments, edgeEnrichments };
 			}

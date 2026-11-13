@@ -14,7 +14,7 @@ normal.
 | Max semantic edges per note (top-K) | `noteGraph.maxEdgesPerNote` | Integer, 1-20, step 1 | `5` | Caps how many of each note's strongest semantic connections are kept. Only applies when AI analysis is enabled. |
 | Enable LLM analysis | `noteGraph.llmEnrichmentEnabled` | Boolean | `false` | Turns on Pass B: relationship explanations via Joplin AI chat. Requires AI-based semantic analysis to also be enabled. See [LLM enrichment](llm-enrichment.md). |
 | Retry AI embedding | `noteGraph.retryEmbedding` | Boolean | `false` | One-shot trigger, not a persistent toggle: ticking it immediately retries AI-based semantic analysis (for example, after cancelling it), then unticks itself. No-op if the graph panel hasn't been opened yet. |
-| Retry AI labels | `noteGraph.retryEnrichment` | Boolean | `false` | One-shot trigger, not a persistent toggle: ticking it labels up to 200 more connections still missing a label, then unticks itself. No-op if the graph panel hasn't been opened yet. |
+| Retry AI labels | `noteGraph.retryEnrichment` | Boolean | `false` | One-shot trigger, not a persistent toggle: ticking it labels up to 200 more connections still missing a label straight away, and restarts background labeling if it stopped, then unticks itself. No-op if the graph panel hasn't been opened yet. |
 
 Joplin's settings API has no float/slider type, only integer, so the
 threshold is stored as a whole-number percentage and converted to the `0-1`
