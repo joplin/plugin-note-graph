@@ -27,10 +27,11 @@ simply the expected result. See [Settings reference](settings.md).
 ## The graph has very few or no semantic edges
 
 - Check the **similarity threshold** setting; 70% is the default and can be
-  lowered to surface more edges. The threshold is a *percentile* cutoff on raw
-  similarity, so it always keeps only the strongest (100 − value)% of the
-  candidate pairs, even when the embedding model compresses every score into a
-  narrow band.
+  lowered to surface more edges. The threshold is a *percentile* cutoff: it
+  keeps the strongest (100 − value)% of candidate pairs, ranked by how much
+  closer two notes are than each usually is to its nearest notes. Two notes
+  also have to be among each other's 10 closest notes, so a note can have no
+  semantic edges when nothing is clearly close to it.
 - A small vault, or a vault with genuinely unrelated notes, will produce
   fewer edges by design: semantic edges require the raw cosine similarity to
   clear the absolute floor (`SEMANTIC_FLOOR`, 0.3) *before* the percentile

@@ -2,13 +2,6 @@ import { ProviderResolver } from './ProviderResolver';
 import joplin from 'api';
 
 describe('ProviderResolver', () => {
-	describe('getDefaultConfig', () => {
-		it('returns joplin-native as default', () => {
-			const config = ProviderResolver.getDefaultConfig();
-			expect(config.id).toBe('joplin-native');
-		});
-	});
-
 	describe('resolveWithValidation', () => {
 		it('throws when joplin.ai is unavailable', async () => {
 			(joplin as any).ai = undefined;

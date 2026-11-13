@@ -1,6 +1,7 @@
 import { Note } from '../../data/Types';
 import { EdgeFactory } from '../similarity/EdgeFactory';
 import { SimilarityEngine } from '../similarity/SimilarityEngine';
+import { KnnIndex } from '../similarity/KnnIndex';
 import { EmbeddedNote } from '../embeddings/Types';
 import { GraphData, GraphEdge, GraphNode, RenderedEdge } from './types';
 import { LouvainDetector } from './LouvainDetector';
@@ -18,6 +19,7 @@ export class GraphBuilder {
 		edgeFactory = new EdgeFactory(),
 		louvainDetector = new LouvainDetector(),
 		centralityScorer = new CentralityScorer(),
+		private readonly knnIndex = new KnnIndex(),
 		private readonly logger: Logger = consoleLogger
 	) {
 		this.edgeFactory = edgeFactory;
@@ -48,7 +50,7 @@ export class GraphBuilder {
 	): Promise<GraphData> {
 		const structuralEdges = this.edgeFactory.createEdges(notes);
 
-		const engine = new SimilarityEngine(notes, embeddedNotes);
+		const engine = new SimilarityEngine(notes, embeddedNotes, this.knnIndex);
 		const pairs = await engine.compute(threshold, topK, isCancelled);
 		const semanticEdges = this.edgeFactory.createSemanticEdges(pairs);
 

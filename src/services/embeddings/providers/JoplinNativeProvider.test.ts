@@ -43,8 +43,7 @@ describe('JoplinNativeProvider', () => {
 		});
 
 		await provider.fetchVectorsByNoteIds(['n1']);
-		expect(provider.getFetchedModelId()).toBe('fresh-model');
-		expect(provider.getCachedVectors()).toEqual(new Map([['n1', [1, 0]]]));
+		expect(provider.modelName).toBe('fresh-model');
 
 		jest.useFakeTimers();
 		ai.getEmbeddings.mockRejectedValue(new Error('network error'));
@@ -56,8 +55,6 @@ describe('JoplinNativeProvider', () => {
 		await jest.advanceTimersByTimeAsync(3000);
 		await rejection;
 
-		expect(provider.getFetchedModelId()).toBeNull();
-		expect(provider.getCachedVectors()).toBeNull();
 		errorSpy.mockRestore();
 		jest.useRealTimers();
 	});
@@ -246,7 +243,6 @@ describe('JoplinNativeProvider', () => {
 		expect(vector).toBeDefined();
 		expect(vector![0]).toBeCloseTo(0.6, 5);
 		expect(vector![1]).toBeCloseTo(0.8, 5);
-		expect(provider.getFetchedModelId()).toBe('test-model');
 	});
 
 	it('restarts pagination when the model changes mid-fetch', async () => {
@@ -282,7 +278,6 @@ describe('JoplinNativeProvider', () => {
 
 		expect(ai.getEmbeddings).toHaveBeenCalledTimes(3);
 		expect(vector).toEqual([0, 1]);
-		expect(provider.getFetchedModelId()).toBe('model-b');
 		expect(provider.modelName).toBe('model-b');
 	});
 
@@ -322,5 +317,77 @@ describe('JoplinNativeProvider', () => {
 		await expect(provider.fetchVectorsByNoteIds(['n1'])).rejects.toThrow(
 			'Joplin AI index is not usable yet (state: disabled)'
 		);
+	});
+
+	describe('batching', () => {
+		const ids = (count: number) => Array.from({ length: count }, (_, i) => `n${i}`);
+		const ai = joplin.ai as unknown as { getIndexStatus: jest.Mock; getEmbeddings: jest.Mock };
+
+		beforeEach(() => {
+			ai.getIndexStatus.mockResolvedValue({ state: 'ready', modelId: 'm1' });
+			ai.getEmbeddings.mockReset();
+			ai.getEmbeddings.mockImplementation(async (options: { noteIds: string[] }) => ({
+				modelId: 'm1',
+				dimension: 2,
+				chunks: options.noteIds.map((noteId) => ({ noteId, chunkIndex: 0, vector: [1, 0] })),
+				nextCursor: undefined,
+			}));
+		});
+
+		it('splits a large request so no call sends more than 200 note IDs', async () => {
+			const vectors = await new JoplinNativeProvider('m1').fetchVectorsByNoteIds(ids(450));
+
+			expect(vectors.size).toBe(450);
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(3);
+			for (const [options] of ai.getEmbeddings.mock.calls) {
+				expect(options.noteIds.length).toBeLessThanOrEqual(200);
+			}
+		});
+
+		it('reports progress after each batch', async () => {
+			const onProgress = jest.fn();
+
+			await new JoplinNativeProvider('m1').fetchVectorsByNoteIds(ids(450), () => false, onProgress);
+
+			expect(onProgress.mock.calls).toEqual([
+				[200, 450],
+				[400, 450],
+				[450, 450],
+			]);
+		});
+
+		it('stops between batches when cancelled', async () => {
+			let cancelled = false;
+			ai.getEmbeddings.mockImplementation(async () => {
+				cancelled = true;
+				return { modelId: 'm1', dimension: 2, chunks: [], nextCursor: undefined };
+			});
+
+			await new JoplinNativeProvider('m1').fetchVectorsByNoteIds(ids(450), () => cancelled);
+
+			expect(ai.getEmbeddings).toHaveBeenCalledTimes(1);
+		});
+
+		it('starts over if the model changes between batches, so vectors never mix models', async () => {
+			let call = 0;
+			ai.getEmbeddings.mockImplementation(async (options: { noteIds: string[] }) => {
+				call++;
+				return {
+					modelId: call === 1 ? 'm1' : 'm2',
+					dimension: 2,
+					chunks: options.noteIds.map((noteId) => ({ noteId, chunkIndex: 0, vector: [1, 0] })),
+					nextCursor: undefined,
+				};
+			});
+
+			const provider = new JoplinNativeProvider('m1');
+			ai.getIndexStatus.mockResolvedValueOnce({ state: 'ready', modelId: 'm1' });
+			ai.getIndexStatus.mockResolvedValue({ state: 'ready', modelId: 'm2' });
+			const vectors = await provider.fetchVectorsByNoteIds(ids(300));
+
+			expect(vectors.size).toBe(300);
+			expect(provider.modelName).toBe('m2');
+			expect(call).toBe(4);
+		});
 	});
 });

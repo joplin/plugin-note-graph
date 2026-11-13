@@ -47,18 +47,17 @@ export class EmbeddingOrchestrator {
 			const embeddedNotes: EmbeddedNote[] = [];
 			const errors: Array<{ noteId: string; error: string }> = [];
 
-			for (let i = 0; i < notes.length; i++) {
+			for (const note of notes) {
 				if (this.cancelled) break;
-				const note = notes[i];
 				const vector = vectorsByNoteId.get(note.id);
 				if (vector) {
 					embeddedNotes.push({ note: note, embedding: vector });
 				} else {
 					errors.push({ noteId: note.id, error: 'Note not yet indexed by Joplin AI.' });
 				}
-				this.reportProgress(i + 1, notes.length);
 			}
 
+			this.reportProgress(notes.length, notes.length);
 			return { embeddedNotes, errors };
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
@@ -82,16 +81,19 @@ export class EmbeddingOrchestrator {
 		const notesToFetch = notes.filter(
 			(n) => !this.isFreshCacheHit(cached.get(n.id), n, modelId)
 		);
+		const cachedCount = notes.length - notesToFetch.length;
 
 		const fresh =
 			notesToFetch.length > 0
 				? await provider.fetchVectorsByNoteIds(
 						notesToFetch.map((n) => n.id),
-						() => this.cancelled
+						() => this.cancelled,
+						(done) => this.reportProgress(cachedCount + done, notes.length)
 					)
 				: new Map<string, number[]>();
 
-		await this.saveFreshVectors(notesToFetch, fresh, modelId);
+		// A fetch cut short can hold a note's vector pooled from only some of its chunks, which must not be kept.
+		if (!this.cancelled) await this.saveFreshVectors(notesToFetch, fresh, modelId);
 
 		return this.mergeVectors(notes, cached, fresh, modelId);
 	}
