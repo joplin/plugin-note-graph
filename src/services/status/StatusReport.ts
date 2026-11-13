@@ -207,9 +207,9 @@ function labelsItem({ tracked, ai, labels }: StatusInputs): StatusItem {
 		title,
 		level: 'ok',
 		text: limitReached
-			? `${explained} Up to ${count(
+			? `${explained} The rest are explained in the background, up to ${count(
 					labels.budgetLimit
-			  )} are explained per session, to limit AI requests.`
+			  )} at a time, to limit AI requests.`
 			: explained,
 		action: { id: 'retry-labels', label: `Explain ${count(more)} more` },
 	};

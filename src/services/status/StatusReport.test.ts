@@ -206,7 +206,7 @@ describe('buildStatusReport', () => {
 		expect(report.level).toBe('ok');
 	});
 
-	it('counts explained connections and offers more once the session limit is reached', () => {
+	it('counts explained connections, says the rest follow in the background, and offers more now', () => {
 		const report = buildStatusReport(
 			inputs({
 				labels: {
@@ -220,7 +220,7 @@ describe('buildStatusReport', () => {
 
 		expect(item(report, LABELS)).toMatchObject({
 			level: 'ok',
-			text: '200 of 900 similar-note connections are explained. Up to 200 are explained per session, to limit AI requests.',
+			text: '200 of 900 similar-note connections are explained. The rest are explained in the background, up to 200 at a time, to limit AI requests.',
 			action: { id: 'retry-labels', label: 'Explain 200 more' },
 		});
 	});
