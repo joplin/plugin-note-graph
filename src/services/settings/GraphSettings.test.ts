@@ -30,7 +30,7 @@ describe('GraphSettings', () => {
 					}),
 					'noteGraph.similarityThreshold': expect.objectContaining({
 						type: SettingItemType.Int,
-						value: 50,
+						value: 70,
 						minimum: 0,
 						maximum: 100,
 						public: true,
@@ -64,7 +64,7 @@ describe('GraphSettings', () => {
 					}),
 					'noteGraph.scopeMode': expect.objectContaining({
 						type: SettingItemType.String,
-						value: 'all',
+						value: 'current',
 						public: false,
 					}),
 					'noteGraph.scopeSelectedNotebooks': expect.objectContaining({
@@ -122,7 +122,7 @@ describe('GraphSettings', () => {
 
 			expect(result.threshold).not.toBeNaN();
 			expect(result.topK).not.toBeNaN();
-			expect(result).toEqual({ threshold: 0.5, topK: 5 });
+			expect(result).toEqual({ threshold: 0.7, topK: 5 });
 		});
 
 		it('clamps an out-of-range threshold and topK to the registered min/max', async () => {
@@ -144,7 +144,7 @@ describe('GraphSettings', () => {
 
 			const result = await getSimilaritySettings();
 
-			expect(result).toEqual({ threshold: 0.5, topK: 5 });
+			expect(result).toEqual({ threshold: 0.7, topK: 5 });
 		});
 
 		it('falls back to defaults instead of clamping to the minimum when a value is null, empty, or a boolean', async () => {
@@ -155,7 +155,7 @@ describe('GraphSettings', () => {
 
 			const result = await getSimilaritySettings();
 
-			expect(result).toEqual({ threshold: 0.5, topK: 5 });
+			expect(result).toEqual({ threshold: 0.7, topK: 5 });
 
 			(joplin.settings.values as jest.Mock).mockResolvedValue({
 				'noteGraph.similarityThreshold': false,
@@ -164,7 +164,7 @@ describe('GraphSettings', () => {
 
 			const secondResult = await getSimilaritySettings();
 
-			expect(secondResult).toEqual({ threshold: 0.5, topK: 5 });
+			expect(secondResult).toEqual({ threshold: 0.7, topK: 5 });
 		});
 	});
 
@@ -187,7 +187,7 @@ describe('GraphSettings', () => {
 			});
 		});
 
-		it('falls back to "all" for an unrecognized or missing mode', async () => {
+		it('falls back to "current" for an unrecognized or missing mode', async () => {
 			(joplin.settings.values as jest.Mock).mockResolvedValue({
 				'noteGraph.scopeMode': undefined,
 				'noteGraph.scopeSelectedNotebooks': '',
@@ -195,7 +195,7 @@ describe('GraphSettings', () => {
 
 			const result = await getScopeSettings();
 
-			expect(result).toEqual({ mode: 'all', selectedNotebookIds: [] });
+			expect(result).toEqual({ mode: 'current', selectedNotebookIds: [] });
 		});
 
 		it('reads the "current" mode', async () => {

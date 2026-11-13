@@ -5,6 +5,13 @@ import { SimilarityPair } from './SimilarityEngine';
 export const TAG_CLIQUE_MAX_NOTES = 20;
 export const TAG_CAPPED_NEIGHBORS_PER_NOTE = 4;
 
+interface TagEdgeEntry {
+	source: string;
+	target: string;
+	tagNames: string[];
+	ring: boolean;
+}
+
 export class EdgeFactory {
 	/**
 	 * Creates graph edges from explicit note links and shared tags.
@@ -42,10 +49,7 @@ export class EdgeFactory {
 
 	private createTagEdges(notes: Note[]): GraphEdge[] {
 		const tagToNotes = this.groupNoteIdsByTag(notes);
-		const tagEdgeMap = new Map<
-			string,
-			{ source: string; target: string; tagNames: string[] }
-		>();
+		const tagEdgeMap = new Map<string, TagEdgeEntry>();
 
 		for (const [tagName, noteIds] of tagToNotes) {
 			if (noteIds.length <= TAG_CLIQUE_MAX_NOTES) {
@@ -60,23 +64,24 @@ export class EdgeFactory {
 			target: edge.target,
 			type: 'tag',
 			tagName: edge.tagNames.slice().sort().join(', '),
+			...(edge.ring ? { ring: true } : {}),
 		}));
 	}
 
 	private connectClique(
-		tagEdgeMap: Map<string, { source: string; target: string; tagNames: string[] }>,
+		tagEdgeMap: Map<string, TagEdgeEntry>,
 		noteIds: string[],
 		tagName: string
 	): void {
 		for (let i = 0; i < noteIds.length; i++) {
 			for (let j = i + 1; j < noteIds.length; j++) {
-				this.addTagPair(tagEdgeMap, noteIds[i], noteIds[j], tagName);
+				this.addTagPair(tagEdgeMap, noteIds[i], noteIds[j], tagName, false);
 			}
 		}
 	}
 
 	private connectCapped(
-		tagEdgeMap: Map<string, { source: string; target: string; tagNames: string[] }>,
+		tagEdgeMap: Map<string, TagEdgeEntry>,
 		noteIds: string[],
 		tagName: string
 	): void {
@@ -86,16 +91,17 @@ export class EdgeFactory {
 
 		for (let i = 0; i < m; i++) {
 			for (let j = 1; j <= k; j++) {
-				this.addTagPair(tagEdgeMap, sorted[i], sorted[(i + j) % m], tagName);
+				this.addTagPair(tagEdgeMap, sorted[i], sorted[(i + j) % m], tagName, true);
 			}
 		}
 	}
 
 	private addTagPair(
-		tagEdgeMap: Map<string, { source: string; target: string; tagNames: string[] }>,
+		tagEdgeMap: Map<string, TagEdgeEntry>,
 		a: string,
 		b: string,
-		tagName: string
+		tagName: string,
+		ring: boolean
 	): void {
 		const [source, target] = a < b ? [a, b] : [b, a];
 		const pairKey = `${source}::${target}`;
@@ -103,8 +109,9 @@ export class EdgeFactory {
 		const existing = tagEdgeMap.get(pairKey);
 		if (existing) {
 			existing.tagNames.push(tagName);
+			existing.ring = existing.ring && ring;
 		} else {
-			tagEdgeMap.set(pairKey, { source, target, tagNames: [tagName] });
+			tagEdgeMap.set(pairKey, { source, target, tagNames: [tagName], ring });
 		}
 	}
 

@@ -1,6 +1,7 @@
 import { IVectorDatabase, VectorDatabase } from './VectorDatabase';
 import { Note } from '../Types';
 import { GraphData } from '../../services/graph/types';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 const DB_FILE_NAME = 'note-graph-cache.sqlite';
 
@@ -21,13 +22,6 @@ const SYNC_STATE_SCHEMA = `
 	)
 `;
 
-const SCOPE_STATE_SCHEMA = `
-	CREATE TABLE IF NOT EXISTS scope_state (
-		id INTEGER PRIMARY KEY CHECK (id = 1),
-		scope_key TEXT
-	)
-`;
-
 const ENRICHMENT_CACHE_SCHEMA = `
 	CREATE TABLE IF NOT EXISTS enrichment_cache (
 		kind TEXT NOT NULL,
@@ -37,6 +31,28 @@ const ENRICHMENT_CACHE_SCHEMA = `
 		PRIMARY KEY (kind, id)
 	)
 `;
+
+const LAYOUT_CACHE_SCHEMA = `
+	CREATE TABLE IF NOT EXISTS layout_cache (
+		layout_key TEXT PRIMARY KEY,
+		positions_json TEXT NOT NULL
+	)
+`;
+
+/** Each view of each notebook saves a layout, so keep only the most recent. */
+const MAX_SAVED_LAYOUTS = 30;
+
+/**
+ * Applied in order, once each. Only ever add to the end. The last three date from
+ * when the graph began to hold the whole vault and record each note's notebook: an
+ * older cached graph may cover one notebook and lacks that, so it can't be reused.
+ */
+const MIGRATIONS = [
+	'ALTER TABLE sync_state ADD COLUMN embeddings_model TEXT',
+	'DROP TABLE IF EXISTS scope_state',
+	'DELETE FROM graph_cache',
+	'DELETE FROM layout_cache',
+];
 
 interface GraphCacheRow {
 	notes_json: string;
@@ -48,15 +64,19 @@ interface SyncStateRow {
 	embeddings_cursor: string | null;
 }
 
-interface ScopeStateRow {
-	scope_key: string | null;
-}
-
 interface EnrichmentCacheRow {
 	kind: string;
 	id: string;
 	updated_time: number;
 	enrichment_json: string;
+}
+
+export type NodePositions = Record<string, { x: number; y: number }>;
+
+/** Stores computed node positions, so reopening a graph doesn't need a new layout. */
+export interface LayoutStore {
+	loadLayout(layoutKey: string): Promise<NodePositions | null>;
+	saveLayout(layoutKey: string, positions: NodePositions): Promise<void>;
 }
 
 export interface PersistedEnrichment {
@@ -66,16 +86,16 @@ export interface PersistedEnrichment {
 	enrichment: Record<string, unknown>;
 }
 
-export class GraphCacheRepository {
+export class GraphCacheRepository implements LayoutStore {
 	private writeLock: Promise<void> = Promise.resolve();
 
 	public constructor(
-		private readonly db: IVectorDatabase = new VectorDatabase(DB_FILE_NAME, [
-			GRAPH_CACHE_SCHEMA,
-			SYNC_STATE_SCHEMA,
-			SCOPE_STATE_SCHEMA,
-			ENRICHMENT_CACHE_SCHEMA,
-		])
+		private readonly db: IVectorDatabase = new VectorDatabase(
+			DB_FILE_NAME,
+			[GRAPH_CACHE_SCHEMA, SYNC_STATE_SCHEMA, ENRICHMENT_CACHE_SCHEMA, LAYOUT_CACHE_SCHEMA],
+			MIGRATIONS
+		),
+		private readonly logger: Logger = consoleLogger
 	) {}
 
 	public async loadGraph(): Promise<{ notes: Note[]; graphData: GraphData } | null> {
@@ -150,23 +170,56 @@ export class GraphCacheRepository {
 		});
 	}
 
-	public async loadScopeKey(): Promise<string | null> {
+	public async loadEmbeddingsModel(): Promise<string | null> {
 		await this.db.open();
-		const rows = await this.db.all<ScopeStateRow>(
-			'SELECT scope_key FROM scope_state WHERE id = 1',
+		const rows = await this.db.all<{ embeddings_model: string | null }>(
+			'SELECT embeddings_model FROM sync_state WHERE id = 1',
 			[]
 		);
-		return rows[0]?.scope_key ?? null;
+		return rows[0]?.embeddings_model ?? null;
 	}
 
-	public saveScopeKey(scopeKey: string): Promise<void> {
+	public saveEmbeddingsModel(modelId: string): Promise<void> {
 		return this.enqueueWrite(async () => {
 			await this.db.open();
 			await this.db.run(
-				`INSERT INTO scope_state (id, scope_key)
+				`INSERT INTO sync_state (id, embeddings_model)
 				 VALUES (1, ?)
-				 ON CONFLICT(id) DO UPDATE SET scope_key = excluded.scope_key`,
-				[scopeKey]
+				 ON CONFLICT(id) DO UPDATE SET embeddings_model = excluded.embeddings_model`,
+				[modelId]
+			);
+		});
+	}
+
+	/** Forgets the sweep position, so the next sweep starts over. Needed when the embedding model changes. */
+	public clearEmbeddingsCursor(): Promise<void> {
+		return this.enqueueWrite(async () => {
+			await this.db.open();
+			await this.db.run('UPDATE sync_state SET embeddings_cursor = NULL WHERE id = 1', []);
+		});
+	}
+
+	public async loadLayout(layoutKey: string): Promise<NodePositions | null> {
+		await this.db.open();
+		const rows = await this.db.all<{ positions_json: string }>(
+			'SELECT positions_json FROM layout_cache WHERE layout_key = ?',
+			[layoutKey]
+		);
+		return rows[0] ? (JSON.parse(rows[0].positions_json) as NodePositions) : null;
+	}
+
+	public saveLayout(layoutKey: string, positions: NodePositions): Promise<void> {
+		return this.enqueueWrite(async () => {
+			await this.db.open();
+			await this.db.run('DELETE FROM layout_cache WHERE layout_key = ?', [layoutKey]);
+			await this.db.run(
+				'INSERT INTO layout_cache (layout_key, positions_json) VALUES (?, ?)',
+				[layoutKey, JSON.stringify(positions)]
+			);
+			await this.db.run(
+				`DELETE FROM layout_cache WHERE rowid NOT IN
+				 (SELECT rowid FROM layout_cache ORDER BY rowid DESC LIMIT ?)`,
+				[MAX_SAVED_LAYOUTS]
 			);
 		});
 	}
@@ -175,7 +228,46 @@ export class GraphCacheRepository {
 		return this.enqueueWrite(async () => {
 			await this.db.open();
 			await this.db.run('DELETE FROM graph_cache WHERE id = 1', []);
+			await this.db.run('DELETE FROM layout_cache', []);
 		});
+	}
+
+	public async hasEnrichments(): Promise<boolean> {
+		await this.db.open();
+		const rows = await this.db.all<{ id: string }>(
+			'SELECT id FROM enrichment_cache LIMIT 1',
+			[]
+		);
+		return rows.length > 0;
+	}
+
+	/** Removes labels for notes that no longer exist. Only call this with a complete, whole-vault list. */
+	public async pruneEnrichments(noteIdsToKeep: Set<string>): Promise<void> {
+		await this.db.open();
+		const rows = await this.db.all<{ kind: string; id: string }>(
+			'SELECT kind, id FROM enrichment_cache',
+			[]
+		);
+		const stale = rows.filter((row) =>
+			row.kind === 'node'
+				? !noteIdsToKeep.has(row.id)
+				: row.id
+						.split('::')
+						.slice(0, 2)
+						.some((noteId) => !noteIdsToKeep.has(noteId))
+		);
+		if (stale.length === 0) return;
+
+		await this.enqueueWrite(() =>
+			this.inTransaction(async () => {
+				for (const row of stale) {
+					await this.db.run('DELETE FROM enrichment_cache WHERE kind = ? AND id = ?', [
+						row.kind,
+						row.id,
+					]);
+				}
+			})
+		);
 	}
 
 	public async loadEnrichments(): Promise<PersistedEnrichment[]> {
@@ -196,8 +288,7 @@ export class GraphCacheRepository {
 		if (records.length === 0) return Promise.resolve();
 		return this.enqueueWrite(async () => {
 			await this.db.open();
-			await this.db.run('BEGIN TRANSACTION', []);
-			try {
+			await this.inTransaction(async () => {
 				for (const record of records) {
 					await this.db.run(
 						`INSERT INTO enrichment_cache (kind, id, updated_time, enrichment_json)
@@ -208,19 +299,27 @@ export class GraphCacheRepository {
 						[record.kind, record.id, record.updatedTime, JSON.stringify(record.enrichment)]
 					);
 				}
-				await this.db.run('COMMIT', []);
-			} catch (e) {
-				try {
-					await this.db.run('ROLLBACK', []);
-				} catch (rollbackError) {
-					console.error(
-						'Enrichment cache rollback failed after a write error:',
-						rollbackError
-					);
-				}
-				throw e;
-			}
+			});
 		});
+	}
+
+	/** Many writes in one transaction cost one disk commit instead of one each, and apply all together or not at all. */
+	private async inTransaction(work: () => Promise<void>): Promise<void> {
+		await this.db.run('BEGIN TRANSACTION', []);
+		try {
+			await work();
+			await this.db.run('COMMIT', []);
+		} catch (e) {
+			try {
+				await this.db.run('ROLLBACK', []);
+			} catch (rollbackError) {
+				this.logger.error(
+					'Enrichment cache rollback failed after a write error:',
+					rollbackError
+				);
+			}
+			throw e;
+		}
 	}
 
 	private enqueueWrite(write: () => Promise<void>): Promise<void> {

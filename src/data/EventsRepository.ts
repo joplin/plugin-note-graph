@@ -1,4 +1,5 @@
 import joplin from 'api';
+import { Logger, consoleLogger } from '../utils/Logger';
 
 export type NoteChangeType = 'created' | 'updated' | 'deleted';
 
@@ -30,6 +31,8 @@ interface EventsPage {
 export class EventsRepository {
 	private static readonly MAX_PAGES = 50;
 
+	public constructor(private readonly logger: Logger = consoleLogger) {}
+
 	public async getNoteEventsSince(
 		cursor?: string
 	): Promise<{ events: NoteEvent[]; cursor: string | undefined }> {
@@ -54,7 +57,7 @@ export class EventsRepository {
 		}
 
 		if (pageCount >= EventsRepository.MAX_PAGES) {
-			console.info(
+			this.logger.info(
 				`Events sweep hit the ${EventsRepository.MAX_PAGES}-page safety cap; remaining events will be picked up on the next sync.`
 			);
 		}

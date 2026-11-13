@@ -19,9 +19,13 @@ class FakeVectorDatabase implements IVectorDatabase {
 		this.opened = true;
 	}
 
-	public async run(_sql: string, params: unknown[]): Promise<void> {
+	public async run(sql: string, params: unknown[]): Promise<void> {
 		if (params.length === 0) {
 			return; // BEGIN TRANSACTION / COMMIT / ROLLBACK
+		}
+		if (sql.startsWith('DELETE')) {
+			for (const id of params as string[]) this.rows.delete(id);
+			return;
 		}
 		const [noteId, modelId, updatedTime, vector] = params as [string, string, number, Buffer];
 		this.rows.set(noteId, {
@@ -33,6 +37,9 @@ class FakeVectorDatabase implements IVectorDatabase {
 	}
 
 	public async all<T>(_sql: string, params: unknown[]): Promise<T[]> {
+		if (params.length === 0) {
+			return Array.from(this.rows.values()) as unknown as T[];
+		}
 		const ids = params as string[];
 		this.allCallBatchSizes.push(ids.length);
 		const found = ids
@@ -45,6 +52,47 @@ class FakeVectorDatabase implements IVectorDatabase {
 describe('VectorRepository', () => {
 	let db: FakeVectorDatabase;
 	let repo: VectorRepository;
+
+	const entry = (noteId: string) => ({
+		noteId,
+		vector: [1, 0],
+		modelId: 'm',
+		updatedTime: 1,
+	});
+
+	describe('removal', () => {
+		it('removes only the given notes', async () => {
+			await repo.saveMany([entry('a'), entry('b')]);
+
+			await repo.removeMany(['a']);
+
+			const remaining = await repo.getMany(['a', 'b']);
+			expect(Array.from(remaining.keys())).toEqual(['b']);
+		});
+
+		it('removes more notes than fit in one statement', async () => {
+			const ids = Array.from({ length: 1200 }, (_, i) => `n${i}`);
+			await repo.saveMany(ids.map(entry));
+
+			await repo.removeMany(ids.slice(0, 1100));
+
+			const remaining = await repo.getMany(ids);
+			expect(remaining.size).toBe(100);
+		});
+
+		it('prunes every note outside the list it is given', async () => {
+			await repo.saveMany([entry('keep'), entry('gone')]);
+
+			await repo.pruneExcept(new Set(['keep']));
+
+			const remaining = await repo.getMany(['keep', 'gone']);
+			expect(Array.from(remaining.keys())).toEqual(['keep']);
+		});
+
+		it('does nothing for an empty list', async () => {
+			await expect(repo.removeMany([])).resolves.toBeUndefined();
+		});
+	});
 
 	beforeEach(() => {
 		db = new FakeVectorDatabase();

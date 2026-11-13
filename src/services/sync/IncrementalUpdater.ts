@@ -1,57 +1,80 @@
-import joplin from 'api';
 import { Note } from '../../data/Types';
 import { NoteRepository } from '../../data/NoteRepository';
 import { NotePreprocessor } from '../../data/NotePreprocessor';
 import { EventsRepository } from '../../data/EventsRepository';
 import { GraphCacheRepository } from '../../data/Database/GraphCacheRepository';
 import { AnalysisController } from '../AnalysisController';
-import { GraphDiff } from '../graph/GraphDiffer';
 import { GraphData } from '../graph/types';
-import {
-	JoplinAiApi,
-	isIndexUsable,
-	retryWithBackoff,
-} from '../embeddings/providers/JoplinNativeProvider';
 import { isAiAnalysisEnabled } from '../settings/GraphSettings';
-import { ResolvedScope } from '../settings/NoteScopeResolver';
-
-const UNSCOPED: ResolvedScope = { folderIds: null, scopeKey: 'all' };
+import { EmbeddingChangeDetector } from './EmbeddingChangeDetector';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 const ITEM_CHANGE_DELETE = 3;
 
-const EMBEDDINGS_PAGE_SIZE = 1000;
-const EMBEDDINGS_MAX_PAGES = 500;
 const DEFAULT_COALESCE_WINDOW_MS = 1000;
-const MAX_CONSECUTIVE_RETRY_SKIPS = 5;
 
-const EMBEDDINGS_SWEEP_MIN_INTERVAL_MS = 5 * 60 * 1000;
+/** Joplin only re-embeds edits every few minutes, so sweeping more often than this finds nothing. */
+const EMBEDDINGS_SWEEP_MIN_INTERVAL_MS = 150 * 1000;
 
-const INDEX_STATUS_MAX_ATTEMPTS = 3;
-const INDEX_STATUS_RETRY_DELAY_MS = 1000;
+/** Past this many changed notes, one full reload is cheaper than fetching each note on its own. */
+const MAX_INCREMENTAL_UPSERTS = 1000;
+
+export interface IncrementalUpdaterOptions {
+	analysisController: AnalysisController;
+	onGraphChanged: (graphData: GraphData) => void;
+	onFullReloadNeeded: () => Promise<void>;
+	noteRepository?: NoteRepository;
+	preprocessor?: NotePreprocessor;
+	eventsRepository?: EventsRepository;
+	graphCache?: GraphCacheRepository;
+	changeDetector?: Pick<EmbeddingChangeDetector, 'detect'>;
+	coalesceWindowMs?: number;
+	checkAiEnabled?: () => Promise<boolean>;
+	now?: () => number;
+	onEnrichmentProgress?: (progress: { current: number; total: number }) => void;
+	logger?: Logger;
+}
 
 export class IncrementalUpdater {
 	private readonly pendingUpsertIds = new Set<string>();
 	private readonly pendingRemovedIds = new Set<string>();
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
 	private flushChain: Promise<void> = Promise.resolve();
-	private consecutiveRetrySkips = 0;
 	private lastEmbeddingsSweepAt = 0;
+	private embeddingsSweepInFlight = false;
 
-	public constructor(
-		private readonly analysisController: AnalysisController,
-		private readonly onGraphPatch: (diff: GraphDiff, fullGraphData: GraphData) => void,
-		private readonly onFullReloadNeeded: () => Promise<void>,
-		private readonly noteRepository = new NoteRepository(),
-		private readonly preprocessor = new NotePreprocessor(),
-		private readonly eventsRepository = new EventsRepository(),
-		private readonly graphCache = new GraphCacheRepository(),
-		private readonly coalesceWindowMs = DEFAULT_COALESCE_WINDOW_MS,
-		private readonly checkAiEnabled: () => Promise<boolean> = isAiAnalysisEnabled,
-		private readonly onRetriesExhausted: () => void = () => {},
-		private readonly now: () => number = Date.now,
-		private readonly getCurrentScope: () => ResolvedScope = () => UNSCOPED,
-		private readonly onEnrichmentProgress: (progress: { current: number; total: number }) => void = () => {}
-	) {}
+	private readonly analysisController: AnalysisController;
+	private readonly onGraphChanged: (graphData: GraphData) => void;
+	private readonly onFullReloadNeeded: () => Promise<void>;
+	private readonly noteRepository: NoteRepository;
+	private readonly preprocessor: NotePreprocessor;
+	private readonly eventsRepository: EventsRepository;
+	private readonly graphCache: GraphCacheRepository;
+	private readonly changeDetector: Pick<EmbeddingChangeDetector, 'detect'>;
+	private readonly coalesceWindowMs: number;
+	private readonly checkAiEnabled: () => Promise<boolean>;
+	private readonly now: () => number;
+	private readonly onEnrichmentProgress: (progress: { current: number; total: number }) => void;
+	private readonly logger: Logger;
+
+	private lastSelectedIds: string[] = [];
+
+	public constructor(options: IncrementalUpdaterOptions) {
+		this.analysisController = options.analysisController;
+		this.onGraphChanged = options.onGraphChanged;
+		this.onFullReloadNeeded = options.onFullReloadNeeded;
+		this.noteRepository = options.noteRepository ?? new NoteRepository();
+		this.preprocessor = options.preprocessor ?? new NotePreprocessor();
+		this.eventsRepository = options.eventsRepository ?? new EventsRepository();
+		this.graphCache = options.graphCache ?? new GraphCacheRepository();
+		this.changeDetector =
+			options.changeDetector ?? new EmbeddingChangeDetector(this.graphCache);
+		this.coalesceWindowMs = options.coalesceWindowMs ?? DEFAULT_COALESCE_WINDOW_MS;
+		this.checkAiEnabled = options.checkAiEnabled ?? isAiAnalysisEnabled;
+		this.now = options.now ?? Date.now;
+		this.onEnrichmentProgress = options.onEnrichmentProgress ?? (() => undefined);
+		this.logger = options.logger ?? consoleLogger;
+	}
 
 	public handleNoteChange(event: { id: string; event: number }): void {
 		if (event.event === ITEM_CHANGE_DELETE) {
@@ -61,107 +84,108 @@ export class IncrementalUpdater {
 		}
 	}
 
+	/**
+	 * Joplin only reports changes to the selected note, and moving a note to another
+	 * notebook stops it being selected, so the note just left is checked as well.
+	 */
 	public handleSelectionChange(event: { value: string[] }): void {
-		for (const id of event.value) {
+		for (const id of [...this.lastSelectedIds, ...event.value]) {
 			this.scheduleUpsert(id);
 		}
+		this.lastSelectedIds = event.value;
 	}
 
 	public async handleSyncComplete(): Promise<void> {
 		if (!this.analysisController.hasNotes()) return;
 
 		try {
-			const aiEnabled = await this.checkAiEnabled();
-			let embeddingsSweepFailed = false;
-
-			if (aiEnabled) {
-				if (this.now() - this.lastEmbeddingsSweepAt < EMBEDDINGS_SWEEP_MIN_INTERVAL_MS) {
-					console.info('Embeddings sweep throttled; relying on /events for this sync.');
-					embeddingsSweepFailed = true;
-				} else {
-					try {
-						const upsertIds = await this.detectEmbeddingUpserts();
-						this.lastEmbeddingsSweepAt = this.now();
-						for (const id of upsertIds) this.scheduleUpsert(id);
-					} catch (e) {
-						console.error(
-							'Embeddings sweep failed, falling back to /events for this sync:',
-							e
-						);
-						embeddingsSweepFailed = true;
-					}
-				}
-			}
+			await this.sweepEmbeddings();
 
 			const { upsertIds, removedIds } = await this.detectEventChanges();
-			if (!aiEnabled || embeddingsSweepFailed) {
-				for (const id of upsertIds) this.scheduleUpsert(id);
-			}
+			for (const id of upsertIds) this.scheduleUpsert(id);
 			for (const id of removedIds) this.scheduleRemoval(id);
 
 			await this.flush();
 		} catch (e) {
-			console.error('Incremental sync sweep failed, falling back to a full reload:', e);
+			this.logger.error('Incremental sync sweep failed, falling back to a full reload:', e);
 			await this.onFullReloadNeeded();
 		}
 	}
 
-	private async detectEmbeddingUpserts(): Promise<string[]> {
-		const cursor = await this.graphCache.loadEmbeddingsCursor();
-		const api = this.getAiApi();
-		await this.ensureIndexUsable(api);
+	/**
+	 * Compares the notes in memory with what the vault really holds, and applies
+	 * any difference. This catches what events can't: a change made while the plugin
+	 * was off, or one whose graph write was lost when Joplin closed.
+	 */
+	public async reconcileWithVault(): Promise<void> {
+		if (!this.analysisController.hasNotes()) return;
 
-		const noteIds = new Set<string>();
-		let currentCursor = cursor ?? undefined;
-		let pageCount = 0;
+		const { versions, complete } = await this.noteRepository.getNoteVersions();
+		if (!complete) {
+			this.logger.info(
+				'Could not list every note, so the graph was not checked against the vault.'
+			);
+			return;
+		}
 
-		while (pageCount < EMBEDDINGS_MAX_PAGES) {
-			pageCount++;
+		const current = this.analysisController.getCurrentNotes();
+		const updatedTimeById = new Map(current.map((note) => [note.id, note.updated_time]));
+		for (const note of current) {
+			if (!versions.has(note.id)) this.scheduleRemoval(note.id);
+		}
+		for (const [id, updatedTime] of versions) {
+			if (updatedTimeById.get(id) !== updatedTime) this.scheduleUpsert(id);
+		}
 
-			const page = await api.getEmbeddings({
-				cursor: currentCursor,
-				limit: EMBEDDINGS_PAGE_SIZE,
-			});
-			for (const chunk of page.chunks) {
-				noteIds.add(chunk.noteId);
+		await this.flush();
+	}
+
+	/** Looks for re-embedded notes between syncs, so people who never sync still get fresh semantic edges. */
+	public async handleEmbeddingTick(): Promise<void> {
+		if (!this.analysisController.hasNotes()) return;
+		await this.sweepEmbeddings();
+	}
+
+	/** Never throws: a failed sweep only means semantic edges stay as they are until the next one. */
+	private async sweepEmbeddings(): Promise<void> {
+		if (this.embeddingsSweepInFlight) return;
+		if (this.now() - this.lastEmbeddingsSweepAt < EMBEDDINGS_SWEEP_MIN_INTERVAL_MS) return;
+
+		this.embeddingsSweepInFlight = true;
+		try {
+			if (!(await this.checkAiEnabled())) return;
+
+			const { noteIds, modelChanged, isBaseline } = await this.changeDetector.detect();
+			this.lastEmbeddingsSweepAt = this.now();
+
+			if (modelChanged) {
+				this.logger.info('Embedding model changed; reloading the graph.');
+				await this.onFullReloadNeeded();
+				return;
 			}
 
-			if (!page.nextCursor) break;
-			currentCursor = page.nextCursor;
+			if (isBaseline) {
+				await this.analysisController.markOutdatedVectorsStale(noteIds);
+			} else {
+				this.analysisController.markVectorsStale(noteIds);
+			}
+			const graphData = await this.analysisController.refreshStaleVectors();
+			if (graphData) {
+				this.logger.info(`Embeddings refreshed for up to ${noteIds.length} note(s).`);
+				this.publish(graphData);
+			}
+		} catch (e) {
+			this.logger.error('Embeddings sweep failed; semantic edges stay as they are for now:', e);
+		} finally {
+			this.embeddingsSweepInFlight = false;
 		}
-
-		if (pageCount >= EMBEDDINGS_MAX_PAGES) {
-			console.info(
-				`Embeddings sweep hit the ${EMBEDDINGS_MAX_PAGES}-page safety cap; remaining changes will be picked up on the next sync.`
-			);
-		}
-
-		if (currentCursor) {
-			await this.graphCache.saveEmbeddingsCursor(currentCursor);
-		}
-
-		return Array.from(noteIds);
 	}
 
-	private getAiApi(): JoplinAiApi {
-		const api = joplin.ai as unknown as JoplinAiApi | undefined;
-		if (!api) {
-			throw new Error('joplin.ai is not available. Enable AI in Settings → AI.');
-		}
-		return api;
-	}
-
-	private async ensureIndexUsable(api: JoplinAiApi): Promise<void> {
-		const status = await retryWithBackoff('getIndexStatus() call', () => api.getIndexStatus(), {
-			maxAttempts: INDEX_STATUS_MAX_ATTEMPTS,
-			baseDelayMs: INDEX_STATUS_RETRY_DELAY_MS,
+	private publish(graphData: GraphData): void {
+		this.onGraphChanged(graphData);
+		this.runEnrichmentFollowUp().catch((e) => {
+			this.logger.error('LLM enrichment follow-up failed:', e);
 		});
-		if (!status || !isIndexUsable(status.state)) {
-			throw new Error(
-				`Joplin AI index is not usable yet (state: ${status?.state ?? 'unknown'}). ` +
-					'Enable AI and wait for the embedding model to finish loading in Settings → AI.'
-			);
-		}
 	}
 
 	private async detectEventChanges(): Promise<{ upsertIds: string[]; removedIds: string[] }> {
@@ -231,51 +255,32 @@ export class IncrementalUpdater {
 		if (!this.analysisController.hasNotes()) return;
 
 		try {
+			if (upsertIds.length > MAX_INCREMENTAL_UPSERTS) {
+				this.logger.info(
+					`${upsertIds.length} notes changed; reloading instead of updating each one.`
+				);
+				await this.onFullReloadNeeded();
+				return;
+			}
+
 			const { upserts, discoveredRemovals } = await this.fetchAndEnrich(upsertIds);
 			const graphData = await this.analysisController.applyDelta(upserts, [
 				...removedIds,
 				...discoveredRemovals,
 			]);
-			if (!graphData) {
-				if (this.analysisController.wasLastDeltaSkippedForRetry()) {
-					for (const id of upsertIds) this.pendingUpsertIds.add(id);
-					for (const id of removedIds) this.pendingRemovedIds.add(id);
-					this.consecutiveRetrySkips++;
-					if (this.consecutiveRetrySkips < MAX_CONSECUTIVE_RETRY_SKIPS) {
-						this.scheduleFlush();
-					} else {
-						console.info(
-							`Giving up automatic retry after ${this.consecutiveRetrySkips} consecutive skipped updates; will retry on the next edit or sync.`
-						);
-						this.onRetriesExhausted();
-					}
-				} else {
-					this.consecutiveRetrySkips = 0;
-				}
-				return;
-			}
+			if (!graphData) return;
 
-			this.consecutiveRetrySkips = 0;
 			const removedCount = removedIds.length + discoveredRemovals.length;
-			console.info(
+			this.logger.info(
 				`Incremental update applied: ${upserts.length} upserted, ${removedCount} removed.`
 			);
-
-			const diff = this.analysisController.getLastDiff();
-			if (diff) {
-				this.onGraphPatch(diff, graphData);
-			}
-
-			this.runEnrichmentFollowUp().catch((e) => {
-				console.error('LLM enrichment follow-up failed:', e);
-			});
+			this.publish(graphData);
 		} catch (e) {
-			this.consecutiveRetrySkips = 0;
-			console.error('Incremental flush failed, falling back to a full reload:', e);
+			this.logger.error('Incremental flush failed, falling back to a full reload:', e);
 			try {
 				await this.onFullReloadNeeded();
 			} catch (fallbackError) {
-				console.error(
+				this.logger.error(
 					'Full-reload fallback also failed after an incremental flush error:',
 					fallbackError
 				);
@@ -286,19 +291,13 @@ export class IncrementalUpdater {
 	}
 
 	/**
-	 * Runs LLM enrichment (Pass B) against the graph `applyDelta` just
-	 * committed and pushes a further patch if it changed anything. Kept
-	 * separate from `applyDelta` itself so the structural/semantic patch
-	 * reaches the panel immediately, before the much slower LLM pass runs.
+	 * Runs LLM enrichment (Pass B) against the graph just committed and publishes
+	 * it again if it changed anything. Kept separate so the update reaches the
+	 * panel immediately, before the much slower LLM pass runs.
 	 */
 	private async runEnrichmentFollowUp(): Promise<void> {
 		const enriched = await this.analysisController.enrichCurrentGraph(this.onEnrichmentProgress);
-		if (!enriched) return;
-
-		const diff = this.analysisController.getLastDiff();
-		if (diff) {
-			this.onGraphPatch(diff, enriched);
-		}
+		if (enriched) this.onGraphChanged(enriched);
 	}
 
 	private async fetchAndEnrich(
@@ -310,15 +309,9 @@ export class IncrementalUpdater {
 			return { upserts, discoveredRemovals };
 		}
 
-		const { folderIds } = this.getCurrentScope();
-
 		for (const id of ids) {
 			const raw = await this.noteRepository.getNote(id);
 			if (!raw) {
-				discoveredRemovals.push(id);
-				continue;
-			}
-			if (folderIds && !folderIds.has(raw.parent_id)) {
 				discoveredRemovals.push(id);
 				continue;
 			}

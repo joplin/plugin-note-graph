@@ -1,6 +1,7 @@
 import { AnalysisController } from './AnalysisController';
 import { GraphBuilder } from './graph/GraphBuilder';
 import { GraphCacheRepository } from '../data/Database/GraphCacheRepository';
+import { VectorRepository } from '../data/Database/VectorRepository';
 import { ProviderResolver } from './embeddings/ProviderResolver';
 import { EmbeddingOrchestrator } from './embeddings/Orchestrator';
 import { LLMEnricher } from './llm/LLMEnricher';
@@ -18,7 +19,12 @@ jest.mock('./embeddings/Orchestrator');
 jest.mock('./llm/LLMEnricher');
 jest.mock('./settings/GraphSettings');
 jest.mock('../data/Database/VectorRepository', () => ({
-	VectorRepository: jest.fn(),
+	VectorRepository: jest.fn(() => ({
+		getMany: jest.fn().mockResolvedValue(new Map()),
+		saveMany: jest.fn().mockResolvedValue(undefined),
+		removeMany: jest.fn().mockResolvedValue(undefined),
+		pruneExcept: jest.fn().mockResolvedValue(undefined),
+	})),
 }));
 jest.mock('../data/Database/GraphCacheRepository');
 
@@ -70,6 +76,12 @@ describe('AnalysisController', () => {
 	let mockBuilder: jest.Mocked<GraphBuilder>;
 	let mockGraphCache: jest.Mocked<GraphCacheRepository>;
 	let mockEnricher: jest.Mocked<LLMEnricher>;
+	let mockVectorStore: {
+		getMany: jest.Mock;
+		saveMany: jest.Mock;
+		removeMany: jest.Mock;
+		pruneExcept: jest.Mock;
+	};
 	let controller: AnalysisController;
 	let mockOrchestratorInstance: {
 		setProvider: jest.Mock;
@@ -87,7 +99,6 @@ describe('AnalysisController', () => {
 		mockGetSimilaritySettings.mockResolvedValue({ threshold: 0.5, topK: 5 });
 		mockGraphCache = new MockGraphCacheRepository() as jest.Mocked<GraphCacheRepository>;
 		mockGraphCache.saveGraph.mockResolvedValue(undefined);
-		mockGraphCache.saveScopeKey.mockResolvedValue(undefined);
 		mockGraphCache.loadGraph.mockResolvedValue(null);
 		mockGraphCache.saveEnrichments.mockResolvedValue(undefined);
 		mockGraphCache.loadEnrichments.mockResolvedValue([]);
@@ -95,7 +106,20 @@ describe('AnalysisController', () => {
 		mockEnricher.replayCached.mockReturnValue({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
 		mockEnricher.takeNewEnrichments.mockReturnValue({ nodes: [], edges: [] });
 		mockIsLlmEnrichmentEnabled.mockResolvedValue(false);
-		controller = new AnalysisController(mockBuilder, mockGraphCache, undefined, mockEnricher);
+		mockBuilder.rebuildStructure.mockReturnValue({ nodes: [], edges: [] });
+		mockGraphCache.pruneEnrichments.mockResolvedValue(undefined);
+		mockVectorStore = {
+			getMany: jest.fn().mockResolvedValue(new Map()),
+			saveMany: jest.fn().mockResolvedValue(undefined),
+			removeMany: jest.fn().mockResolvedValue(undefined),
+			pruneExcept: jest.fn().mockResolvedValue(undefined),
+		};
+		controller = new AnalysisController(
+			mockBuilder,
+			mockGraphCache,
+			mockEnricher,
+			mockVectorStore as unknown as VectorRepository
+		);
 
 		mockOrchestratorInstance = {
 			setProvider: jest.fn(),
@@ -114,6 +138,15 @@ describe('AnalysisController', () => {
 			const notes = [note('a')];
 			controller.buildStructural(notes);
 			expect(mockBuilder.build).toHaveBeenCalledWith(notes);
+		});
+
+		it('remembers the community numbers of the graph it commits, so later builds stay on them', () => {
+			const graphData = { nodes: [], edges: [] };
+			mockBuilder.build.mockReturnValue(graphData);
+
+			controller.buildStructural([note('a')]);
+
+			expect(mockBuilder.rememberCommunities).toHaveBeenCalledWith(graphData);
 		});
 	});
 
@@ -573,6 +606,26 @@ describe('AnalysisController', () => {
 			expect(controller.getLastGraphData()?.edges[0].data.id).toBe('a::c::semantic');
 		});
 
+		it('marks the connections drawn on screen, so they are explained first', async () => {
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+			const onScreen = new AnalysisController(
+				mockBuilder,
+				mockGraphCache,
+				mockEnricher,
+				mockVectorStore as unknown as VectorRepository,
+				0,
+				undefined,
+				() => new Set(['a', 'b'])
+			);
+			await onScreen.embedAndBuildSemantic([note('a'), note('b')]);
+
+			await onScreen.enrichCurrentGraph();
+
+			const input = mockEnricher.enrich.mock.calls[0][0];
+			expect(input.edges.length).toBeGreaterThan(0);
+			expect(input.edges.every((edge: { onScreen?: boolean }) => edge.onScreen)).toBe(true);
+		});
+
 		it('sends the full note title and body, not the graph node label or a pre-truncated body', async () => {
 			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
 			const longTitle = 'A '.repeat(50);
@@ -627,6 +680,7 @@ describe('AnalysisController', () => {
 					source: 'a',
 					target: 'b',
 					updatedTime: note('a').updated_time,
+					onScreen: false,
 				},
 			]);
 		});
@@ -643,7 +697,7 @@ describe('AnalysisController', () => {
 
 			const input = mockEnricher.enrich.mock.calls[0][0];
 			expect(input.edges).toEqual([
-				{ id: 'a::b::semantic', source: 'a', target: 'b', updatedTime: 200 },
+				{ id: 'a::b::semantic', source: 'a', target: 'b', updatedTime: 200, onScreen: false },
 			]);
 		});
 
@@ -697,7 +751,7 @@ describe('AnalysisController', () => {
 
 			await controller.enrichCurrentGraph(onEnrichmentProgress);
 
-			const forwarded = mockEnricher.enrich.mock.calls[0][2];
+			const forwarded = mockEnricher.enrich.mock.calls[0][2]!;
 			forwarded({ current: 1, total: 3 });
 			expect(onEnrichmentProgress).toHaveBeenCalledWith({ current: 1, total: 3 });
 		});
@@ -708,7 +762,7 @@ describe('AnalysisController', () => {
 			await controller.embedAndBuildSemantic([note('a'), note('b')]);
 
 			await controller.enrichCurrentGraph(onEnrichmentProgress);
-			const forwarded = mockEnricher.enrich.mock.calls[0][2];
+			const forwarded = mockEnricher.enrich.mock.calls[0][2]!;
 
 			controller.buildStructural([note('a')]);
 			forwarded({ current: 1, total: 1 });
@@ -750,6 +804,26 @@ describe('AnalysisController', () => {
 			const second = await secondPromise;
 			expect(second).toBeNull();
 			expect(mockEnricher.enrich).toHaveBeenCalledTimes(2);
+		});
+
+		it('reports a Pass B run as running only while it is in flight', async () => {
+			mockIsLlmEnrichmentEnabled.mockResolvedValue(true);
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			let finish!: (result: Awaited<ReturnType<typeof mockEnricher.enrich>>) => void;
+			mockEnricher.enrich.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						finish = resolve;
+					})
+			);
+
+			const run = controller.enrichCurrentGraph();
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(controller.isEnrichmentRunning()).toBe(true);
+
+			finish({ nodeEnrichments: new Map(), edgeEnrichments: new Map() });
+			await run;
+			expect(controller.isEnrichmentRunning()).toBe(false);
 		});
 	});
 
@@ -964,18 +1038,36 @@ describe('AnalysisController', () => {
 			expect(mockGraphCache.saveGraph).toHaveBeenCalledWith(notes, graphData);
 		});
 
-		it('defaults to the "all" scope key when none has been set', () => {
+		it('does not save the graph while persistence is disabled', () => {
+			controller.setCachePersistenceEnabled(false);
+
 			controller.buildStructural([note('a')]);
 
-			expect(mockGraphCache.saveScopeKey).toHaveBeenCalledWith('all');
+			expect(mockGraphCache.saveGraph).not.toHaveBeenCalled();
 		});
 
-		it('persists whichever scope key was set via setScopeKey', () => {
-			controller.setScopeKey('current:folder-1');
+		it('still commits the graph in memory while persistence is disabled', () => {
+			const graphData = { nodes: [], edges: [] };
+			mockBuilder.build.mockReturnValue(graphData);
+			controller.setCachePersistenceEnabled(false);
 
 			controller.buildStructural([note('a')]);
 
-			expect(mockGraphCache.saveScopeKey).toHaveBeenCalledWith('current:folder-1');
+			expect(controller.getLastGraphData()).toBe(graphData);
+		});
+
+		it('saves again once persistence is re-enabled', () => {
+			const notes = [note('a')];
+			const graphData = { nodes: [], edges: [] };
+			mockBuilder.build.mockReturnValue(graphData);
+			controller.setCachePersistenceEnabled(false);
+			controller.buildStructural([note('old')]);
+
+			controller.setCachePersistenceEnabled(true);
+			controller.buildStructural(notes);
+
+			expect(mockGraphCache.saveGraph).toHaveBeenCalledTimes(1);
+			expect(mockGraphCache.saveGraph).toHaveBeenCalledWith(notes, graphData);
 		});
 	});
 
@@ -1262,352 +1354,671 @@ describe('AnalysisController', () => {
 
 
 	describe('applyDelta', () => {
+		const edited = (id: string, overrides: Partial<Note>): Note => ({ ...note(id), ...overrides });
+
 		it('returns null when nothing has been loaded yet', async () => {
-			const result = await controller.applyDelta([note('a')], []);
-			expect(result).toBeNull();
-			expect(mockBuilder.build).not.toHaveBeenCalled();
+			expect(await controller.applyDelta([note('a')], [])).toBeNull();
+			expect(mockBuilder.rebuildStructure).not.toHaveBeenCalled();
 		});
 
-		it('adds a new note to the current list and rebuilds', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
+		it('returns null and rebuilds nothing when the note is unchanged', async () => {
 			controller.buildStructural([note('a')]);
-			jest.clearAllMocks();
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
-			const graphData = { nodes: [], edges: [] };
-			mockBuilder.build.mockReturnValue(graphData);
 
-			const result = await controller.applyDelta([note('b')], []);
+			expect(await controller.applyDelta([note('a')], [])).toBeNull();
+			expect(mockBuilder.rebuildStructure).not.toHaveBeenCalled();
+		});
+
+		it('does not rebuild for a text-only edit, but remembers the note', async () => {
+			controller.buildStructural([note('a')]);
+			mockGraphCache.saveGraph.mockClear();
+
+			const result = await controller.applyDelta([edited('a', { updated_time: 2, body: 'new' })], []);
+
+			expect(result).toBeNull();
+			expect(mockBuilder.rebuildStructure).not.toHaveBeenCalled();
+			expect(mockGraphCache.saveGraph).not.toHaveBeenCalled();
+			expect(controller.getCurrentNotes()[0].updated_time).toBe(2);
+		});
+
+		it.each([
+			['title', { title: 'new title' }],
+			['notebook', { parent_id: 'other' }],
+			['tags', { tags: ['new'] }],
+			['links', { links: ['b'] }],
+		])('rebuilds when the %s changes', async (_name, overrides) => {
+			const graphData = { nodes: [], edges: [] };
+			mockBuilder.rebuildStructure.mockReturnValue(graphData);
+			controller.buildStructural([note('a')]);
+
+			const result = await controller.applyDelta([edited('a', overrides)], []);
 
 			expect(result).toBe(graphData);
-			expect(mockBuilder.build).toHaveBeenCalledWith(
-				expect.arrayContaining([
-					expect.objectContaining({ id: 'a' }),
-					expect.objectContaining({ id: 'b' }),
-				])
-			);
-			expect(controller.getCurrentNotes()).toHaveLength(2);
+			expect(controller.getLastGraphData()).toBe(graphData);
 		});
 
-		it('removes a note from the current list and rebuilds', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
+		it('treats tags in a different order as unchanged', async () => {
+			controller.buildStructural([edited('a', { tags: ['x', 'y'] })]);
+
+			const result = await controller.applyDelta([edited('a', { tags: ['y', 'x'] })], []);
+
+			expect(result).toBeNull();
+		});
+
+		it('rebuilds when a note is added or removed', async () => {
 			controller.buildStructural([note('a'), note('b')]);
-			jest.clearAllMocks();
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
 
-			await controller.applyDelta([], ['a']);
+			await controller.applyDelta([note('c')], ['a']);
 
-			expect(controller.getCurrentNotes()).toEqual([note('b')]);
+			expect(mockBuilder.rebuildStructure).toHaveBeenCalledTimes(1);
+			expect(controller.getCurrentNotes().map((n) => n.id)).toEqual(['b', 'c']);
 		});
 
-		it('is a no-op when the upserted note is unchanged and nothing was removed', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
-			controller.buildStructural([note('a')]);
-			jest.clearAllMocks();
-
-			const result = await controller.applyDelta([note('a')], []);
-
-			expect(result).toBeNull();
-			expect(mockBuilder.build).not.toHaveBeenCalled();
-		});
-
-		it('rebuilds when an upserted note has a newer updated_time even with the same ID', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
-			controller.buildStructural([note('a')]);
-			jest.clearAllMocks();
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
-			const changedNote = { ...note('a'), updated_time: 999 };
-
-			const result = await controller.applyDelta([changedNote], []);
-
-			expect(result).not.toBeNull();
-			expect(controller.getCurrentNotes()[0].updated_time).toBe(999);
-		});
-
-		it('discards an in-flight embedAndBuildSemantic result that resolves after a delta lands, instead of clobbering the merge', async () => {
+		it('never fetches embeddings or calls the AI provider, however large the change', async () => {
 			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
-			controller.buildStructural([note('a')]);
-			jest.clearAllMocks();
-			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
-
-			const staleEmbed = deferredEmbedResult();
-			mockOrchestratorInstance.embedNotes
-				.mockReturnValueOnce(staleEmbed.promise)
-				.mockResolvedValueOnce({
-					embeddedNotes: [
-						{ note: note('a'), embedding: [1, 0] },
-						{ note: note('b'), embedding: [0, 1] },
-					],
-					errors: [],
-				});
-
-			const staleCall = controller.embedAndBuildSemantic([note('a')]);
-			const deltaResult = await controller.applyDelta([note('b')], []);
-			expect(deltaResult).not.toBeNull();
-			expect(controller.getCurrentNotes()).toHaveLength(2);
-
-			staleEmbed.resolve({
-				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
-				errors: [],
-			});
-			const staleResult = await staleCall;
-
-			expect(staleResult).toBeNull();
-			expect(controller.getCurrentNotes()).toHaveLength(2);
-		});
-
-		it('flags a delta as retryable when a newer run supersedes it before it resolves, instead of silently dropping the edit', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
-			controller.buildStructural([note('a')]);
-			jest.clearAllMocks();
-			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
-
-			const staleEmbed = deferredEmbedResult();
-			mockOrchestratorInstance.embedNotes.mockReturnValueOnce(staleEmbed.promise);
-
-			const deltaCall = controller.applyDelta([note('b')], []);
 			controller.buildStructural([note('a')]);
 
-			staleEmbed.resolve({
-				embeddedNotes: [
-					{ note: note('a'), embedding: [1, 0] },
-					{ note: note('b'), embedding: [0, 1] },
-				],
-				errors: [],
-			});
-			const deltaResult = await deltaCall;
+			await controller.applyDelta([edited('a', { title: 'new' }), note('b')], []);
 
-			expect(deltaResult).toBeNull();
-			expect(controller.wasLastDeltaSkippedForRetry()).toBe(true);
-		});
-
-		it('detects a tag-only change even when updated_time is unchanged', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
-			const original = { ...note('a'), tags: ['x'] };
-			controller.buildStructural([original]);
-			jest.clearAllMocks();
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
-			const retagged = { ...original, tags: ['y'] };
-
-			const result = await controller.applyDelta([retagged], []);
-
-			expect(result).not.toBeNull();
-			expect(controller.getCurrentNotes()[0].tags).toEqual(['y']);
-		});
-
-		it('is a no-op when the same tags arrive in a different order', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
-			const original = { ...note('a'), tags: ['x', 'y'] };
-			controller.buildStructural([original]);
-			jest.clearAllMocks();
-
-			const reordered = { ...original, tags: ['y', 'x'] };
-			const result = await controller.applyDelta([reordered], []);
-
-			expect(result).toBeNull();
-			expect(mockBuilder.build).not.toHaveBeenCalled();
-		});
-
-		it('does not downgrade an existing semantic graph to structural when a re-embed fails transiently', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
-			mockOrchestratorInstance.embedNotes.mockResolvedValue({
-				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
-				errors: [],
-			});
-			mockBuilder.buildWithSimilarity.mockResolvedValue({
-				nodes: [],
-				edges: [
-					{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } },
-				],
-			});
-			await controller.embedAndBuildSemantic([note('a')]);
-			jest.clearAllMocks();
-
-			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockRejectedValue(
-				new Error('index not ready')
-			);
-
-			const result = await controller.applyDelta([note('b')], []);
-
-			expect(result).toBeNull();
-			expect(mockBuilder.build).not.toHaveBeenCalled();
-			expect(controller.getCurrentNotes()).toHaveLength(1);
-			expect(controller.wasLastDeltaSkippedForRetry()).toBe(true);
-		});
-
-		it('does not flag a delta as retryable when it was a genuine no-op or plain removal', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
-			controller.buildStructural([note('a')]);
-			jest.clearAllMocks();
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
-
-			await controller.applyDelta([note('a')], []);
-			expect(controller.wasLastDeltaSkippedForRetry()).toBe(false);
-
-			await controller.applyDelta([], ['a']);
-			expect(controller.wasLastDeltaSkippedForRetry()).toBe(false);
-		});
-
-		it('clears the retryable flag once a later delta commits successfully', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
-			mockOrchestratorInstance.embedNotes.mockResolvedValue({
-				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
-				errors: [],
-			});
-			mockBuilder.buildWithSimilarity.mockResolvedValue({
-				nodes: [],
-				edges: [
-					{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } },
-				],
-			});
-			await controller.embedAndBuildSemantic([note('a')]);
-			jest.clearAllMocks();
-
-			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockRejectedValueOnce(
-				new Error('index not ready')
-			);
-			await controller.applyDelta([note('b')], []);
-			expect(controller.wasLastDeltaSkippedForRetry()).toBe(true);
-
-			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
-			mockOrchestratorInstance.embedNotes.mockResolvedValue({
-				embeddedNotes: [
-					{ note: note('a'), embedding: [1, 0] },
-					{ note: note('b'), embedding: [0, 1] },
-				],
-				errors: [],
-			});
-			await controller.applyDelta([note('b')], []);
-
-			expect(controller.wasLastDeltaSkippedForRetry()).toBe(false);
-		});
-
-		it('retries cleanly on the next delta after a skipped downgrade, once AI recovers', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
-			mockOrchestratorInstance.embedNotes.mockResolvedValue({
-				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
-				errors: [],
-			});
-			mockBuilder.buildWithSimilarity.mockResolvedValue({
-				nodes: [],
-				edges: [
-					{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } },
-				],
-			});
-			await controller.embedAndBuildSemantic([note('a')]);
-			jest.clearAllMocks();
-
-			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockRejectedValueOnce(
-				new Error('index not ready')
-			);
-			const skipped = await controller.applyDelta([note('b')], []);
-			expect(skipped).toBeNull();
-			expect(controller.getCurrentNotes()).toHaveLength(1);
-
-			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
-			mockOrchestratorInstance.embedNotes.mockResolvedValue({
-				embeddedNotes: [
-					{ note: note('a'), embedding: [1, 0] },
-					{ note: note('b'), embedding: [0, 1] },
-				],
-				errors: [],
-			});
-
-			const retried = await controller.applyDelta([note('b')], []);
-
-			expect(retried).not.toBeNull();
-			expect(controller.getCurrentNotes()).toHaveLength(2);
-		});
-
-		it('downgrades to structural when AI is simply off, instead of mistaking that for a failed re-embed', async () => {
-			mockIsAiAnalysisEnabled.mockResolvedValue(true);
-			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
-			mockOrchestratorInstance.embedNotes.mockResolvedValue({
-				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
-				errors: [],
-			});
-			mockBuilder.buildWithSimilarity.mockResolvedValue({
-				nodes: [],
-				edges: [
-					{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' } },
-				],
-			});
-			await controller.embedAndBuildSemantic([note('a')]);
-			jest.clearAllMocks();
-
-			mockIsAiAnalysisEnabled.mockResolvedValue(false);
-			mockBuilder.build.mockReturnValue({ nodes: [], edges: [] });
-
-			const result = await controller.applyDelta([note('b')], []);
-
-			expect(result).not.toBeNull();
-			expect(controller.getCurrentNotes()).toHaveLength(2);
-			expect(controller.wasLastDeltaSkippedForRetry()).toBe(false);
 			expect(MockProviderResolver.resolveWithValidation).not.toHaveBeenCalled();
+			expect(mockOrchestratorInstance.embedNotes).not.toHaveBeenCalled();
+			expect(mockBuilder.buildWithSimilarity).not.toHaveBeenCalled();
+		});
+
+		it('passes the current graph along, so its semantic edges survive', async () => {
+			const graph = {
+				nodes: [],
+				edges: [{ data: { id: 'a::b::semantic', source: 'a', target: 'b', type: 'semantic' as const } }],
+			};
+			mockBuilder.build.mockReturnValue(graph);
+			controller.buildStructural([note('a'), note('b')]);
+
+			await controller.applyDelta([note('c')], []);
+
+			expect(mockBuilder.rebuildStructure).toHaveBeenCalledWith(expect.anything(), graph);
+		});
+
+		it('forgets the stored vector of a removed note', async () => {
+			controller.buildStructural([note('a'), note('b')]);
+
+			await controller.applyDelta([], ['a']);
+
+			expect(mockVectorStore.removeMany).toHaveBeenCalledWith(['a']);
+		});
+
+		it('is not lost when it lands during a long semantic run', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			const deferred = deferredEmbedResult();
+			mockOrchestratorInstance.embedNotes.mockReturnValue(deferred.promise);
+			const notes = [note('a')];
+			controller.buildStructural(notes);
+
+			const run = controller.embedAndBuildSemantic(notes);
+			await new Promise((resolve) => setImmediate(resolve));
+			await controller.applyDelta([note('b')], []);
+			deferred.resolve({ embeddedNotes: [{ note: note('a'), embedding: [1, 0] }], errors: [] });
+			const result = await run;
+
+			expect(result?.usedAi).toBe(true);
+			const builtWith = mockBuilder.buildWithSimilarity.mock.calls[0][0] as Note[];
+			expect(builtWith.map((n) => n.id)).toEqual(['a', 'b']);
+			expect(controller.getCurrentNotes().map((n) => n.id)).toEqual(['a', 'b']);
+		});
+
+		it('does not cancel a semantic run that is in flight', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			const deferred = deferredEmbedResult();
+			mockOrchestratorInstance.embedNotes.mockReturnValue(deferred.promise);
+			const notes = [note('a')];
+			controller.buildStructural(notes);
+
+			const run = controller.embedAndBuildSemantic(notes);
+			await new Promise((resolve) => setImmediate(resolve));
+			await controller.applyDelta([edited('a', { title: 'new' })], []);
+			deferred.resolve({ embeddedNotes: [{ note: note('a'), embedding: [1, 0] }], errors: [] });
+
+			await expect(run).resolves.not.toBeNull();
+		});
+
+		it('keeps an edit that lands while similarity is being computed', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
+				errors: [],
+			});
+			let finishSimilarity: (graph: { nodes: never[]; edges: never[] }) => void = () => undefined;
+			mockBuilder.buildWithSimilarity.mockReturnValue(
+				new Promise((resolve) => {
+					finishSimilarity = resolve;
+				})
+			);
+			const notes = [note('a')];
+			controller.buildStructural(notes);
+
+			const run = controller.embedAndBuildSemantic(notes);
+			await new Promise((resolve) => setImmediate(resolve));
+			await controller.applyDelta([note('b')], []);
+			mockBuilder.rebuildStructure.mockClear();
+			finishSimilarity({ nodes: [], edges: [] });
+			await run;
+
+			const rebuiltWith = mockBuilder.rebuildStructure.mock.calls[0][0] as Note[];
+			expect(rebuiltWith.map((n) => n.id)).toEqual(['a', 'b']);
 		});
 	});
 
-	describe('getLastDiff', () => {
-		it('is null before anything has been built', () => {
-			expect(controller.getLastDiff()).toBeNull();
+	describe('after loading from the cache', () => {
+		it('carries on the community numbers of the cached graph', async () => {
+			const graphData = { nodes: [], edges: [] };
+			mockGraphCache.loadGraph.mockResolvedValue({ notes: [note('a')], graphData });
+
+			await controller.loadFromCache();
+
+			expect(mockBuilder.rememberCommunities).toHaveBeenCalledWith(graphData);
 		});
+	});
 
-		it('treats the first build as entirely new (no previous graph to diff against)', () => {
-			const graphData = {
-				nodes: [
-					{
-						data: {
-							id: 'a',
-							label: 'a',
-							noteId: 'a',
-							degree: 0,
-							community: 0,
-							size: 1,
-						},
-					},
-				],
-				edges: [],
-			};
-			mockBuilder.build.mockReturnValue(graphData);
-
-			controller.buildStructural([note('a')]);
-
-			expect(controller.getLastDiff()).toEqual({
-				upsertedNodes: graphData.nodes,
-				upsertedEdges: [],
-				removedNodeIds: [],
-				removedEdgeIds: [],
+	describe('recompute during an edit', () => {
+		it('keeps an edit that lands while similarity is being computed', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
+				errors: [],
 			});
+			await controller.embedAndBuildSemantic([note('a')]);
+
+			let finishSimilarity: (graph: { nodes: never[]; edges: never[] }) => void = () => undefined;
+			mockBuilder.buildWithSimilarity.mockReturnValue(
+				new Promise((resolve) => {
+					finishSimilarity = resolve;
+				})
+			);
+			const merged = { nodes: [], edges: [] };
+			const run = controller.recompute();
+			await new Promise((resolve) => setImmediate(resolve));
+			await controller.applyDelta([note('b')], []);
+			mockBuilder.rebuildStructure.mockClear();
+			mockBuilder.rebuildStructure.mockReturnValue(merged);
+			finishSimilarity({ nodes: [], edges: [] });
+
+			await expect(run).resolves.toBe(merged);
+
+			const rebuiltWith = mockBuilder.rebuildStructure.mock.calls[0][0] as Note[];
+			expect(rebuiltWith.map((n) => n.id)).toEqual(['a', 'b']);
+			expect(controller.getLastGraphData()).toBe(merged);
+		});
+	});
+
+	describe('markOutdatedVectorsStale', () => {
+		async function startWithVectorFor(id: string, notes: Note[]): Promise<void> {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [{ note: note(id), embedding: [1, 0] }],
+				errors: [],
+			});
+			await controller.embedAndBuildSemantic(notes);
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockReset();
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map());
+		}
+
+		it('marks an in-scope note with no vector, and nothing else', async () => {
+			await startWithVectorFor('a', [note('a'), note('b')]);
+
+			await controller.markOutdatedVectorsStale(['a', 'b', 'out-of-scope']);
+			await controller.refreshStaleVectors();
+
+			expect(fakeProvider.fetchVectorsByNoteIds).toHaveBeenCalledWith(['b']);
 		});
 
-		it('reports only what changed between two builds', () => {
-			const nodeA = {
-				data: { id: 'a', label: 'a', noteId: 'a', degree: 0, community: 0, size: 1 },
-			};
-			const nodeB = {
-				data: { id: 'b', label: 'b', noteId: 'b', degree: 0, community: 0, size: 1 },
-			};
-			mockBuilder.build.mockReturnValueOnce({ nodes: [nodeA], edges: [] });
-			controller.buildStructural([note('a')]);
+		it('also marks a note whose stored vector is older than the note', async () => {
+			await startWithVectorFor('a', [note('a'), { ...note('b'), updated_time: 5 }]);
+			mockVectorStore.getMany.mockResolvedValue(
+				new Map([['a', { vector: [1, 0], modelId: 'test-model', updatedTime: 1 }]])
+			);
+			mockBuilder.buildWithSimilarity.mockClear();
+			await controller.applyDelta([{ ...note('a'), updated_time: 9 }], []);
 
-			mockBuilder.build.mockReturnValueOnce({ nodes: [nodeA, nodeB], edges: [] });
+			await controller.markOutdatedVectorsStale(['a']);
+			await controller.refreshStaleVectors();
+
+			expect(fakeProvider.fetchVectorsByNoteIds).toHaveBeenCalledWith(['a']);
+		});
+
+		it('leaves a note alone when its stored vector is as new as the note', async () => {
+			await startWithVectorFor('a', [note('a')]);
+			mockVectorStore.getMany.mockResolvedValue(
+				new Map([['a', { vector: [1, 0], modelId: 'test-model', updatedTime: 1 }]])
+			);
+
+			await controller.markOutdatedVectorsStale(['a']);
+			await controller.refreshStaleVectors();
+
+			expect(fakeProvider.fetchVectorsByNoteIds).not.toHaveBeenCalled();
+		});
+
+		it('builds the semantic graph when the graph is structural because the index was not ready', async () => {
 			controller.buildStructural([note('a'), note('b')]);
-
-			expect(controller.getLastDiff()).toEqual({
-				upsertedNodes: [nodeB],
-				upsertedEdges: [],
-				removedNodeIds: [],
-				removedEdgeIds: [],
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockClear();
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [{ note: note('a'), embedding: [1, 0] }],
+				errors: [],
 			});
+			mockBuilder.buildWithSimilarity.mockClear();
+
+			await controller.markOutdatedVectorsStale(['a', 'out-of-scope']);
+
+			await expect(controller.refreshStaleVectors()).resolves.not.toBeNull();
+			expect(fakeProvider.fetchVectorsByNoteIds).toHaveBeenCalledWith(['a']);
+			expect(mockBuilder.buildWithSimilarity).toHaveBeenCalled();
+		});
+	});
+
+	describe('refreshStaleVectors', () => {
+		const embed = (id: string, vector: number[]) => ({ note: note(id), embedding: vector });
+
+		async function startWithVectors(): Promise<void> {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [embed('a', [1, 0]), embed('b', [0, 1])],
+				errors: [],
+			});
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			mockBuilder.buildWithSimilarity.mockClear();
+			mockOrchestratorInstance.embedNotes.mockClear();
+		}
+
+		beforeEach(() => {
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockReset();
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map());
+		});
+
+		it('does nothing when no vectors are stale', async () => {
+			await startWithVectors();
+
+			await expect(controller.refreshStaleVectors()).resolves.toBeNull();
+
+			expect(fakeProvider.fetchVectorsByNoteIds).not.toHaveBeenCalled();
+		});
+
+		it('stays stopped after the user cancels embedding, until they start it again', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			const deferred = deferredEmbedResult();
+			mockOrchestratorInstance.embedNotes.mockReturnValue(deferred.promise);
+			const inFlight = controller.embedAndBuildSemantic([note('a'), note('b')]);
+			await new Promise((resolve) => setImmediate(resolve));
+			controller.cancelCurrentRun();
+			deferred.resolve({ embeddedNotes: [], errors: [] });
+			await expect(inFlight).resolves.toBeNull();
+
+			controller.markVectorsStale(['a']);
+			await expect(controller.refreshStaleVectors()).resolves.toBeNull();
+			expect(fakeProvider.fetchVectorsByNoteIds).not.toHaveBeenCalled();
+
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [embed('a', [1, 0]), embed('b', [0, 1])],
+				errors: [],
+			});
+			await controller.embedAndBuildSemantic([note('a'), note('b')]);
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [0.6, 0.8]]]));
+			await expect(controller.refreshStaleVectors()).resolves.not.toBeNull();
+		});
+
+		it('fetches only the stale notes, then rebuilds from the updated vectors', async () => {
+			await startWithVectors();
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [0.6, 0.8]]]));
+
+			controller.markVectorsStale(['a']);
+			const result = await controller.refreshStaleVectors();
+
+			expect(result).not.toBeNull();
+			expect(fakeProvider.fetchVectorsByNoteIds).toHaveBeenCalledWith(['a']);
+			expect(mockOrchestratorInstance.embedNotes).not.toHaveBeenCalled();
+			const embedded = mockBuilder.buildWithSimilarity.mock.calls[0][1] as Array<{
+				note: Note;
+				embedding: number[];
+			}>;
+			expect(embedded.find((en) => en.note.id === 'a')?.embedding).toEqual([0.6, 0.8]);
+			expect(embedded.find((en) => en.note.id === 'b')?.embedding).toEqual([0, 1]);
+		});
+
+		it('saves the new vector, stamped with the model and the note time', async () => {
+			await startWithVectors();
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [0.6, 0.8]]]));
+
+			controller.markVectorsStale(['a']);
+			await controller.refreshStaleVectors();
+
+			expect(mockVectorStore.saveMany).toHaveBeenCalledWith([
+				{ noteId: 'a', vector: [0.6, 0.8], modelId: 'test-model', updatedTime: 1 },
+			]);
+		});
+
+		it('does not rebuild when the fetched vector is the same as the one in use', async () => {
+			await startWithVectors();
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [1, 0]]]));
+
+			controller.markVectorsStale(['a']);
+
+			await expect(controller.refreshStaleVectors()).resolves.toBeNull();
+			expect(mockBuilder.buildWithSimilarity).not.toHaveBeenCalled();
+		});
+
+		it('adds a vector for a note that had none yet', async () => {
+			await startWithVectors();
+			await controller.applyDelta([note('c')], []);
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['c', [1, 1]]]));
+
+			controller.markVectorsStale(['c']);
+			await controller.refreshStaleVectors();
+
+			const embedded = mockBuilder.buildWithSimilarity.mock.calls[0][1] as Array<{ note: Note }>;
+			expect(embedded.map((en) => en.note.id)).toEqual(['a', 'b', 'c']);
+		});
+
+		it('removes the stored vector when Joplin no longer has one for that note', async () => {
+			await startWithVectors();
+
+			controller.markVectorsStale(['a']);
+			await controller.refreshStaleVectors();
+
+			expect(mockVectorStore.removeMany).toHaveBeenCalledWith(['a']);
+		});
+
+		it('keeps notes marked when the fetch fails, so the next attempt retries them', async () => {
+			await startWithVectors();
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockRejectedValueOnce(new Error('network'));
+
+			controller.markVectorsStale(['a']);
+			await expect(controller.refreshStaleVectors()).rejects.toThrow('network');
+
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [0.6, 0.8]]]));
+			await expect(controller.refreshStaleVectors()).resolves.not.toBeNull();
+		});
+
+		it('waits while a semantic run is in flight, then picks the notes up', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			const deferred = deferredEmbedResult();
+			mockOrchestratorInstance.embedNotes.mockReturnValue(deferred.promise);
+			const notes = [note('a')];
+			controller.buildStructural(notes);
+			const run = controller.embedAndBuildSemantic(notes);
+			await new Promise((resolve) => setImmediate(resolve));
+
+			controller.markVectorsStale(['a']);
+			await expect(controller.refreshStaleVectors()).resolves.toBeNull();
+			expect(fakeProvider.fetchVectorsByNoteIds).not.toHaveBeenCalled();
+
+			deferred.resolve({ embeddedNotes: [embed('a', [1, 0])], errors: [] });
+			await run;
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [0.6, 0.8]]]));
+
+			await expect(controller.refreshStaleVectors()).resolves.not.toBeNull();
+		});
+
+		it('does not cancel a run that started while the new vectors were being fetched', async () => {
+			await startWithVectors();
+			const deferred = deferredEmbedResult();
+			mockOrchestratorInstance.embedNotes.mockReturnValue(deferred.promise);
+			let finishFetch: (vectors: Map<string, number[]>) => void = () => undefined;
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockReturnValueOnce(
+				new Promise((resolve) => {
+					finishFetch = resolve;
+				})
+			);
+
+			controller.markVectorsStale(['a']);
+			const refresh = controller.refreshStaleVectors();
+			await new Promise((resolve) => setImmediate(resolve));
+			const run = controller.embedAndBuildSemantic([note('a'), note('b')]);
+			await new Promise((resolve) => setImmediate(resolve));
+			finishFetch(new Map([['a', [0.6, 0.8]]]));
+
+			await expect(refresh).resolves.toBeNull();
+			deferred.resolve({ embeddedNotes: [embed('a', [0.6, 0.8])], errors: [] });
+			await expect(run).resolves.not.toBeNull();
+
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [0.6, 0.8]]]));
+			mockBuilder.buildWithSimilarity.mockClear();
+			await controller.refreshStaleVectors();
+			expect(fakeProvider.fetchVectorsByNoteIds).toHaveBeenLastCalledWith(['a']);
+		});
+
+		it('clears the marks when AI analysis has been turned off', async () => {
+			await startWithVectors();
+			controller.markVectorsStale(['a']);
+			mockIsAiAnalysisEnabled.mockResolvedValue(false);
+
+			await expect(controller.refreshStaleVectors()).resolves.toBeNull();
+
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			await controller.refreshStaleVectors();
+			expect(fakeProvider.fetchVectorsByNoteIds).not.toHaveBeenCalled();
+		});
+
+		describe('after a cache load', () => {
+			const stored = (vector: number[], modelId = 'test-model') => ({
+				vector,
+				modelId,
+				updatedTime: 1,
+			});
+
+			async function loadCachedGraphWithStoredVectors(
+				vectors: Map<string, ReturnType<typeof stored>>
+			): Promise<void> {
+				mockIsAiAnalysisEnabled.mockResolvedValue(true);
+				MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+				mockGraphCache.loadGraph.mockResolvedValue({
+					notes: [note('a'), note('b')],
+					graphData: { nodes: [], edges: [] },
+				});
+				mockVectorStore.getMany.mockResolvedValue(vectors);
+				await controller.loadFromCache();
+			}
+
+			it('uses the stored vectors, and does not rebuild when the re-read vector is unchanged', async () => {
+				await loadCachedGraphWithStoredVectors(
+					new Map([
+						['a', stored([1, 0])],
+						['b', stored([0, 1])],
+					])
+				);
+				(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [1, 0]]]));
+
+				controller.markVectorsStale(['a']);
+
+				await expect(controller.refreshStaleVectors()).resolves.toBeNull();
+				expect(mockOrchestratorInstance.embedNotes).not.toHaveBeenCalled();
+				expect(mockBuilder.buildWithSimilarity).not.toHaveBeenCalled();
+				expect(controller.hasEmbeddedNotes()).toBe(true);
+			});
+
+			it('rebuilds from the stored vectors when one really changed, without a full embed', async () => {
+				await loadCachedGraphWithStoredVectors(
+					new Map([
+						['a', stored([1, 0])],
+						['b', stored([0, 1])],
+					])
+				);
+				(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [0.6, 0.8]]]));
+
+				controller.markVectorsStale(['a']);
+
+				await expect(controller.refreshStaleVectors()).resolves.not.toBeNull();
+				expect(mockOrchestratorInstance.embedNotes).not.toHaveBeenCalled();
+				const embedded = mockBuilder.buildWithSimilarity.mock.calls[0][1] as Array<{
+					note: Note;
+					embedding: number[];
+				}>;
+				expect(embedded.find((en) => en.note.id === 'a')?.embedding).toEqual([0.6, 0.8]);
+				expect(embedded.find((en) => en.note.id === 'b')?.embedding).toEqual([0, 1]);
+			});
+
+			it('ignores stored vectors from another model', async () => {
+				await loadCachedGraphWithStoredVectors(new Map([['a', stored([1, 0], 'old-model')]]));
+				(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [1, 0]]]));
+				mockOrchestratorInstance.embedNotes.mockResolvedValue({
+					embeddedNotes: [embed('a', [1, 0])],
+					errors: [],
+				});
+
+				controller.markVectorsStale(['a']);
+				await controller.refreshStaleVectors();
+
+				expect(mockOrchestratorInstance.embedNotes).toHaveBeenCalledTimes(1);
+			});
+		});
+
+		it('does a full embed when the graph came from the cache and has no vectors in memory', async () => {
+			mockIsAiAnalysisEnabled.mockResolvedValue(true);
+			MockProviderResolver.resolveWithValidation.mockResolvedValue(fakeProvider);
+			mockGraphCache.loadGraph.mockResolvedValue({
+				notes: [note('a')],
+				graphData: { nodes: [], edges: [] },
+			});
+			await controller.loadFromCache();
+			(fakeProvider.fetchVectorsByNoteIds as jest.Mock).mockResolvedValue(new Map([['a', [0.6, 0.8]]]));
+			mockOrchestratorInstance.embedNotes.mockResolvedValue({
+				embeddedNotes: [embed('a', [0.6, 0.8])],
+				errors: [],
+			});
+
+			controller.markVectorsStale(['a']);
+			await controller.refreshStaleVectors();
+
+			expect(mockOrchestratorInstance.embedNotes).toHaveBeenCalledTimes(1);
+			expect(controller.hasEmbeddedNotes()).toBe(true);
+		});
+	});
+
+	describe('cache writes', () => {
+		it('waits, then writes only the latest graph, for a burst of changes', () => {
+			jest.useFakeTimers();
+			try {
+				const delayed = new AnalysisController(
+					mockBuilder,
+					mockGraphCache,
+					mockEnricher,
+					mockVectorStore as unknown as VectorRepository,
+					3000
+				);
+				const latest = { nodes: [], edges: [] };
+				delayed.buildStructural([note('a')]);
+				mockBuilder.build.mockReturnValue(latest);
+				delayed.buildStructural([note('b')]);
+				expect(mockGraphCache.saveGraph).not.toHaveBeenCalled();
+
+				jest.advanceTimersByTime(3000);
+
+				expect(mockGraphCache.saveGraph).toHaveBeenCalledTimes(1);
+				expect(mockGraphCache.saveGraph).toHaveBeenCalledWith([note('b')], latest);
+			} finally {
+				jest.useRealTimers();
+			}
+		});
+
+		it('skips a delayed write if the load turned out incomplete in the meantime', () => {
+			jest.useFakeTimers();
+			try {
+				const delayed = new AnalysisController(
+					mockBuilder,
+					mockGraphCache,
+					mockEnricher,
+					mockVectorStore as unknown as VectorRepository,
+					3000
+				);
+				delayed.buildStructural([note('a')]);
+				delayed.setCachePersistenceEnabled(false);
+
+				jest.advanceTimersByTime(3000);
+
+				expect(mockGraphCache.saveGraph).not.toHaveBeenCalled();
+			} finally {
+				jest.useRealTimers();
+			}
+		});
+
+		it('writes a text-only edit to the cache, but only after a long wait', async () => {
+			jest.useFakeTimers();
+			try {
+				controller.buildStructural([note('a')]);
+				mockGraphCache.saveGraph.mockClear();
+
+				await controller.applyDelta([{ ...note('a'), updated_time: 2, body: 'new' }], []);
+				jest.advanceTimersByTime(3000);
+				expect(mockGraphCache.saveGraph).not.toHaveBeenCalled();
+
+				jest.advanceTimersByTime(60_000);
+				expect(mockGraphCache.saveGraph).toHaveBeenCalledTimes(1);
+				expect(mockGraphCache.saveGraph.mock.calls[0][0][0].updated_time).toBe(2);
+			} finally {
+				jest.useRealTimers();
+			}
+		});
+
+		it('does not hold back a structural change behind a pending text-only write', async () => {
+			jest.useFakeTimers();
+			try {
+				const delayed = new AnalysisController(
+					mockBuilder,
+					mockGraphCache,
+					mockEnricher,
+					mockVectorStore as unknown as VectorRepository,
+					3000
+				);
+				delayed.buildStructural([note('a')]);
+				jest.advanceTimersByTime(3000);
+				mockGraphCache.saveGraph.mockClear();
+
+				await delayed.applyDelta([{ ...note('a'), updated_time: 2, body: 'new' }], []);
+				await delayed.applyDelta([note('b')], []);
+				jest.advanceTimersByTime(3000);
+
+				expect(mockGraphCache.saveGraph).toHaveBeenCalledTimes(1);
+				jest.advanceTimersByTime(60_000);
+				expect(mockGraphCache.saveGraph).toHaveBeenCalledTimes(1);
+			} finally {
+				jest.useRealTimers();
+			}
+		});
+
+		it('trims full bodies from a cache written by an older version', async () => {
+			const longBody = 'x'.repeat(5000);
+			mockGraphCache.loadGraph.mockResolvedValue({
+				notes: [{ ...note('a'), body: longBody }],
+				graphData: { nodes: [], edges: [] },
+			});
+
+			await controller.loadFromCache();
+
+			expect(controller.getCurrentNotes()[0].body.length).toBeLessThan(1000);
+		});
+
+		it('does not read the whole cached graph to migrate labels once labels are stored', async () => {
+			mockGraphCache.hasEnrichments.mockResolvedValue(true);
+
+			await controller.migrateCachedEnrichment();
+
+			expect(mockGraphCache.loadGraph).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('pruneDeletedNotes', () => {
+		it('prunes both the vector and the label caches', () => {
+			const keep = new Set(['a']);
+
+			controller.pruneDeletedNotes(keep);
+
+			expect(mockVectorStore.pruneExcept).toHaveBeenCalledWith(keep);
+			expect(mockGraphCache.pruneEnrichments).toHaveBeenCalledWith(keep);
 		});
 	});
 });

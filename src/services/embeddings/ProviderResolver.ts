@@ -1,5 +1,5 @@
 import joplin from 'api';
-import { EmbeddingProvider, ProviderConfig } from './Types';
+import { EmbeddingProvider } from './Types';
 import { JoplinNativeProvider, JoplinAiApi, isIndexUsable } from './providers/JoplinNativeProvider';
 
 export class ProviderResolver {
@@ -22,9 +22,5 @@ export class ProviderResolver {
 			);
 		}
 		return new JoplinNativeProvider(status.modelId ?? JoplinNativeProvider.DEFAULT_MODEL_ID);
-	}
-
-	public static getDefaultConfig(): ProviderConfig {
-		return { id: JoplinNativeProvider.DEFAULT_MODEL_ID };
 	}
 }

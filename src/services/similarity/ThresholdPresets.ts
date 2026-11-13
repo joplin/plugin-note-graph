@@ -1,11 +1,14 @@
 /** Only a direct link bypasses this floor — tags alone can never create an edge below it. */
 export const SEMANTIC_FLOOR = 0.3;
 
-export const DEFAULT_THRESHOLD = 0.5;
+export const DEFAULT_THRESHOLD = 0.7;
 
 export const TOP_K = 5;
 
-/** Vault size above which joplin.ai.search() is used instead of O(n²) cosine. */
+/** How many of a note's nearest neighbours count as its neighbourhood, or top-K when that is larger: a pair must be in each other's, and their typical similarity sets the local scale. */
+export const NEIGHBOURHOOD_SIZE = 10;
+
+/** Vault size above which only each note's nearest neighbours are compared, instead of every pair. */
 export const LARGE_VAULT_THRESHOLD = 300;
 
 /** Scaled by Jaccard tag overlap between two notes. */

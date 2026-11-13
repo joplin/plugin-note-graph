@@ -1,12 +1,12 @@
-import joplin from 'api';
-import { SearchOptions, SearchResult } from 'api/types';
 import { Note } from '../../data/Types';
 import { EmbeddedNote } from '../embeddings/Types';
+import { KnnIndex } from './KnnIndex';
 import {
 	SEMANTIC_FLOOR,
 	DEFAULT_THRESHOLD,
 	TOP_K,
 	LARGE_VAULT_THRESHOLD,
+	NEIGHBOURHOOD_SIZE,
 	TAG_BONUS,
 	LINK_BONUS,
 	ORGANIZATIONAL_TAG_RATIO,
@@ -21,18 +21,25 @@ export interface SimilarityPair {
 	score: number;
 }
 
-export class SimilarityEngine {
-	private static readonly MAX_SEARCH_ATTEMPTS = 2;
-	private static readonly SEARCH_RETRY_DELAY_MS = 500;
-	private static readonly SEARCH_CIRCUIT_BREAKER_FAILURES = 3;
+/** A note's nearest neighbours, and how similar it usually is to them. */
+interface Neighbourhood {
+	ids: Set<string>;
+	typicalScore: number;
+}
 
+export class SimilarityEngine {
 	private readonly noteIds: string[];
 	private readonly vectors: Map<string, number[]>;
 	private readonly tagMap: Map<string, Set<string>>;
 	private readonly linkSet: Set<string>;
 	private readonly createdTimeMap: Map<string, number>;
 
-	public constructor(notes: Note[], embeddedNotes: EmbeddedNote[]) {
+	/** @param knnIndex - keep the same index between runs, so only changed notes are recomputed. */
+	public constructor(
+		notes: Note[],
+		embeddedNotes: EmbeddedNote[],
+		private readonly knnIndex: KnnIndex = new KnnIndex()
+	) {
 		this.noteIds = notes.map((n) => n.id);
 		this.vectors = new Map<string, number[]>();
 		for (const en of embeddedNotes) {
@@ -45,14 +52,25 @@ export class SimilarityEngine {
 
 	/**
 	 * Orchestrates the full similarity pipeline:
-	 * compute → floor (raw scores) → normalize → enrich → threshold → top-K.
+	 * compute → floor (raw scores) → mutual neighbours → percentile cutoff
+	 * (locally scaled scores) → normalize → bonuses → top-K.
 	 *
-	 * SEMANTIC_FLOOR is applied to *raw* scores, before normalization. Min-max
-	 * normalization always maps the batch's most-similar pair to exactly 1.0,
-	 * so a post-normalization floor can never reject it — even in a vault of
-	 * completely unrelated notes. Flooring on the raw scale (where 0.3 has an
-	 * absolute meaning) is what actually guarantees that tags alone can never
-	 * manufacture an edge out of a weak semantic score.
+	 * Both the floor and the cutoff are checked before normalization. Min-max
+	 * normalization always maps the batch's most-similar pair to exactly 1.0, so
+	 * a post-normalization threshold could never reject it, even in a vault of
+	 * completely unrelated notes, the closest pair would be scaled up and pass.
+	 * SEMANTIC_FLOOR is the small absolute floor on the raw score that guards
+	 * tiny vaults with little data.
+	 *
+	 * Two notes must each be among the other's nearest neighbours. A note that
+	 * is close to everything, without being about the same thing, stops being
+	 * linked to all of them.
+	 *
+	 * The percentile cutoff keeps the top (1 - threshold) fraction of pairs by
+	 * locally scaled score: how much closer two notes are than each of them
+	 * usually is to its neighbours. A single cutoff on the raw score lets a
+	 * dense group of near-identical notes set the bar for the whole vault, so
+	 * notes elsewhere get no edges at all.
 	 */
 	public async compute(
 		threshold: number = DEFAULT_THRESHOLD,
@@ -69,26 +87,46 @@ export class SimilarityEngine {
 			return [];
 		}
 
+		// A note can only keep pairs inside its neighbourhood, so it must hold at least top-K notes.
+		const neighbourhoods = this.findNeighbourhoods(rawPairs, Math.max(NEIGHBOURHOOD_SIZE, topK));
 		const aboveFloor = this.filterBelowFloor(rawPairs, SEMANTIC_FLOOR);
+		const mutual = aboveFloor.filter(
+			(p) => this.isDirectlyLinked(p) || this.areMutualNeighbours(p, neighbourhoods)
+		);
 
-		if (aboveFloor.length === 0) {
+		if (mutual.length === 0) {
 			return [];
 		}
 
-		const normalized = this.normalize(aboveFloor, SEMANTIC_FLOOR);
+		const cutoff = this.percentileCutoff(mutual, threshold, neighbourhoods);
+		const aboveThreshold = this.filterBelowThreshold(mutual, cutoff, neighbourhoods);
+
+		if (aboveThreshold.length === 0) {
+			return [];
+		}
+
+		const normalized = this.normalize(aboveThreshold, SEMANTIC_FLOOR);
 		const enriched = this.addBonusPoints(normalized);
-		const aboveThreshold = this.filterBelowThreshold(enriched, threshold);
-		const topPairs = this.selectTopK(aboveThreshold, topK);
+		const topPairs = this.selectTopK(enriched, topK);
 
 		return topPairs;
 	}
 
-	/** Picks the appropriate similarity strategy based on vault size. */
+	/** Compares every pair in a small vault. Above that, only each note's nearest neighbours are candidates. */
 	private computeRawPairs(isCancelled?: () => boolean): Promise<SimilarityPair[]> {
 		if (this.noteIds.length <= LARGE_VAULT_THRESHOLD) {
 			return Promise.resolve(this.computeCosinePairs(isCancelled));
 		}
-		return this.computeSearchPairs(isCancelled);
+		return this.computeKnnPairs(isCancelled);
+	}
+
+	private async computeKnnPairs(isCancelled?: () => boolean): Promise<SimilarityPair[]> {
+		const entries = this.noteIds
+			.filter((id) => this.vectors.has(id))
+			.map((id) => ({ id, vector: this.vectors.get(id) as number[] }));
+
+		const finished = await this.knnIndex.sync(entries, isCancelled);
+		return finished ? this.knnIndex.pairs() : [];
 	}
 
 	/** O(n²) pairwise cosine similarity via dot product on unit-norm vectors. */
@@ -114,112 +152,6 @@ export class SimilarityEngine {
 		}
 
 		return pairs;
-	}
-
-	/**
-	 * Uses joplin.ai.search({ noteId }) to find candidate pairs via vector index.
-	 * Only checks that joplin.ai itself exists — never probes a specific method
-	 * property without invoking it (see JoplinNativeProvider.validateAiApi for why).
-	 *
-	 * Score-scale assumption: search relevance scores are treated as raw
-	 * similarity scores and flow through the same floor → normalize pipeline
-	 * as cosine scores.
-	 *
-	 * Failure handling: each note's search call is retried on transient
-	 * failures before being skipped; a partial candidate set is still
-	 * useful. If *every* note's search ultimately fails — e.g. joplin.ai
-	 * exists but search doesn't on this Joplin version — we fall back to
-	 * O(n²) cosine instead of silently returning zero pairs.
-	 */
-	private async computeSearchPairs(isCancelled?: () => boolean): Promise<SimilarityPair[]> {
-		const joplinAi = joplin.ai as unknown as
-			| { search: (options: SearchOptions) => Promise<SearchResult[]> }
-			| undefined;
-		if (!joplinAi) {
-			return this.computeCosinePairs(isCancelled);
-		}
-
-		const pairs = new Map<string, SimilarityPair>();
-		let successCount = 0;
-		let consecutiveFailures = 0;
-		let firstError: unknown = null;
-
-		for (const noteId of this.noteIds) {
-			if (isCancelled?.()) break;
-			let results: SearchResult[];
-			try {
-				results = await this.searchWithRetry(joplinAi, noteId, isCancelled);
-			} catch (e) {
-				if (firstError === null) {
-					firstError = e;
-					console.warn(
-						'joplin.ai.search failed for a note after retrying; skipping it. First error:',
-						e
-					);
-				}
-				consecutiveFailures++;
-				if (successCount === 0 && consecutiveFailures >= SimilarityEngine.SEARCH_CIRCUIT_BREAKER_FAILURES) {
-					console.warn(
-						'joplin.ai.search has failed for every note attempted so far; giving up early and falling back to pairwise cosine similarity.',
-						firstError
-					);
-					return this.computeCosinePairs(isCancelled);
-				}
-				continue;
-			}
-
-			consecutiveFailures = 0;
-			successCount++;
-
-			for (const r of results) {
-				if (!this.vectors.has(r.noteId) || r.noteId === noteId) {
-					continue;
-				}
-
-				const key = this.makePairKey(noteId, r.noteId);
-				const existing = pairs.get(key);
-				if (existing) {
-					existing.score = Math.max(existing.score, r.score);
-					continue;
-				}
-
-				const [source, target] =
-					noteId < r.noteId ? [noteId, r.noteId] : [r.noteId, noteId];
-
-				pairs.set(key, { source, target, score: r.score });
-			}
-		}
-
-		return Array.from(pairs.values());
-	}
-
-	/** Retries a single note's search call on transient failures before giving up on it. */
-	private async searchWithRetry(
-		joplinAi: { search: (options: SearchOptions) => Promise<SearchResult[]> },
-		noteId: string,
-		isCancelled?: () => boolean
-	): Promise<SearchResult[]> {
-		let lastError: unknown;
-
-		for (let attempt = 1; attempt <= SimilarityEngine.MAX_SEARCH_ATTEMPTS; attempt++) {
-			if (isCancelled?.()) return [];
-			if (attempt > 1) {
-				await this.delay(SimilarityEngine.SEARCH_RETRY_DELAY_MS);
-				if (isCancelled?.()) return [];
-			}
-
-			try {
-				return await joplinAi.search({ query: { noteId }, relevance: 'normal' });
-			} catch (e) {
-				lastError = e;
-			}
-		}
-
-		throw lastError;
-	}
-
-	private delay(ms: number): Promise<void> {
-		return new Promise((resolve) => setTimeout(resolve, ms));
 	}
 
 	/** Dot product of two same-length vectors. */
@@ -305,7 +237,7 @@ export class SimilarityEngine {
 	/**
 	 * Removes pairs whose *raw* score is below the safety floor — unless the
 	 * notes are directly linked, in which case they're kept and left for the
-	 * threshold check later. Runs before normalization on purpose: the floor
+	 * cutoff check later. Runs before normalization on purpose: the floor
 	 * guards against spurious tag-only edges, which requires an absolute
 	 * scale, not a batch-relative one.
 	 */
@@ -313,9 +245,75 @@ export class SimilarityEngine {
 		return pairs.filter((p) => p.score >= floor || this.isDirectlyLinked(p));
 	}
 
-	/** Keeps only pairs whose bonus-boosted score clears the threshold. */
-	private filterBelowThreshold(pairs: SimilarityPair[], threshold: number): SimilarityPair[] {
-		return pairs.filter((p) => p.score >= threshold);
+	private findNeighbourhoods(pairs: SimilarityPair[], size: number): Map<string, Neighbourhood> {
+		const candidates = new Map<string, Array<{ id: string; score: number }>>();
+		const add = (noteId: string, other: string, score: number): void => {
+			const list = candidates.get(noteId);
+			if (list) list.push({ id: other, score });
+			else candidates.set(noteId, [{ id: other, score }]);
+		};
+		for (const p of pairs) {
+			add(p.source, p.target, p.score);
+			add(p.target, p.source, p.score);
+		}
+
+		const neighbourhoods = new Map<string, Neighbourhood>();
+		for (const [noteId, list] of candidates) {
+			const nearest = list.sort((a, b) => b.score - a.score).slice(0, size);
+			neighbourhoods.set(noteId, {
+				ids: new Set(nearest.map((n) => n.id)),
+				typicalScore: nearest.reduce((sum, n) => sum + n.score, 0) / nearest.length,
+			});
+		}
+		return neighbourhoods;
+	}
+
+	private areMutualNeighbours(
+		pair: SimilarityPair,
+		neighbourhoods: Map<string, Neighbourhood>
+	): boolean {
+		return (
+			!!neighbourhoods.get(pair.source)?.ids.has(pair.target) &&
+			!!neighbourhoods.get(pair.target)?.ids.has(pair.source)
+		);
+	}
+
+	/** How much closer two notes are than each of them usually is to its neighbours. */
+	private localScore(pair: SimilarityPair, neighbourhoods: Map<string, Neighbourhood>): number {
+		const typical = (noteId: string): number =>
+			neighbourhoods.get(noteId)?.typicalScore ?? pair.score;
+		return 2 * pair.score - typical(pair.source) - typical(pair.target);
+	}
+
+	private percentileCutoff(
+		pairs: SimilarityPair[],
+		percentile: number,
+		neighbourhoods: Map<string, Neighbourhood>
+	): number {
+		const scores = pairs
+			.filter((p) => p.score >= SEMANTIC_FLOOR)
+			.map((p) => this.localScore(p, neighbourhoods))
+			.sort((a, b) => a - b);
+
+		if (scores.length === 0) {
+			return Infinity;
+		}
+
+		const clamped = Math.min(1, Math.max(0, percentile));
+		const index = Math.min(
+			scores.length - 1,
+			Math.max(0, Math.ceil(clamped * scores.length) - 1)
+		);
+		return scores[index];
+	}
+
+	/** Keeps only pairs whose locally scaled score clears the cutoff, before normalization. */
+	private filterBelowThreshold(
+		pairs: SimilarityPair[],
+		threshold: number,
+		neighbourhoods: Map<string, Neighbourhood>
+	): SimilarityPair[] {
+		return pairs.filter((p) => this.localScore(p, neighbourhoods) >= threshold);
 	}
 
 	/**

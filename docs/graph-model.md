@@ -14,9 +14,12 @@ interface GraphNode {
     label: string;      // note title, truncated to 64 chars
     noteId: string;
     degree: number;      // total edges touching this node
-    community: number;   // 0 = largest cluster, see below
+    community: number;   // 0 = largest community, see below
     size: number;         // 1-10, centrality-scaled
     category?: string;    // Pass B topic label, see docs/llm-enrichment.md
+    notebookId?: string;  // the notebook the note is in
+    tagNames?: string;    // the note's tags, one per line
+    outsideScope?: boolean; // drawn only because it connects to the notebook on screen
 }
 
 interface GraphEdge {
@@ -25,6 +28,7 @@ interface GraphEdge {
     type: EdgeType;
     tagName?: string;              // comma-separated tag names, only when type === 'tag'
     relationshipLabel?: string;     // Pass B explanation, only ever set on type === 'semantic'
+    ring?: boolean;                 // a tag too widely used to connect all its notes, see below
 }
 
 interface RenderedEdge extends GraphEdge {
@@ -106,6 +110,11 @@ deterministically (a small xorshift-style generator, not `Math.random`), so
 re-running Louvain on an *unchanged* graph always produces the same
 partition instead of reshuffling colors between panel opens.
 
+**Between rebuilds,** `CommunityIdStabilizer` keeps the numbers steady. Louvain's
+numbering only reflects size order, so one edit could swap two communities and
+recolor every note in them. Each new community instead takes the number of the old
+community it shares the most notes with.
+
 **Fallback path** (keyword/link grouping) is used when:
 
 - there are fewer than 3 notes or no edges at all (`MIN_NOTES_FOR_LOUVAIN`),
@@ -123,9 +132,9 @@ structure. If Louvain's result was merely more fragmented than the fallback
 (one bucket holding 80%+ of all notes, `MAX_FALLBACK_DOMINANT_SHARE`), the
 fallback replaces it.
 
-**Stability:** whichever result wins, community IDs are renumbered by
+**Stability:** whichever result wins, community IDs are first renumbered by
 group size, largest first, ties broken by the lowest member note ID. That
-makes community `0` always the biggest cluster for a *given* note/edge set,
+makes community `0` always the biggest community for a *given* note/edge set,
 so re-rendering an unchanged graph never recolors it. That guarantee is
 scoped to a fixed note/edge set: adding or removing notes can shift which
 community is largest and therefore reassign IDs, which is why colors can
@@ -150,7 +159,6 @@ A node or edge counts as changed if any field present on either side
 differs. The comparison is over the union of both objects' defined keys, not
 their key counts, so a node gaining or losing an optional field like
 `category` (set by Pass B, absent otherwise) is detected correctly instead
-of being miscounted as a length mismatch. `AnalysisController` runs this
-diff after every rebuild; `IncrementalUpdater` uses the result to push a
-patch to the webview instead of a full graph. See [Incremental
-updates](incremental-updates.md).
+of being miscounted as a length mismatch. `GraphPresenter` runs this diff on the
+view on screen after every change, and sends the result as a patch instead of the
+whole view. See [Large vaults](large-vaults.md).

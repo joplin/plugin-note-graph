@@ -1,10 +1,13 @@
 import { Note } from '../../data/Types';
 import { EdgeFactory } from '../similarity/EdgeFactory';
 import { SimilarityEngine } from '../similarity/SimilarityEngine';
+import { KnnIndex } from '../similarity/KnnIndex';
 import { EmbeddedNote } from '../embeddings/Types';
-import { GraphData, GraphEdge, GraphNode, RenderedEdge } from './types';
+import { GraphData, GraphEdge, GraphNode, RenderedEdge, TAG_NAME_SEPARATOR } from './types';
 import { LouvainDetector } from './LouvainDetector';
 import { CentralityScorer } from './CentralityScorer';
+import { CommunityIdStabilizer } from './CommunityIdStabilizer';
+import { Logger, consoleLogger } from '../../utils/Logger';
 
 const VERY_SHORT_BODY_CHARS = 20;
 
@@ -16,7 +19,10 @@ export class GraphBuilder {
 	public constructor(
 		edgeFactory = new EdgeFactory(),
 		louvainDetector = new LouvainDetector(),
-		centralityScorer = new CentralityScorer()
+		centralityScorer = new CentralityScorer(),
+		private readonly knnIndex = new KnnIndex(),
+		private readonly communityIds = new CommunityIdStabilizer(),
+		private readonly logger: Logger = consoleLogger
 	) {
 		this.edgeFactory = edgeFactory;
 		this.louvainDetector = louvainDetector;
@@ -46,7 +52,7 @@ export class GraphBuilder {
 	): Promise<GraphData> {
 		const structuralEdges = this.edgeFactory.createEdges(notes);
 
-		const engine = new SimilarityEngine(notes, embeddedNotes);
+		const engine = new SimilarityEngine(notes, embeddedNotes, this.knnIndex);
 		const pairs = await engine.compute(threshold, topK, isCancelled);
 		const semanticEdges = this.edgeFactory.createSemanticEdges(pairs);
 
@@ -54,9 +60,29 @@ export class GraphBuilder {
 		return this.buildData(notes, allEdges);
 	}
 
+	/** Carries on the community numbers of a graph from an earlier session, so colors stay the same. */
+	public rememberCommunities(graph: GraphData): void {
+		this.communityIds.seed(new Map(graph.nodes.map((node) => [node.data.id, node.data.community])));
+	}
+
+	/**
+	 * Rebuilds links, tags, communities and sizes, keeping the semantic edges
+	 * already computed, for a change that doesn't involve any embedding.
+	 */
+	public rebuildStructure(notes: Note[], previous: GraphData): GraphData {
+		const noteIds = new Set(notes.map((note) => note.id));
+		const semanticEdges = previous.edges
+			.map((edge) => edge.data)
+			.filter(
+				(edge) =>
+					edge.type === 'semantic' && noteIds.has(edge.source) && noteIds.has(edge.target)
+			);
+		return this.buildData(notes, [...this.edgeFactory.createEdges(notes), ...semanticEdges]);
+	}
+
 	private buildData(notes: Note[], edges: GraphEdge[]): GraphData {
 		const degreeMap = this.computeDegreeMap(notes, edges);
-		const communities = this.louvainDetector.detectCommunities(notes, edges);
+		const communities = this.communityIds.stabilize(this.louvainDetector.detectCommunities(notes, edges));
 		const sizes = this.centralityScorer.score(degreeMap);
 		const nodes = this.buildNodes(notes, degreeMap, communities, sizes);
 
@@ -83,7 +109,7 @@ export class GraphBuilder {
 		return { ...edge, id: `${edge.source}::${edge.target}::${edge.type}` };
 	}
 
-	/** Counts each note's connections, including notes an edge references that aren't in `notes`. */
+	/** Counts each note's connections, including notes an edge references that aren't in `notes`. Ring edges don't count: they link arbitrary notes, so they would only inflate the size of any note carrying a popular tag. */
 	private computeDegreeMap(notes: Note[], edges: GraphEdge[]): Map<string, number> {
 		const degreeMap = new Map<string, number>();
 		for (const note of notes) {
@@ -91,6 +117,7 @@ export class GraphBuilder {
 		}
 
 		for (const edge of edges) {
+			if (edge.ring) continue;
 			degreeMap.set(edge.source, (degreeMap.get(edge.source) ?? 0) + 1);
 			degreeMap.set(edge.target, (degreeMap.get(edge.target) ?? 0) + 1);
 		}
@@ -111,7 +138,7 @@ export class GraphBuilder {
 			const community = communities.get(note.id);
 			const size = sizes.get(note.id);
 			if (community === undefined || size === undefined) {
-				console.error(
+				this.logger.error(
 					`Note ${note.id} missing from community or size map (expected every note to be covered); defaulting to community 0, size 1.`
 				);
 			}
@@ -125,6 +152,8 @@ export class GraphBuilder {
 					degree,
 					community: community ?? 0,
 					size: size ?? 1,
+					notebookId: note.parent_id,
+					...(note.tags?.length ? { tagNames: note.tags.join(TAG_NAME_SEPARATOR) } : {}),
 				},
 			});
 		}
@@ -151,7 +180,7 @@ export class GraphBuilder {
 		const maxDegree = Math.max(1, ...degreeMap.values());
 		const communityCount = new Set(communities.values()).size;
 
-		console.info(
+		this.logger.info(
 			`Graph built: ${nodes.length} nodes, ${visibleEdges.length} edges ` +
 				`(${isolatedCount} isolated, max degree ${maxDegree}, ${communityCount} communities)`
 		);

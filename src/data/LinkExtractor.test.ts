@@ -184,4 +184,29 @@ describe('parseResourceUrl', () => {
 	it('returns null for non-hex id', () => {
 		expect(parseResourceUrl(':/abcdef0123456789abcdef012345678g')).toBeNull();
 	});
+
+	it('keeps a malformed percent-encoded anchor as written instead of throwing', () => {
+		expect(parseResourceUrl(':/abcdef0123456789abcdef0123456789#100%')).toEqual({
+			itemId: 'abcdef0123456789abcdef0123456789',
+			hash: '100%',
+		});
+	});
+
+	it('still decodes a valid percent-encoded anchor', () => {
+		expect(parseResourceUrl(':/abcdef0123456789abcdef0123456789#my%20section')).toEqual({
+			itemId: 'abcdef0123456789abcdef0123456789',
+			hash: 'my section',
+		});
+	});
+});
+
+describe('malformed anchors in a note body', () => {
+	it('still extracts the link, along with the others in the note', () => {
+		const malformed = 'abcdef0123456789abcdef0123456789';
+		const valid = '0123456789abcdef0123456789abcdef';
+
+		const links = new LinkExtractor().extractLinks(`[a](:/${malformed}#100%) and [b](:/${valid})`);
+
+		expect(links).toEqual([malformed, valid]);
+	});
 });

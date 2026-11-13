@@ -15,7 +15,6 @@ jest.mock('../data/Database/GraphCacheRepository', () => ({
 	GraphCacheRepository: jest.fn().mockImplementation(() => ({
 		loadGraph: jest.fn().mockResolvedValue(null),
 		saveGraph: jest.fn().mockResolvedValue(undefined),
-		saveScopeKey: jest.fn().mockResolvedValue(undefined),
 		saveEnrichments: jest.fn().mockResolvedValue(undefined),
 		loadEnrichments: jest.fn().mockResolvedValue([]),
 	})),
@@ -113,8 +112,9 @@ function stubApi(): void {
 		if (path[0] === 'tags' && path.length === 1) {
 			return { items: tags, has_more: false };
 		}
-		if (path[0] === 'tags' && path[2] === 'notes') {
-			return { items: (tagNoteIds[path[1]] ?? []).map((id) => ({ id })), has_more: false };
+		if (path[0] === 'notes' && path[2] === 'tags') {
+			const noteTags = tags.filter((tag) => (tagNoteIds[tag.id] ?? []).includes(path[1]));
+			return { items: noteTags, has_more: false };
 		}
 		return { items: [], has_more: false };
 	});
@@ -145,7 +145,7 @@ function stubApi(): void {
 
 async function loadEnrichedNotes(): Promise<Note[]> {
 	const { notes } = await new NoteRepository().getAllNotes();
-	return new NotePreprocessor().process(notes);
+	return (await new NotePreprocessor().process(notes)).notes;
 }
 
 describe('AnalysisController (full pipeline golden set)', () => {

@@ -391,6 +391,40 @@ describe('LLMEnricher', () => {
 			errorSpy.mockRestore();
 		});
 
+		it('treats a request with no reply as failed, and retries it', async () => {
+			const enricher = createEnricher({ chatTimeoutMs: 5000 });
+			let calls = 0;
+			getChatMock().mockImplementation((messages) => {
+				calls++;
+				if (calls === 1) return new Promise<string>(() => undefined);
+				return Promise.resolve(respondValid(messages));
+			});
+			const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+			const resultPromise = enricher.enrich({ nodes: nodes('n1', 'n2'), edges: [edge('n1', 'n2')] }, NOT_STALE);
+			await jest.advanceTimersByTimeAsync(5000 + 1000);
+			const result = await resultPromise;
+
+			expect(getChatMock()).toHaveBeenCalledTimes(2);
+			expect(result.edgeEnrichments.get('n1::n2::semantic')).toEqual({ relationshipLabel: 'label-n1-n2' });
+			expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('retrying'), expect.objectContaining({ message: 'No reply within 5 s.' }));
+			errorSpy.mockRestore();
+		});
+
+		it('finishes the run when every request hangs, instead of waiting forever', async () => {
+			const enricher = createEnricher({ chatTimeoutMs: 5000 });
+			getChatMock().mockImplementation(() => new Promise<string>(() => undefined));
+			const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+			const resultPromise = enricher.enrich({ nodes: nodes('n1', 'n2'), edges: [edge('n1', 'n2')] }, NOT_STALE);
+			await jest.advanceTimersByTimeAsync(4 * 5000 + 3 * 1000);
+			const result = await resultPromise;
+
+			expect(getChatMock()).toHaveBeenCalledTimes(4);
+			expect(result.edgeEnrichments.size).toBe(0);
+			errorSpy.mockRestore();
+		});
+
 		it('gives up on a batch whose response stays malformed across every attempt', async () => {
 			const enricher = createEnricher();
 			getChatMock().mockResolvedValue('not valid json');
@@ -579,22 +613,6 @@ describe('LLMEnricher', () => {
 		expect(second.nodeEnrichments.get('n1')).toEqual({ category: 'category-n1', centralityAdjustment: 2 });
 	});
 
-	describe('clearCache', () => {
-		it('makes a previously cached edge a cache miss again, re-querying chat()', async () => {
-			const enricher = createEnricher();
-			getChatMock().mockImplementation(async (messages) => respondValid(messages));
-			const input: EnrichmentInput = { nodes: nodes('n1', 'n2'), edges: [edge('n1', 'n2', 100)] };
-			await enricher.enrich(input, NOT_STALE);
-			expect(getChatMock()).toHaveBeenCalledTimes(1);
-
-			enricher.clearCache();
-			const result = await enricher.enrich(input, NOT_STALE);
-
-			expect(getChatMock()).toHaveBeenCalledTimes(2);
-			expect(result.edgeEnrichments.get('n1::n2::semantic')).toEqual({ relationshipLabel: 'label-n1-n2' });
-		});
-	});
-
 	describe('seedCache', () => {
 		it('treats a seeded node/edge as a cache hit, skipping chat() for it', async () => {
 			const enricher = createEnricher();
@@ -694,5 +712,107 @@ describe('LLMEnricher', () => {
 			nodeEnrichments: new Map(),
 			edgeEnrichments: new Map(),
 		});
+	});
+});
+
+describe('LLMEnricher session budget', () => {
+	const chat = (joplin.ai as unknown as { chat: jest.Mock }).chat;
+	const edgeList = (count: number) =>
+		Array.from({ length: count }, (_, i) => ({
+			id: `a${i}::b${i}::semantic`,
+			source: `a${i}`,
+			target: `b${i}`,
+			updatedTime: 1,
+			score: i / count,
+		}));
+	const inputFor = (edges: ReturnType<typeof edgeList>) => {
+		const nodes = new Map();
+		for (const edge of edges) {
+			nodes.set(edge.source, { title: edge.source, body: '', updatedTime: 1 });
+			nodes.set(edge.target, { title: edge.target, body: '', updatedTime: 1 });
+		}
+		return { nodes, edges };
+	};
+
+	/** Labels every pair a test can ask about; the parser drops the ones not in the batch. */
+	const labelled = {
+		text: JSON.stringify({
+			notes: [],
+			relationships: Array.from({ length: 50 }, (_, i) => ({ from: `a${i}`, to: `b${i}`, label: 'related' })),
+		}),
+	};
+	const unlabelled = { text: '{"notes":[],"relationships":[]}' };
+
+	beforeEach(() => {
+		chat.mockReset();
+		chat.mockResolvedValue(labelled);
+		jest.spyOn(console, 'info').mockImplementation(() => undefined);
+		jest.spyOn(console, 'error').mockImplementation(() => undefined);
+	});
+
+	afterEach(() => {
+		jest.restoreAllMocks();
+	});
+
+	it('sends at most the session limit, however many edges a large vault has', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 4, maxEdgesPerSession: 8 });
+
+		await enricher.enrich(inputFor(edgeList(50000)), () => false);
+
+		expect(chat).toHaveBeenCalledTimes(2);
+	});
+
+	it('labels the strongest connections first', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 1, maxEdgesPerSession: 1, maxAttemptsPerBatch: 1 });
+
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+
+		const prompt = chat.mock.calls[0][0][1].content;
+		expect(prompt).toContain('a9');
+	});
+
+	it('labels connections on screen before stronger ones elsewhere', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 1, maxEdgesPerSession: 1, maxAttemptsPerBatch: 1 });
+		const edges = edgeList(10).map((edge) => ({ ...edge, onScreen: edge.source === 'a2' }));
+
+		await enricher.enrich(inputFor(edges), () => false);
+
+		const prompt = chat.mock.calls[0][0][1].content;
+		expect(prompt).toContain('a2');
+		expect(prompt).not.toContain('a9');
+	});
+
+	it('does not ask for more once the limit is used up, across runs', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 4, maxEdgesPerSession: 4, maxAttemptsPerBatch: 1 });
+
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+		chat.mockClear();
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+
+		expect(chat).not.toHaveBeenCalled();
+	});
+
+	it('does not charge the budget for a batch that got nothing back', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 4, maxEdgesPerSession: 4, maxAttemptsPerBatch: 1 });
+		chat.mockResolvedValueOnce(unlabelled);
+
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+		expect(enricher.getSessionBudget().used).toBe(0);
+		chat.mockClear();
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+
+		expect(chat).toHaveBeenCalledTimes(1);
+		expect(enricher.getSessionBudget().used).toBe(4);
+	});
+
+	it('labels more once the budget is reset', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 4, maxEdgesPerSession: 4, maxAttemptsPerBatch: 1 });
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+		chat.mockClear();
+
+		enricher.resetSessionBudget();
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+
+		expect(chat).toHaveBeenCalledTimes(1);
 	});
 });

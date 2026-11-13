@@ -1,45 +1,59 @@
-type HeaderProps = {
-	title?: string;
-};
-
-const LogoSvg = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><circle cx="17" cy="6" r="3" fill="#5b9bd5"/><circle cx="7" cy="7" r="3" fill="#5b9bd5" opacity="0.7"/><circle cx="12" cy="18" r="3" fill="#5b9bd5" opacity="0.85"/><line x1="15.5" y1="8.5" x2="9" y2="9" stroke="#5b9bd5" stroke-width="1.2" stroke-opacity="0.5"/><line x1="9" y1="9" x2="12" y2="15.2" stroke="#5b9bd5" stroke-width="1.2" stroke-opacity="0.5"/></svg>`;
-
 const CloseSvg = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>`;
 
-const NotebookSvg = `<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 19.5V5a2 2 0 0 1 2-2h11a1 1 0 0 1 1 1v15.5M6 3v18M6 21h12a1 1 0 0 0 1-1V4"/></svg>`;
+const NotebookSvg = `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M6 3h13v18H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 3v18"/></svg>`;
 
-const ChevronSvg = `<svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>`;
+const ChevronSvg = `<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>`;
 
-const renderHeader = (props: HeaderProps = {}): string => {
+const SearchSvg = `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M15.5 15.5L21 21"/></svg>`;
+
+const InfoSvg = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 11v6M12 7.5v.01"/></svg>`;
+
+const renderHeader = (): string => {
 	return `
 		<header class="panel-header">
-			<div class="panel-header__brand">
-				<span class="panel-header__logo">${LogoSvg}</span>
-				<span class="panel-header__title">${props.title ?? 'Note Graph'}</span>
-			</div>
-			<div class="panel-header__actions">
-				<div class="panel-header__scope">
-					<button id="graph-scope-btn" class="panel-header__scope-btn" type="button" aria-haspopup="true" aria-expanded="false">
-						${NotebookSvg}
-						<span id="graph-scope-label">All notebooks</span>
+			<div class="panel-header__scope">
+				<button id="graph-scope-btn" class="panel-header__scope-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Choose what the graph shows">
+					${NotebookSvg}
+					<span id="graph-scope-label" class="panel-header__scope-label">All notebooks</span>
+					${ChevronSvg}
+				</button>
+				<div id="graph-scope-menu" class="panel-header__scope-menu" hidden>
+					<button class="panel-header__scope-menu-item" data-scope-mode="current" type="button">Current notebook</button>
+					<button class="panel-header__scope-menu-item" data-scope-mode="all" type="button">All notebooks</button>
+					<button id="graph-scope-select-toggle" class="panel-header__scope-menu-item panel-header__scope-menu-item--expandable" type="button" aria-expanded="false">
+						<span>Select notebooks</span>
 						${ChevronSvg}
 					</button>
-					<div id="graph-scope-menu" class="panel-header__scope-menu" hidden>
-						<button class="panel-header__scope-menu-item" data-scope-mode="all" type="button">All notebooks</button>
-						<button class="panel-header__scope-menu-item" data-scope-mode="current" type="button">Current notebook</button>
-						<button id="graph-scope-select-toggle" class="panel-header__scope-menu-item panel-header__scope-menu-item--expandable" type="button" aria-expanded="false">
-							<span>Select notebooks</span>
-							${ChevronSvg}
-						</button>
-						<div id="graph-scope-select-panel" class="panel-header__scope-select-panel" hidden>
-							<div id="graph-scope-notebook-list" class="panel-header__scope-notebook-list"></div>
-							<button id="graph-scope-apply" class="panel-header__scope-apply-btn" type="button">Apply</button>
-						</div>
+					<div id="graph-scope-select-panel" class="panel-header__scope-select-panel" hidden>
+						<input id="graph-scope-filter" class="panel-header__scope-filter" type="text" placeholder="Filter notebooks" aria-label="Filter notebooks" autocomplete="off" />
+						<div id="graph-scope-notebook-list" class="panel-header__scope-notebook-list"></div>
+						<button id="graph-scope-apply" class="panel-header__scope-apply-btn" type="button">Apply</button>
 					</div>
 				</div>
-				<span class="panel-header__divider"></span>
-				<button id="graph-close" class="panel-header__icon-btn" type="button" aria-label="Close panel">${CloseSvg}</button>
 			</div>
+			<div class="panel-search">
+				<span class="panel-search__icon">${SearchSvg}</span>
+				<input id="graph-search" class="panel-search__input" type="text" placeholder="Search notes" aria-label="Search notes" autocomplete="off" />
+			</div>
+			<div class="panel-header__info">
+				<button id="graph-info-btn" class="panel-header__icon-btn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="graph-info-panel" aria-label="What's happening" title="What's happening">
+					${InfoSvg}
+					<span id="graph-info-badge" class="panel-header__info-badge" hidden></span>
+				</button>
+				<div id="graph-info-panel" class="info-panel" role="dialog" aria-label="What's happening" hidden>
+					<div class="info-panel__head">
+						<span class="info-panel__title">What's happening</span>
+						<span id="graph-info-updated" class="info-panel__updated"></span>
+					</div>
+					<ul id="graph-info-items" class="info-panel__items"></ul>
+					<div class="info-panel__head info-panel__head--problems">
+						<span class="info-panel__subtitle">Recent problems</span>
+						<button id="graph-info-clear" class="info-panel__link" type="button" hidden>Clear</button>
+					</div>
+					<ul id="graph-info-problems" class="info-panel__problems"></ul>
+				</div>
+			</div>
+			<button id="graph-close" class="panel-header__icon-btn" type="button" aria-label="Close panel" title="Close">${CloseSvg}</button>
 		</header>
 	`;
 };

@@ -3,6 +3,7 @@ import { SimilarityEngine } from './SimilarityEngine';
 import { Note } from '../../data/Types';
 import { EmbeddedNote } from '../embeddings/Types';
 import { LARGE_VAULT_THRESHOLD } from './ThresholdPresets';
+import { KnnIndex } from './KnnIndex';
 
 function makeNote(
 	id: string,
@@ -102,11 +103,10 @@ describe('SimilarityEngine', () => {
 		});
 
 		it('gives higher scores to more similar notes', async () => {
-			// With the floor applied to the raw score before normalize, whichever
-			// pair is weakest among the floor survivors normalizes to exactly 0 —
-			// b-c (raw ~0.589) plays that role here so it doesn't drag a-c down
-			// with it, letting both a-b and a-c clear the threshold with a-b
-			// still scoring higher.
+			// A loose percentile keeps all three above-floor pairs so the test
+			// isolates normalization: whichever pair is weakest normalizes to
+			// exactly 0 — b-c (raw ~0.589) plays that role here so it doesn't
+			// drag a-c down with it, letting a-b score higher than a-c.
 			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C')];
 			const embedded = [
 				embed('a', [1, 0, 0]),
@@ -115,7 +115,7 @@ describe('SimilarityEngine', () => {
 			];
 
 			const engine = new SimilarityEngine(notes, embedded);
-			const pairs = await engine.compute();
+			const pairs = await engine.compute(0.2);
 
 			const abScore = pairs.find(
 				(p) =>
@@ -157,7 +157,7 @@ describe('SimilarityEngine', () => {
 			];
 
 			const engine = new SimilarityEngine(notes, embedded);
-			const pairs = await engine.compute();
+			const pairs = await engine.compute(0);
 
 			const abWithTag = pairs.find(
 				(p) =>
@@ -279,7 +279,7 @@ describe('SimilarityEngine', () => {
 			];
 
 			const engine = new SimilarityEngine(notes, embedded);
-			const pairs = await engine.compute();
+			const pairs = await engine.compute(0.2);
 
 			const abWithLink = pairs.find(
 				(p) =>
@@ -423,12 +423,14 @@ describe('SimilarityEngine', () => {
 
 	describe('top-K filtering', () => {
 		it('limits edges per note', async () => {
+			// 30° steps keep each note's two neighbours above the raw threshold
+			// (cos 30° ≈ 0.87), so top-K has something to limit.
 			const notes = [];
 			const embedded = [];
 			for (let i = 0; i < 6; i++) {
 				notes.push(makeNote(`n${i}`, `Note ${i}`));
 				embedded.push(
-					embed(`n${i}`, [Math.cos((i * Math.PI) / 3), Math.sin((i * Math.PI) / 3)])
+					embed(`n${i}`, [Math.cos((i * Math.PI) / 6), Math.sin((i * Math.PI) / 6)])
 				);
 			}
 
@@ -468,34 +470,82 @@ describe('SimilarityEngine', () => {
 			const aEdges = pairs.filter((p) => p.source === 'a' || p.target === 'a');
 			expect(aEdges.length).toBeGreaterThan(5);
 		});
+
+		it('lets a top-K above the neighbourhood size keep that many edges on a hub', async () => {
+			const dims = 17;
+			const aVector = new Array(dims).fill(0);
+			aVector[0] = 1;
+			const notes = [makeNote('a', 'A')];
+			const embedded = [embed('a', aVector)];
+			for (let i = 0; i < 16; i++) {
+				const satelliteVector = new Array(dims).fill(0);
+				satelliteVector[0] = 0.9 - 0.001 * i;
+				satelliteVector[i + 1] = 0.3;
+				notes.push(makeNote(`n${i}`, `Note ${i}`));
+				embedded.push(embed(`n${i}`, satelliteVector));
+			}
+			const hubDegree = async (topK: number): Promise<number> => {
+				const pairs = await new SimilarityEngine(notes, embedded).compute(0, topK);
+				return pairs.filter((p) => p.source === 'a' || p.target === 'a').length;
+			};
+
+			expect(await hubDegree(10)).toBe(10);
+			expect(await hubDegree(15)).toBe(15);
+		});
 	});
 
 	describe('custom threshold and top-K overrides', () => {
-		it('applies a stricter caller-supplied threshold instead of DEFAULT_THRESHOLD', async () => {
-			const notes = [makeNote('a', 'A'), makeNote('b', 'B')];
-			const embedded = [embed('a', [1, 0]), embed('b', [0.95, 0.3])];
+		it('applies a stricter caller-supplied percentile, keeping fewer pairs than DEFAULT_THRESHOLD', async () => {
+			// Raw scores span 0.5 to ~0.93, all above the floor. The default 0.7
+			// percentile keeps the top ~30% (a-b and c-d); a stricter 0.95 keeps
+			// only the single strongest pair (c-d).
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C'), makeNote('d', 'D')];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.9, Math.sqrt(1 - 0.81), 0]),
+				embed('c', [0.7, 0, Math.sqrt(1 - 0.49)]),
+				embed('d', [0.5, 0.3, Math.sqrt(1 - 0.25 - 0.09)]),
+			];
 
 			const engine = new SimilarityEngine(notes, embedded);
 			const defaultPairs = await engine.compute();
-			const strictPairs = await engine.compute(1.2);
+			const strictPairs = await engine.compute(0.95);
 
-			expect(defaultPairs).toHaveLength(1);
-			expect(strictPairs).toEqual([]);
+			expect(defaultPairs).toHaveLength(2);
+			expect(strictPairs).toHaveLength(1);
+			expect(strictPairs[0].source).toBe('c');
+			expect(strictPairs[0].target).toBe('d');
 		});
 
-		it('applies a looser caller-supplied threshold that admits a pair DEFAULT_THRESHOLD would reject', async () => {
-			// Raw cosine 0.35 (above SEMANTIC_FLOOR) plus the same-day temporal
-			// bonus (0.1) lands at 0.45 — below DEFAULT_THRESHOLD (0.5) but above
-			// a caller-supplied 0.4.
-			const notes = [makeNote('a', 'A'), makeNote('b', 'B')];
-			const embedded = [embed('a', [1, 0]), embed('b', [0.35, Math.sqrt(1 - 0.35 * 0.35)])];
+		it('applies a looser caller-supplied percentile, admitting pairs DEFAULT_THRESHOLD would reject', async () => {
+			// A looser percentile lowers the raw-score cutoff, admitting pairs
+			// the default rejects. a-c (raw 0.7) is below the default cutoff
+			// (~0.9) but above the looser one, so it appears only with the
+			// looser percentile.
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C'), makeNote('d', 'D')];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.9, Math.sqrt(1 - 0.81), 0]),
+				embed('c', [0.7, 0, Math.sqrt(1 - 0.49)]),
+				embed('d', [0.5, 0.3, Math.sqrt(1 - 0.25 - 0.09)]),
+			];
 
 			const engine = new SimilarityEngine(notes, embedded);
 			const defaultPairs = await engine.compute();
-			const loosePairs = await engine.compute(0.4);
+			const loosePairs = await engine.compute(0.2);
 
-			expect(defaultPairs).toEqual([]);
-			expect(loosePairs).toHaveLength(1);
+			const acInDefault = defaultPairs.some(
+				(p) =>
+					(p.source === 'a' && p.target === 'c') || (p.source === 'c' && p.target === 'a')
+			);
+			const acInLoose = loosePairs.some(
+				(p) =>
+					(p.source === 'a' && p.target === 'c') || (p.source === 'c' && p.target === 'a')
+			);
+
+			expect(acInDefault).toBe(false);
+			expect(acInLoose).toBe(true);
+			expect(loosePairs.length).toBeGreaterThan(defaultPairs.length);
 		});
 
 		it('applies a caller-supplied top-K instead of TOP_K', async () => {
@@ -503,12 +553,13 @@ describe('SimilarityEngine', () => {
 			// keeps it in its own top-K), so topK=0 is the only value that
 			// unambiguously proves the override took effect: every note's own
 			// kept list is empty, so no pair can survive from any side.
+			// 30° steps keep adjacent pairs above the raw threshold.
 			const notes = [];
 			const embedded = [];
 			for (let i = 0; i < 6; i++) {
 				notes.push(makeNote(`n${i}`, `Note ${i}`));
 				embedded.push(
-					embed(`n${i}`, [Math.cos((i * Math.PI) / 3), Math.sin((i * Math.PI) / 3)])
+					embed(`n${i}`, [Math.cos((i * Math.PI) / 6), Math.sin((i * Math.PI) / 6)])
 				);
 			}
 
@@ -518,6 +569,50 @@ describe('SimilarityEngine', () => {
 
 			expect(defaultPairs.length).toBeGreaterThan(0);
 			expect(zeroKPairs).toEqual([]);
+		});
+	});
+
+	describe('percentile cutoff', () => {
+		it('keeps only the top fraction of pairs when every score is compressed into a narrow high band', async () => {
+			// Mimics the e5 failure mode: all pairwise cosines sit in a narrow
+			// high band (0.77-0.99) so an absolute threshold would reject
+			// nothing. The percentile cutoff still prunes to the top ~30%.
+			const notes = [];
+			const embedded = [];
+			for (let i = 0; i < 6; i++) {
+				const angle = 10 + i * 8;
+				notes.push(makeNote(`n${i}`, `Note ${i}`));
+				embedded.push(
+					embed(`n${i}`, [Math.cos((angle * Math.PI) / 180), Math.sin((angle * Math.PI) / 180)])
+				);
+			}
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs.length).toBeGreaterThan(0);
+			expect(pairs.length).toBeLessThan(15);
+			for (const p of pairs) {
+				expect(p.score).toBeGreaterThan(0);
+			}
+		});
+
+		it('keeps the absolute floor decisive in a tiny vault with little data', async () => {
+			// A 3-note vault where every pair is below SEMANTIC_FLOOR but
+			// clearly ranked (0.1, 0.2, 0.3-tie is avoided here). The percentile
+			// alone would admit the top pair; the small absolute floor keeps a
+			// vault this sparse from manufacturing any edge.
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C')];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.2, Math.sqrt(1 - 0.04), 0]),
+				embed('c', [0.1, 0, Math.sqrt(1 - 0.01)]),
+			];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs).toEqual([]);
 		});
 	});
 
@@ -536,11 +631,12 @@ describe('SimilarityEngine', () => {
 			expect(pairs).toEqual([]);
 		});
 
-		it('lets a direct link bypass the floor, but the boosted score must still clear the threshold', async () => {
+		it('lets a direct link bypass the floor, but the boosted score must still clear the cutoff', async () => {
 			// a and b are nearly orthogonal (cosine ~0) but directly link to each other
 			// and share a tag. The link bypasses SEMANTIC_FLOOR (a user-created edge
-			// isn't a false positive), but the resulting boosted score (~0.25) still
-			// isn't enough to clear DEFAULT_THRESHOLD (0.5).
+			// isn't a false positive), but there is no above-floor pair to compute a
+			// percentile from, so the cutoff falls back to SEMANTIC_FLOOR and the
+			// boosted score (~0.25) still isn't enough to clear it.
 			const notes = [
 				makeNote('a', 'A', ['b'], ['shared']),
 				makeNote('b', 'B', [], ['shared']),
@@ -581,90 +677,173 @@ describe('SimilarityEngine', () => {
 		});
 	});
 
-	describe('large vault (search-based) path retry', () => {
+	describe('threshold is applied to the raw score, before normalization', () => {
+		it('keeps the strongest pair of a weak batch, since the cutoff is relative to the batch', async () => {
+			// a-b (raw 0.45) is the batch's strongest above-floor pair, so the
+			// percentile cutoff admits it even though 0.45 is weak in absolute
+			// terms — relative ranking is what matters. b-c (raw 0.144) is
+			// below SEMANTIC_FLOOR and never becomes a candidate.
+			const notes = [makeNote('a', 'A'), makeNote('b', 'B'), makeNote('c', 'C')];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.45, Math.sqrt(1 - 0.45 * 0.45), 0]),
+				embed('c', [0.32, 0, Math.sqrt(1 - 0.32 * 0.32)]),
+			];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs).toHaveLength(1);
+			expect(pairs[0].source).toBe('a');
+			expect(pairs[0].target).toBe('b');
+		});
+
+		it('cannot manufacture a semantic edge from a shared tag or direct link below the raw percentile cutoff', async () => {
+			// a-b is the batch's strongest pair (raw 0.9). b-c is weaker (raw
+			// 0.59) but above the floor and shares a tag and a direct link —
+			// the bonuses still can't bring it back once the raw percentile
+			// cutoff (~0.9) has rejected it, because the cutoff runs before
+			// bonuses.
+			const notes = [
+				makeNote('a', 'A'),
+				makeNote('b', 'B', ['c'], ['shared']),
+				makeNote('c', 'C', [], ['shared']),
+			];
+			const embedded = [
+				embed('a', [1, 0, 0]),
+				embed('b', [0.9, Math.sqrt(1 - 0.81), 0]),
+				embed('c', [0.8, -0.3, Math.sqrt(0.27)]),
+			];
+
+			const engine = new SimilarityEngine(notes, embedded);
+			const pairs = await engine.compute();
+
+			expect(pairs).toHaveLength(1);
+			expect(pairs[0].source).toBe('a');
+			expect(pairs[0].target).toBe('b');
+		});
+	});
+
+	describe('local scaling and mutual neighbours', () => {
+		const unit = (v: number[]): number[] => {
+			const n = Math.hypot(...v);
+			return v.map((x) => x / n);
+		};
+		const pairOf = (pairs: { source: string; target: string }[], a: string, b: string) =>
+			pairs.find(
+				(p) => (p.source === a && p.target === b) || (p.source === b && p.target === a)
+			);
+
+		it('still connects notes in a sparse part of the vault next to a dense group of near-identical notes', async () => {
+			const clones = Array.from({ length: 12 }, (_, i) => `clone${i}`);
+			const food = ['bread', 'pasta', 'grill'];
+			const fitness = ['run', 'lift', 'stretch'];
+			const notes = [...clones, ...food, ...fitness].map((id) => makeNote(id, id));
+			const embedded = [
+				...clones.map((id, i) => embed(id, unit([1, 0.001 * i, 0, 0]))),
+				embed('bread', unit([0.5, 0.85, 0.1, 0])),
+				embed('pasta', unit([0.45, 0.88, -0.1, 0])),
+				embed('grill', unit([0.55, 0.8, 0, 0.1])),
+				embed('run', unit([0.5, 0, 0.85, 0.1])),
+				embed('lift', unit([0.45, 0, 0.88, -0.1])),
+				embed('stretch', unit([0.55, 0.1, 0.8, 0])),
+			];
+
+			const pairs = await new SimilarityEngine(notes, embedded).compute();
+
+			for (const [a, b] of [
+				['bread', 'pasta'],
+				['bread', 'grill'],
+				['run', 'lift'],
+				['lift', 'stretch'],
+			]) {
+				expect(pairOf(pairs, a, b)).toBeDefined();
+			}
+			expect(pairOf(pairs, 'bread', 'run')).toBeUndefined();
+		});
+
+		it('does not connect a note to a group that has closer neighbours of its own', async () => {
+			const group = Array.from({ length: 11 }, (_, i) => `g${i}`);
+			const notes = [...group, 'loner'].map((id) => makeNote(id, id));
+			const embedded = [
+				...group.map((id, i) => embed(id, unit([1, 0.01 * i, 0]))),
+				embed('loner', unit([0.8, 0, 0.6])),
+			];
+
+			const pairs = await new SimilarityEngine(notes, embedded).compute(0);
+
+			expect(pairs.some((p) => p.source === 'loner' || p.target === 'loner')).toBe(false);
+		});
+	});
+
+	describe('large vault (nearest-neighbour) path', () => {
 		function makeLargeVault(): { notes: Note[]; embedded: EmbeddedNote[] } {
 			const count = LARGE_VAULT_THRESHOLD + 1;
 			const notes: Note[] = [];
+			const embedded: EmbeddedNote[] = [];
 			for (let i = 0; i < count; i++) {
 				notes.push(makeNote('n' + i, 'Note ' + i));
+				const angle = (i / count) * Math.PI * 2;
+				embedded.push(embed('n' + i, [Math.cos(angle), Math.sin(angle)]));
 			}
-			const embedded = [embed('n0', [1, 0]), embed('n1', [1, 0])];
 			return { notes, embedded };
 		}
 
-		beforeEach(() => {
-			jest.useFakeTimers();
-		});
-
-		afterEach(() => {
-			jest.useRealTimers();
-		});
-
-		it('retries a failed note search and keeps the result once it succeeds', async () => {
+		it('finds neighbours without making a single joplin.ai.search call', async () => {
 			const { notes, embedded } = makeLargeVault();
 			const search = (joplin.ai as unknown as { search: jest.Mock }).search;
-			let calls = 0;
-			search.mockImplementation(async (options: { query: { noteId: string } }) => {
-				calls++;
-				if (options.query.noteId === 'n0' && calls === 1) {
-					throw new Error('network blip');
-				}
-				if (options.query.noteId === 'n0') {
-					return [{ noteId: 'n1', chunkIndex: 0, chunkText: '', score: 0.9 }];
-				}
-				return [];
-			});
+			search.mockClear();
 
-			const engine = new SimilarityEngine(notes, embedded);
-			const pairsPromise = engine.compute();
-			await jest.advanceTimersByTimeAsync(500);
-			const pairs = await pairsPromise;
-
-			expect(pairs.some((p) => p.source === 'n0' && p.target === 'n1')).toBe(true);
-		});
-
-		it('falls back to cosine similarity when every note search fails after retrying', async () => {
-			const { notes, embedded } = makeLargeVault();
-			const search = (joplin.ai as unknown as { search: jest.Mock }).search;
-			search.mockRejectedValue(new Error('search unavailable'));
-			const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-			const engine = new SimilarityEngine(notes, embedded);
-			const pairsPromise = engine.compute();
-			await jest.advanceTimersByTimeAsync(notes.length * 500 + 1000);
-			const pairs = await pairsPromise;
-
-			expect(pairs.some((p) => p.source === 'n0' && p.target === 'n1')).toBe(true);
-			expect(warnSpy).toHaveBeenCalledWith(
-				expect.stringContaining('falling back to pairwise cosine similarity'),
-				expect.anything()
-			);
-			warnSpy.mockRestore();
-		});
-
-		it('gives up after a handful of consecutive failures instead of retrying every note in a large vault', async () => {
-			const { notes, embedded } = makeLargeVault();
-			const search = (joplin.ai as unknown as { search: jest.Mock }).search;
-			search.mockRejectedValue(new Error('search unavailable'));
-			jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-			const engine = new SimilarityEngine(notes, embedded);
-			const pairsPromise = engine.compute();
-			await jest.advanceTimersByTimeAsync(3 * 500 + 1000);
-			await pairsPromise;
-
-			expect(search.mock.calls.length).toBeLessThan(notes.length);
-		});
-
-		it('stops before calling search when isCancelled() is already true', async () => {
-			const { notes, embedded } = makeLargeVault();
-			const search = (joplin.ai as unknown as { search: jest.Mock }).search;
-			search.mockResolvedValue([]);
-
-			const engine = new SimilarityEngine(notes, embedded);
-			const pairs = await engine.compute(undefined, undefined, () => true);
+			const pairs = await new SimilarityEngine(notes, embedded).compute(0, 5);
 
 			expect(search).not.toHaveBeenCalled();
+			expect(pairs.length).toBeGreaterThan(0);
+		});
+
+		it('never returns more than a bounded number of candidates per note', async () => {
+			const { notes, embedded } = makeLargeVault();
+			const index = new KnnIndex(20);
+
+			await new SimilarityEngine(notes, embedded, index).compute(0, 5);
+
+			expect(index.pairs().length).toBeLessThanOrEqual(notes.length * 20);
+		});
+
+		it('keeps long-note neighbours, which per-chunk search crowded out', async () => {
+			const { notes, embedded } = makeLargeVault();
+
+			const pairs = await new SimilarityEngine(notes, embedded).compute(0, 5);
+
+			const connected = new Set(pairs.flatMap((pair) => [pair.source, pair.target]));
+			expect(connected.size).toBe(notes.length);
+		});
+
+		it('reuses the same index between runs', async () => {
+			const { notes, embedded } = makeLargeVault();
+			const index = new KnnIndex(20);
+			const syncSpy = jest.spyOn(index, 'sync');
+
+			await new SimilarityEngine(notes, embedded, index).compute();
+			await new SimilarityEngine(notes, embedded, index).compute();
+
+			expect(syncSpy).toHaveBeenCalledTimes(2);
+			expect(index.size).toBe(notes.length);
+		});
+
+		it('ignores notes that have no vector yet', async () => {
+			const { notes, embedded } = makeLargeVault();
+			const index = new KnnIndex(20);
+
+			await new SimilarityEngine(notes, embedded.slice(0, 10), index).compute();
+
+			expect(index.size).toBe(10);
+		});
+
+		it('returns nothing when cancelled', async () => {
+			const { notes, embedded } = makeLargeVault();
+
+			const pairs = await new SimilarityEngine(notes, embedded).compute(undefined, undefined, () => true);
+
 			expect(pairs).toEqual([]);
 		});
 	});
