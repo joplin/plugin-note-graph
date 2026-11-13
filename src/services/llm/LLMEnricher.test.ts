@@ -391,6 +391,40 @@ describe('LLMEnricher', () => {
 			errorSpy.mockRestore();
 		});
 
+		it('treats a request with no reply as failed, and retries it', async () => {
+			const enricher = createEnricher({ chatTimeoutMs: 5000 });
+			let calls = 0;
+			getChatMock().mockImplementation((messages) => {
+				calls++;
+				if (calls === 1) return new Promise<string>(() => undefined);
+				return Promise.resolve(respondValid(messages));
+			});
+			const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+			const resultPromise = enricher.enrich({ nodes: nodes('n1', 'n2'), edges: [edge('n1', 'n2')] }, NOT_STALE);
+			await jest.advanceTimersByTimeAsync(5000 + 1000);
+			const result = await resultPromise;
+
+			expect(getChatMock()).toHaveBeenCalledTimes(2);
+			expect(result.edgeEnrichments.get('n1::n2::semantic')).toEqual({ relationshipLabel: 'label-n1-n2' });
+			expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('retrying'), expect.objectContaining({ message: 'No reply within 5 s.' }));
+			errorSpy.mockRestore();
+		});
+
+		it('finishes the run when every request hangs, instead of waiting forever', async () => {
+			const enricher = createEnricher({ chatTimeoutMs: 5000 });
+			getChatMock().mockImplementation(() => new Promise<string>(() => undefined));
+			const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+			const resultPromise = enricher.enrich({ nodes: nodes('n1', 'n2'), edges: [edge('n1', 'n2')] }, NOT_STALE);
+			await jest.advanceTimersByTimeAsync(4 * 5000 + 3 * 1000);
+			const result = await resultPromise;
+
+			expect(getChatMock()).toHaveBeenCalledTimes(4);
+			expect(result.edgeEnrichments.size).toBe(0);
+			errorSpy.mockRestore();
+		});
+
 		it('gives up on a batch whose response stays malformed across every attempt', async () => {
 			const enricher = createEnricher();
 			getChatMock().mockResolvedValue('not valid json');

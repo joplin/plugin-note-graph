@@ -7,6 +7,8 @@ import { Logger, consoleLogger } from '../../utils/Logger';
 const EDGES_PER_BATCH = 4;
 const MAX_ATTEMPTS_PER_BATCH = 4;
 const RETRY_DELAY_MS = 1000;
+/** A request with no reply by then counts as failed, so one hung request can't stall labeling. */
+const CHAT_TIMEOUT_MS = 90_000;
 const MAX_EXISTING_CATEGORIES = 40;
 const LOG_EXCERPT_LENGTH = 600;
 /** A large vault can have tens of thousands of semantic edges, each a paid request on a remote provider, so one round labels this many at most. `BackgroundLabeler` paces the rounds. */
@@ -71,6 +73,7 @@ interface Batch {
 export interface LLMEnricherConfig {
 	edgesPerBatch?: number;
 	maxAttemptsPerBatch?: number;
+	chatTimeoutMs?: number;
 	maxEdgesPerSession?: number;
 	logger?: Logger;
 }
@@ -88,6 +91,7 @@ export class LLMEnricher {
 	private readonly dirtyEdges = new Map<string, CachedEnrichment<EdgeEnrichment>>();
 	private readonly edgesPerBatch: number;
 	private readonly maxAttemptsPerBatch: number;
+	private readonly chatTimeoutMs: number;
 	private readonly maxEdgesPerSession: number;
 	private readonly logger: Logger;
 	private edgesLabeledThisSession = 0;
@@ -95,6 +99,7 @@ export class LLMEnricher {
 	public constructor(config: LLMEnricherConfig = {}) {
 		this.edgesPerBatch = config.edgesPerBatch ?? EDGES_PER_BATCH;
 		this.maxAttemptsPerBatch = config.maxAttemptsPerBatch ?? MAX_ATTEMPTS_PER_BATCH;
+		this.chatTimeoutMs = config.chatTimeoutMs ?? CHAT_TIMEOUT_MS;
 		this.maxEdgesPerSession = config.maxEdgesPerSession ?? MAX_EDGES_PER_SESSION;
 		this.logger = config.logger ?? consoleLogger;
 	}
@@ -351,7 +356,7 @@ export class LLMEnricher {
 
 			let response: unknown;
 			try {
-				response = await api.chat(messages);
+				response = await this.chatWithTimeout(api, messages);
 			} catch (e) {
 				this.logger.error(
 					`LLM enrichment: chat() call failed on attempt ${attempt}/${this.maxAttemptsPerBatch} for ${batchDescription}${willRetry ? '; retrying.' : '; giving up for this run.'}`,
@@ -388,6 +393,21 @@ export class LLMEnricher {
 		}
 
 		return empty;
+	}
+
+	private async chatWithTimeout(api: ChatApi, messages: ChatMessage[]): Promise<unknown> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<never>((_, reject) => {
+			timer = setTimeout(
+				() => reject(new Error(`No reply within ${Math.round(this.chatTimeoutMs / 1000)} s.`)),
+				this.chatTimeoutMs
+			);
+		});
+		try {
+			return await Promise.race([api.chat(messages), timeout]);
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	private delay(ms: number): Promise<void> {
