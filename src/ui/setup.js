@@ -213,7 +213,7 @@
 			.postMessage({ type: 'get-scope-state' })
 			.then((response) => {
 				if (!response) return;
-				const mode = response.mode || 'all';
+				const mode = response.mode || 'current';
 				selectedIds = new Set(response.selectedNotebookIds || []);
 				updateLabel(mode, Array.from(selectedIds));
 			})

@@ -101,7 +101,8 @@ manufacturing edges out of weak scores.
 
 ### 3. Mutual neighbours
 
-Each note's neighbourhood is its `NEIGHBOURHOOD_SIZE` (10) closest notes. A pair
+Each note's neighbourhood is its `NEIGHBOURHOOD_SIZE` (10) closest notes, or its
+top-K closest when K is set higher, so the top-K setting always has an effect. A pair
 is only kept if each note is in the other's neighbourhood, unless they are
 directly linked. A note that is moderately close to everything, without being
 about the same thing, stops being linked to all of them.
@@ -153,7 +154,8 @@ Each note keeps its K strongest remaining connections
 settings). This is the standard k-nearest-neighbor graph construction: the
 returned edge set is the *union* of every note's top-K, so a note that many
 other notes pick as one of their top-K can end up with more than K edges
-overall. That is intentional; it keeps degree meaningful as a centrality
+overall, up to its neighbourhood size from step 3 plus any directly linked
+pairs. That is intentional; it keeps degree meaningful as a centrality
 signal instead of artificially flattening it.
 
 All the constants named above live in

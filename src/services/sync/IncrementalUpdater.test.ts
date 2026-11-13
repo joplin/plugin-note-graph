@@ -520,7 +520,7 @@ describe('IncrementalUpdater', () => {
 
 			await updater.handleEmbeddingTick();
 
-			expect(analysisController.markMissingVectorsStale).toHaveBeenCalledWith(['a', 'b']);
+			expect(analysisController.markOutdatedVectorsStale).toHaveBeenCalledWith(['a', 'b']);
 			expect(analysisController.markVectorsStale).not.toHaveBeenCalled();
 		});
 

@@ -155,6 +155,20 @@ describe('buildStatusReport', () => {
 		expect(item(report, LABELS).level).toBe('off');
 	});
 
+	it('does not offer to run AI before the notes are loaded', () => {
+		const tracker = new StatusTracker(() => 1000);
+		tracker.noteLoadFailed();
+		const base = inputs({});
+		const report = buildStatusReport({
+			...base,
+			tracked: tracker.snapshot(),
+			ai: { ...base.ai, index: { ...(base.ai.index as NonNullable<typeof base.ai.index>), state: 'disabled' } },
+		});
+
+		expect(item(report, AI).level).toBe('attention');
+		expect(item(report, AI).action).toBeUndefined();
+	});
+
 	it('gives the reason and a retry when AI was not used', () => {
 		const report = buildStatusReport(
 			inputs({

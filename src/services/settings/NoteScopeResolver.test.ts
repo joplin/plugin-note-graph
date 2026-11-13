@@ -51,6 +51,82 @@ describe('NoteScopeResolver', () => {
 		logged.mockRestore();
 	});
 
+	describe('reusing the notebook list', () => {
+		let now: number;
+		const withClock = () => new NoteScopeResolver(mockFolderRepo, undefined, () => now);
+		const all = { mode: 'all' as const, selectedNotebookIds: [] };
+
+		beforeEach(() => {
+			now = 1_000_000;
+		});
+
+		it('reads the list once for views drawn close together', async () => {
+			const cached = withClock();
+
+			await cached.resolve(all);
+			now += 5_000;
+			await cached.resolve(all);
+
+			expect(mockFolderRepo.getAllFolders).toHaveBeenCalledTimes(1);
+		});
+
+		it('reads the list again once it is a few seconds old', async () => {
+			const cached = withClock();
+
+			await cached.resolve(all);
+			now += 10_001;
+			await cached.resolve(all);
+
+			expect(mockFolderRepo.getAllFolders).toHaveBeenCalledTimes(2);
+		});
+
+		it('reads the list again for a chosen notebook it has not seen, such as a new one', async () => {
+			const cached = withClock();
+			await cached.resolve(all);
+			mockFolderRepo.getAllFolders.mockResolvedValue({
+				folders: [...folders(), { id: 'new-nb', parent_id: '', title: 'New' }],
+				truncated: false,
+			});
+
+			const result = await cached.resolve({ mode: 'selected', selectedNotebookIds: ['new-nb'] });
+
+			expect(result.folderIds).toEqual(new Set(['new-nb']));
+			expect(result.notebookTitles.get('new-nb')).toBe('New');
+		});
+
+		it('reads the list again when the open notebook is not in it', async () => {
+			const cached = withClock();
+			await cached.resolve(all);
+			mockFolderRepo.getAllFolders.mockResolvedValue({
+				folders: [
+					...folders(),
+					{ id: 'new-nb', parent_id: '', title: 'New' },
+					{ id: 'new-child', parent_id: 'new-nb', title: 'Inside' },
+				],
+				truncated: false,
+			});
+			(joplin.workspace.selectedFolder as jest.Mock).mockResolvedValue({
+				id: 'new-nb',
+				title: 'New',
+			});
+
+			const result = await cached.resolve({ mode: 'current', selectedNotebookIds: [] });
+
+			expect(result.folderIds).toEqual(new Set(['new-nb', 'new-child']));
+		});
+
+		it('does not keep a list that was incomplete', async () => {
+			jest.spyOn(console, 'error').mockImplementation(() => undefined);
+			mockFolderRepo.getAllFolders.mockResolvedValue({ folders: folders(), truncated: true });
+			const cached = withClock();
+
+			await cached.resolve(all);
+			await cached.resolve(all);
+
+			expect(mockFolderRepo.getAllFolders).toHaveBeenCalledTimes(2);
+		});
+	});
+
 	describe('on a vault too large to draw at once', () => {
 		const large = { wholeVaultAllowed: false };
 

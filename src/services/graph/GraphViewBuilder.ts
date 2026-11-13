@@ -193,16 +193,17 @@ export class GraphViewBuilder {
 		const members = tag ? inScope.filter((node) => noteTags(node.data).includes(tag)) : inScope;
 
 		const shown = this.limitMembers(members, index, context);
-		const outside = this.rankOutsideNotes(shown, index, context).slice(
+		const candidates = this.rankOutsideNotes(shown, index, context).slice(
 			0,
 			this.limits.maxOutsideNotes
 		);
+		const edges = this.edgesTouching(graph, shown, candidates);
+		const limitedEdges = this.limitEdges(edges);
+		const outside = this.withConnections(candidates, limitedEdges);
 		const nodes = [
 			...shown,
 			...outside.map(({ data }) => ({ data: { ...data, outsideScope: true } })),
 		];
-		const edges = this.edgesTouching(graph, shown, outside);
-		const limitedEdges = this.limitEdges(edges);
 
 		return {
 			...this.commonDetails(graph, nodes, context),
@@ -295,6 +296,12 @@ export class GraphViewBuilder {
 		rank.bestScore = Math.max(rank.bestScore, edge.score ?? 0);
 		rank.connections++;
 		ranks.set(entry.data.id, rank);
+	}
+
+	/** An outside note is only there for its connections, so one that lost them all to the edge limit is dropped. */
+	private withConnections(notes: NodeEntry[], edges: EdgeEntry[]): NodeEntry[] {
+		const connected = new Set(edges.flatMap(({ data }) => [data.source, data.target]));
+		return notes.filter((note) => connected.has(note.data.id));
 	}
 
 	/** An edge between two outside notes says nothing about the notes in scope, so it's left out. */

@@ -7,21 +7,25 @@ interface FakeDatabaseState {
 	failOn?: string;
 }
 
-function installFakeSqlite(state: FakeDatabaseState): void {
+function installFakeSqlite(state: FakeDatabaseState, options: { asyncRun?: boolean } = {}): void {
 	class FakeDatabase {
 		public constructor(_path: string, callback: (err: Error | null) => void) {
 			setTimeout(() => callback(null), 0);
 		}
 
 		public run(sql: string, _params: unknown[], callback: (err: Error | null) => void): void {
-			if (state.failOn && sql.includes(state.failOn)) {
-				callback(new Error('statement failed'));
-				return;
-			}
-			state.statements.push(sql);
-			const versionMatch = /PRAGMA user_version = (\d+)/.exec(sql);
-			if (versionMatch) state.userVersion = Number(versionMatch[1]);
-			callback(null);
+			const execute = (): void => {
+				if (state.failOn && sql.includes(state.failOn)) {
+					callback(new Error('statement failed'));
+					return;
+				}
+				state.statements.push(sql);
+				const versionMatch = /PRAGMA user_version = (\d+)/.exec(sql);
+				if (versionMatch) state.userVersion = Number(versionMatch[1]);
+				callback(null);
+			};
+			if (options.asyncRun) setTimeout(execute, 5);
+			else execute();
 		}
 
 		public all(
@@ -95,6 +99,44 @@ describe('VectorDatabase', () => {
 		await new VectorDatabase('test.sqlite', []).open();
 
 		expect(state.statements.some((sql) => sql.startsWith('PRAGMA busy_timeout'))).toBe(true);
+	});
+
+	it('applies each migration and its version bump in one transaction', async () => {
+		const state: FakeDatabaseState = { statements: [], userVersion: 0 };
+		installFakeSqlite(state);
+
+		await new VectorDatabase('test.sqlite', [], ['MIGRATE 1']).open();
+
+		const start = state.statements.indexOf('BEGIN TRANSACTION');
+		expect(state.statements.slice(start, start + 4)).toEqual([
+			'BEGIN TRANSACTION',
+			'MIGRATE 1',
+			'PRAGMA user_version = 1',
+			'COMMIT',
+		]);
+	});
+
+	it('rolls back a migration that failed', async () => {
+		const state: FakeDatabaseState = { statements: [], userVersion: 0, failOn: 'MIGRATE 1' };
+		installFakeSqlite(state);
+
+		await expect(new VectorDatabase('test.sqlite', [], ['MIGRATE 1']).open()).rejects.toThrow();
+
+		expect(state.statements).toContain('ROLLBACK');
+	});
+
+	it('makes a second caller wait until the schema and migrations are in place', async () => {
+		const state: FakeDatabaseState = { statements: [], userVersion: 0 };
+		installFakeSqlite(state, { asyncRun: true });
+		const db = new VectorDatabase('test.sqlite', ['CREATE A'], ['MIGRATE 1']);
+
+		const first = db.open();
+		await new Promise((resolve) => setTimeout(resolve, 2));
+		await db.open();
+
+		expect(state.statements).toContain('CREATE A');
+		expect(state.statements).toContain('MIGRATE 1');
+		await first;
 	});
 
 	it('opens only once however many times it is asked', async () => {

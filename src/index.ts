@@ -483,7 +483,9 @@ const handleSettingsChange = async (event: { keys: string[] }): Promise<void> =>
 	}
 };
 
+/** Before the notes are loaded there is nothing to embed, and running on none would commit an empty graph. */
 const retryEmbedding = async (): Promise<void> => {
+	if (!analysisController.hasNotes()) return;
 	try {
 		await runSemanticAnalysis(analysisController.getCurrentNotes());
 	} catch (error) {

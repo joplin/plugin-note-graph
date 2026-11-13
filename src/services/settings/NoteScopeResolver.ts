@@ -30,6 +30,9 @@ export interface ScopeOptions {
 	wholeVaultAllowed: boolean;
 }
 
+/** Every view works out its scope, so the notebook list is read once for views drawn close together. */
+const FOLDER_LIST_REUSE_MS = 10_000;
+
 export const WHOLE_VAULT_SCOPE_KEY = 'all';
 const WHOLE_VAULT_LABEL = 'All notebooks';
 
@@ -46,29 +49,49 @@ export function currentScopeKey(folderId: string | null): string {
 }
 
 export class NoteScopeResolver {
+	private recentFolders: { folders: Folder[]; readAt: number } | null = null;
+
 	public constructor(
 		private readonly folderRepository = new FolderRepository(),
-		private readonly logger: Logger = consoleLogger
+		private readonly logger: Logger = consoleLogger,
+		private readonly now: () => number = Date.now
 	) {}
 
 	public async resolve(
 		settings: ScopeSettings,
 		{ wholeVaultAllowed }: ScopeOptions = { wholeVaultAllowed: true }
 	): Promise<ResolvedScope> {
+		const needed = settings.mode === 'selected' ? settings.selectedNotebookIds : [];
+		const folders = await this.loadFolders(needed);
+
+		const specific = await this.resolveSpecificScope(settings, folders);
+		if (specific) return specific;
+		if (wholeVaultAllowed) return { ...WHOLE_VAULT_SCOPE, notebookTitles: this.titlesOf(folders) };
+
+		const current = await this.resolveCurrent(folders);
+		return { ...current, wholeVaultUnavailable: true };
+	}
+
+	/** Reads the list again when it is old, or when it lacks a notebook that must be in it, such as a new one. */
+	private async loadFolders(mustInclude: string[]): Promise<Folder[]> {
+		const recent = this.recentFolders;
+		if (recent && this.now() - recent.readAt < FOLDER_LIST_REUSE_MS) {
+			const known = new Set(recent.folders.map((folder) => folder.id));
+			if (mustInclude.every((id) => known.has(id))) return recent.folders;
+		}
+
 		const { folders, truncated } = await this.folderRepository.getAllFolders();
 		if (truncated) {
 			this.logger.error(
 				'Note Graph scope: notebook list is incomplete; some notebooks may be missing from the scope.'
 			);
 		}
-		const notebookTitles = new Map(folders.map((folder) => [folder.id, folder.title]));
+		this.recentFolders = truncated ? null : { folders, readAt: this.now() };
+		return folders;
+	}
 
-		const specific = await this.resolveSpecificScope(settings, folders);
-		if (specific) return { ...specific, notebookTitles };
-		if (wholeVaultAllowed) return { ...WHOLE_VAULT_SCOPE, notebookTitles };
-
-		const current = await this.resolveCurrent(folders);
-		return { ...current, notebookTitles, wholeVaultUnavailable: true };
+	private titlesOf(folders: Folder[]): Map<string, string> {
+		return new Map(folders.map((folder) => [folder.id, folder.title]));
 	}
 
 	/** Returns null when the settings don't lead to any particular notebooks. */
@@ -83,22 +106,26 @@ export class NoteScopeResolver {
 		return null;
 	}
 
-	private async resolveCurrent(folders: Folder[]): Promise<ResolvedScope> {
+	private async resolveCurrent(known: Folder[]): Promise<ResolvedScope> {
 		const current = await joplin.workspace.selectedFolder().catch(() => null);
 		if (!current) {
 			const openNote = await joplin.workspace.selectedNote().catch(() => null);
 			return {
 				...WHOLE_VAULT_SCOPE,
+				notebookTitles: this.titlesOf(known),
 				followsSelection: true,
 				openNoteId: openNote?.id ?? null,
 			};
 		}
 
+		const folders = known.some((folder) => folder.id === current.id)
+			? known
+			: await this.loadFolders([current.id]);
 		return {
 			folderIds: this.expandSubtree(folders, [current.id]),
 			scopeKey: currentScopeKey(current.id),
 			label: current.title,
-			notebookTitles: new Map(),
+			notebookTitles: this.titlesOf(folders),
 			followsSelection: true,
 		};
 	}
@@ -122,7 +149,7 @@ export class NoteScopeResolver {
 			folderIds,
 			scopeKey: `selected:${Array.from(folderIds).sort().join(',')}`,
 			label: roots.length === 1 ? roots[0].title : `${roots.length} notebooks`,
-			notebookTitles: new Map(),
+			notebookTitles: this.titlesOf(folders),
 			followsSelection: false,
 		};
 	}

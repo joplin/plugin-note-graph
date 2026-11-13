@@ -255,7 +255,23 @@ describe('NoteRepository', () => {
 		expect(truncated).toBe(true);
 		expect(notes).toHaveLength(30);
 		expect(mockGet).toHaveBeenCalledTimes(1);
-		expect(mockGet).toHaveBeenCalledWith(['notes'], expect.objectContaining({ limit: 30 }));
+	});
+
+	it('keeps the page size fixed near maxNotes, so later pages start where they should', async () => {
+		const page = (start: number) =>
+			Array.from({ length: 100 }, (_, i) => ({ id: `${start + i}` }));
+		mockGet
+			.mockResolvedValueOnce({ items: page(0), has_more: true })
+			.mockResolvedValueOnce({ items: page(100), has_more: true });
+
+		const { notes } = await repo.getAllNotes(150);
+
+		expect(notes).toHaveLength(150);
+		expect(notes[149].id).toBe('149');
+		expect(mockGet).toHaveBeenLastCalledWith(
+			['notes'],
+			expect.objectContaining({ page: 2, limit: 100 })
+		);
 	});
 
 	it('does not call API if maxNotes already met from previous page', async () => {
@@ -301,6 +317,14 @@ describe('NoteRepository', () => {
 
 		it('returns null when the note has been moved to the trash', async () => {
 			mockGet.mockResolvedValueOnce({ id: '1', deleted_time: 1700000000000 });
+
+			const note = await repo.getNote('1');
+
+			expect(note).toBeNull();
+		});
+
+		it('returns null for a conflict copy, which getAllNotes also leaves out', async () => {
+			mockGet.mockResolvedValueOnce({ id: '1', deleted_time: 0, is_conflict: 1 });
 
 			const note = await repo.getNote('1');
 

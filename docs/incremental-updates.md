@@ -42,7 +42,9 @@ flushes.
    the changes into the last known note set and then does the least it can:
    - **Nothing changed:** returns `null`.
    - **Only the note's text changed:** remembers the note and returns `null`. The
-     graph doesn't depend on text, so nothing is rebuilt, sent or saved.
+     graph doesn't depend on text, so nothing is rebuilt or sent. The cache is written
+     a minute later, so a restart doesn't fetch the note again; a note being typed is
+     saved every few seconds, and the cache holds the whole vault.
    - **The title, notebook, tags or links changed, or a note was added or
      removed:** rebuilds links, tags, communities and sizes
      (`GraphBuilder.rebuildStructure`), keeping the semantic edges already
@@ -100,8 +102,10 @@ Sweeps run after each sync, and every three minutes while the panel is visible, 
 people who never sync still get fresh semantic edges. They're limited to one per
 two and a half minutes. New notes get their first vector the same way.
 
-The first sweep over a large index only finds where the stream ends: the full load
-already fetched those vectors, so none of them count as changed. Joplin's stream
+The first sweep over a large index can't tell what changed, so it only marks notes
+with no vector yet and notes whose stored vector is older than the note
+(`AnalysisController.markOutdatedVectorsStale()`); everything else the full load
+already fetched. Joplin's stream
 gives no position past its final page, so that page is read again on each sweep, and
 a vector identical to the current one causes no rebuild. If the embedding model
 changes, the sweep starts over and a full reload follows.
@@ -116,7 +120,10 @@ separately, a check for any semantic edge still missing a Pass B label. If
 LLM enrichment is enabled and the cached graph has any, that check backfills
 them the same way **Retry AI labels** does; see [LLM
 enrichment](llm-enrichment.md#retrying-missing-labels). This background flow is why reopening the panel after restarting Joplin is fast
-even for a large vault.
+even for a large vault. A cached graph has no vectors in memory, so the first sweep
+compares against the stored vectors its similar-note connections were built from,
+and only rebuilds when one really changed, instead of embedding the whole vault again
+on every start.
 
 Between those two steps, `reconcileWithVault()` compares the cached notes with the
 vault's actual list of notes and update times, fetched without bodies, and applies

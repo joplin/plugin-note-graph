@@ -700,9 +700,18 @@ describe('LLMEnricher session budget', () => {
 		return { nodes, edges };
 	};
 
+	/** Labels every pair a test can ask about; the parser drops the ones not in the batch. */
+	const labelled = {
+		text: JSON.stringify({
+			notes: [],
+			relationships: Array.from({ length: 50 }, (_, i) => ({ from: `a${i}`, to: `b${i}`, label: 'related' })),
+		}),
+	};
+	const unlabelled = { text: '{"notes":[],"relationships":[]}' };
+
 	beforeEach(() => {
 		chat.mockReset();
-		chat.mockResolvedValue({ text: '{"notes":[],"relationships":[]}' });
+		chat.mockResolvedValue(labelled);
 		jest.spyOn(console, 'info').mockImplementation(() => undefined);
 		jest.spyOn(console, 'error').mockImplementation(() => undefined);
 	});
@@ -747,6 +756,19 @@ describe('LLMEnricher session budget', () => {
 		await enricher.enrich(inputFor(edgeList(10)), () => false);
 
 		expect(chat).not.toHaveBeenCalled();
+	});
+
+	it('does not charge the budget for a batch that got nothing back', async () => {
+		const enricher = new LLMEnricher({ edgesPerBatch: 4, maxEdgesPerSession: 4, maxAttemptsPerBatch: 1 });
+		chat.mockResolvedValueOnce(unlabelled);
+
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+		expect(enricher.getSessionBudget().used).toBe(0);
+		chat.mockClear();
+		await enricher.enrich(inputFor(edgeList(10)), () => false);
+
+		expect(chat).toHaveBeenCalledTimes(1);
+		expect(enricher.getSessionBudget().used).toBe(4);
 	});
 
 	it('labels more once the budget is reset', async () => {

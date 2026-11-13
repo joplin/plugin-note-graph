@@ -285,6 +285,23 @@ describe('EmbeddingOrchestrator', () => {
 			]);
 		});
 
+		it('does not save what a cancelled fetch returned, since a note may be missing chunks', async () => {
+			const saveMany = jest.fn().mockResolvedValue(undefined);
+			orchestrator.setProvider({
+				id: 'joplin-native',
+				modelName: 'm1',
+				fetchVectorsByNoteIds: jest.fn().mockImplementation(async () => {
+					orchestrator.cancel();
+					return new Map([['n1', [0.4, 0.5]]]);
+				}),
+			});
+			orchestrator.setCache({ getMany: jest.fn().mockResolvedValue(new Map()), saveMany });
+
+			await orchestrator.embedNotes([makeNote('n1', 'T1', 'B1', 42)]);
+
+			expect(saveMany).not.toHaveBeenCalled();
+		});
+
 		it('does not save notes the provider failed to return', async () => {
 			const fetchVectorsByNoteIds = jest.fn().mockResolvedValue(new Map());
 			const saveMany = jest.fn().mockResolvedValue(undefined);

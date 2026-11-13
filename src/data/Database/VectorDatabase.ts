@@ -44,7 +44,7 @@ export class VectorDatabase implements IVectorDatabase {
 	 * ready forever.
 	 */
 	public async open(): Promise<void> {
-		if (this.db) return;
+		// `db` is set as soon as the connection opens, before the schema and migrations run, so it can't mean ready.
 		if (!this.opening) {
 			this.opening = this.openInternal().catch((e) => {
 				this.opening = null;
@@ -96,8 +96,20 @@ export class VectorDatabase implements IVectorDatabase {
 
 		const rows = await this.all<{ user_version: number }>('PRAGMA user_version', []);
 		for (let version = rows[0]?.user_version ?? 0; version < this.migrations.length; version++) {
-			await this.run(this.migrations[version], []);
-			await this.run(`PRAGMA user_version = ${version + 1}`, []);
+			await this.applyMigration(this.migrations[version], version + 1);
+		}
+	}
+
+	/** In one transaction, so a crash can't leave a migration applied but unrecorded, to fail when it runs again. */
+	private async applyMigration(statement: string, version: number): Promise<void> {
+		await this.run('BEGIN TRANSACTION', []);
+		try {
+			await this.run(statement, []);
+			await this.run(`PRAGMA user_version = ${version}`, []);
+			await this.run('COMMIT', []);
+		} catch (e) {
+			await this.run('ROLLBACK', []).catch(() => undefined);
+			throw e;
 		}
 	}
 

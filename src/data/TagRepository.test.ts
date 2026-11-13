@@ -193,5 +193,17 @@ describe('TagRepository', () => {
 			expect(truncated).toBe(true);
 			expect(mockGet).toHaveBeenCalledTimes(100);
 		});
+
+		it('does not report truncated when the last allowed page is also the last page', async () => {
+			for (let page = 1; page < 100; page++) {
+				mockGet.mockResolvedValueOnce({ items: [{ title: `t${page}` }], has_more: true });
+			}
+			mockGet.mockResolvedValueOnce({ items: [{ title: 't100' }], has_more: false });
+
+			const { titles, truncated } = await repo.getTagsForNote('note1');
+
+			expect(titles).toHaveLength(100);
+			expect(truncated).toBe(false);
+		});
 	});
 });

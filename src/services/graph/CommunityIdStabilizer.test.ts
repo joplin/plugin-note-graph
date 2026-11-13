@@ -8,6 +8,13 @@ const assign = (groups: string[][]): Map<string, number> => {
 	return assignments;
 };
 
+/** A build that reached the screen: stabilized, then remembered. */
+const shown = (stabilizer: CommunityIdStabilizer, groups: string[][]): Map<string, number> => {
+	const stable = stabilizer.stabilize(assign(groups));
+	stabilizer.seed(stable);
+	return stable;
+};
+
 describe('CommunityIdStabilizer', () => {
 	it('leaves the first assignment as it is', () => {
 		const first = assign([['a', 'b'], ['c']]);
@@ -37,12 +44,10 @@ describe('CommunityIdStabilizer', () => {
 
 	it('keeps each community on its number when two swap size order', () => {
 		const stabilizer = new CommunityIdStabilizer();
-		stabilizer.stabilize(
-			assign([
-				['a', 'b', 'c'],
-				['d', 'e'],
-			])
-		);
+		shown(stabilizer, [
+			['a', 'b', 'c'],
+			['d', 'e'],
+		]);
 
 		const next = stabilizer.stabilize(
 			assign([
@@ -58,12 +63,10 @@ describe('CommunityIdStabilizer', () => {
 
 	it('gives a brand new community a number nothing else is using', () => {
 		const stabilizer = new CommunityIdStabilizer();
-		stabilizer.stabilize(
-			assign([
-				['a', 'b'],
-				['c', 'd'],
-			])
-		);
+		shown(stabilizer, [
+			['a', 'b'],
+			['c', 'd'],
+		]);
 
 		const next = stabilizer.stabilize(
 			assign([
@@ -79,12 +82,10 @@ describe('CommunityIdStabilizer', () => {
 
 	it('reuses the number of a community that disappeared', () => {
 		const stabilizer = new CommunityIdStabilizer();
-		stabilizer.stabilize(
-			assign([
-				['a', 'b'],
-				['c', 'd'],
-			])
-		);
+		shown(stabilizer, [
+			['a', 'b'],
+			['c', 'd'],
+		]);
 
 		const next = stabilizer.stabilize(assign([['c', 'd'], ['new']]));
 
@@ -94,7 +95,7 @@ describe('CommunityIdStabilizer', () => {
 
 	it('lets the larger half of a split keep the number, and gives the other a new one', () => {
 		const stabilizer = new CommunityIdStabilizer();
-		stabilizer.stabilize(assign([['a', 'b', 'c', 'd', 'e']]));
+		shown(stabilizer, [['a', 'b', 'c', 'd', 'e']]);
 
 		const next = stabilizer.stabilize(
 			assign([
@@ -109,7 +110,7 @@ describe('CommunityIdStabilizer', () => {
 
 	it('gives two merged communities the number of the larger', () => {
 		const stabilizer = new CommunityIdStabilizer();
-		stabilizer.stabilize(assign([['a', 'b', 'c'], ['d']]));
+		shown(stabilizer, [['a', 'b', 'c'], ['d']]);
 
 		const next = stabilizer.stabilize(assign([['a', 'b', 'c', 'd']]));
 
@@ -118,13 +119,11 @@ describe('CommunityIdStabilizer', () => {
 
 	it('never gives two different communities the same number', () => {
 		const stabilizer = new CommunityIdStabilizer();
-		stabilizer.stabilize(
-			assign([
-				['a', 'b'],
-				['c', 'd'],
-				['e', 'f'],
-			])
-		);
+		shown(stabilizer, [
+			['a', 'b'],
+			['c', 'd'],
+			['e', 'f'],
+		]);
 
 		const next = stabilizer.stabilize(assign([['a', 'c'], ['b', 'd'], ['e'], ['f']]));
 
@@ -139,14 +138,32 @@ describe('CommunityIdStabilizer', () => {
 			['d', 'e', 'f'],
 			['g', 'h', 'i'],
 		];
-		stabilizer.stabilize(assign(groups));
+		shown(stabilizer, groups);
 
 		for (let i = 0; i < 20; i++) {
 			groups[i % 3].push(`n${i}`);
-			const next = stabilizer.stabilize(assign([...groups].reverse()));
+			const next = shown(stabilizer, [...groups].reverse());
 			expect(next.get('a')).toBe(0);
 			expect(next.get('d')).toBe(1);
 			expect(next.get('g')).toBe(2);
 		}
+	});
+
+	it('is not moved by a build that was never shown', () => {
+		const stabilizer = new CommunityIdStabilizer();
+		const onScreen = shown(stabilizer, [
+			['a', 'b', 'c'],
+			['d', 'e', 'f', 'g'],
+		]);
+
+		stabilizer.stabilize(assign([['a', 'b', 'd', 'e', 'f', 'g'], ['c']]));
+		const again = stabilizer.stabilize(
+			assign([
+				['a', 'b', 'c'],
+				['d', 'e', 'f', 'g'],
+			])
+		);
+
+		expect(again).toEqual(onScreen);
 	});
 });

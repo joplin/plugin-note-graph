@@ -470,6 +470,28 @@ describe('SimilarityEngine', () => {
 			const aEdges = pairs.filter((p) => p.source === 'a' || p.target === 'a');
 			expect(aEdges.length).toBeGreaterThan(5);
 		});
+
+		it('lets a top-K above the neighbourhood size keep that many edges on a hub', async () => {
+			const dims = 17;
+			const aVector = new Array(dims).fill(0);
+			aVector[0] = 1;
+			const notes = [makeNote('a', 'A')];
+			const embedded = [embed('a', aVector)];
+			for (let i = 0; i < 16; i++) {
+				const satelliteVector = new Array(dims).fill(0);
+				satelliteVector[0] = 0.9 - 0.001 * i;
+				satelliteVector[i + 1] = 0.3;
+				notes.push(makeNote(`n${i}`, `Note ${i}`));
+				embedded.push(embed(`n${i}`, satelliteVector));
+			}
+			const hubDegree = async (topK: number): Promise<number> => {
+				const pairs = await new SimilarityEngine(notes, embedded).compute(0, topK);
+				return pairs.filter((p) => p.source === 'a' || p.target === 'a').length;
+			};
+
+			expect(await hubDegree(10)).toBe(10);
+			expect(await hubDegree(15)).toBe(15);
+		});
 	});
 
 	describe('custom threshold and top-K overrides', () => {

@@ -195,7 +195,10 @@ export class LLMEnricher {
 				}
 
 				const outcome = await this.runBatch(api, chunks[i], i, chunks.length, this.capCategories(usedCategories), isStale);
-				this.edgesLabeledThisSession += chunks[i].prompt.relationships.length;
+				// A batch that got nothing back, such as during an outage, costs no budget, so the edges can be asked for again.
+				if (outcome.edges.size > 0) {
+					this.edgesLabeledThisSession += chunks[i].prompt.relationships.length;
+				}
 				this.mergeNodeResults(outcome.nodes, chunks[i].index.nodeUpdatedTimeById, nodeEnrichments, nodesWrittenThisRun);
 				this.mergeEdgeResults(outcome.edges, chunks[i].index.edgeUpdatedTimeById, edgeEnrichments);
 				for (const enrichment of outcome.nodes.values()) {

@@ -18,9 +18,12 @@ wrapper. Each database has one shared connection for the life of the plugin, wit
 a busy timeout so concurrent writes wait instead of failing.
 
 Schema changes are migrations: statements applied in order, once each, tracked
-with SQLite's `user_version`. Only ever add to the end of a migration list.
+with SQLite's `user_version`. Only ever add to the end of a migration list. Each
+migration and its `user_version` bump run in one transaction, so a crash can't leave a
+migration applied but unrecorded, which would fail when it ran again.
 
-`open()` is safe to call repeatedly and concurrently: if opening fails, both
+`open()` is safe to call repeatedly and concurrently. Every caller waits until the
+schema and migrations are in place, not just until the connection exists. If opening fails, both
 the in-progress promise and the (possibly half-created) connection are
 reset, so a later call retries cleanly instead of replaying a stale
 rejection or treating a half-open database as ready.

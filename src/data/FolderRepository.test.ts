@@ -78,6 +78,23 @@ describe('FolderRepository', () => {
 		expect(folders).toHaveLength(30);
 	});
 
+	it('keeps the page size fixed near maxFolders, so later pages start where they should', async () => {
+		const page = (start: number) =>
+			Array.from({ length: 100 }, (_, i) => ({ id: `${start + i}`, parent_id: '', title: 'n' }));
+		mockGet
+			.mockResolvedValueOnce({ items: page(0), has_more: true })
+			.mockResolvedValueOnce({ items: page(100), has_more: true });
+
+		const { folders } = await repo.getAllFolders(150);
+
+		expect(folders).toHaveLength(150);
+		expect(folders[149].id).toBe('149');
+		expect(mockGet).toHaveBeenLastCalledWith(
+			['folders'],
+			expect.objectContaining({ page: 2, limit: 100 })
+		);
+	});
+
 	it('handles missing items in response gracefully', async () => {
 		mockGet.mockResolvedValueOnce({ has_more: false });
 

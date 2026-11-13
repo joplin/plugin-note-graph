@@ -91,7 +91,8 @@ export class EmbeddingOrchestrator {
 					)
 				: new Map<string, number[]>();
 
-		await this.saveFreshVectors(notesToFetch, fresh, modelId);
+		// A fetch cut short can hold a note's vector pooled from only some of its chunks, which must not be kept.
+		if (!this.cancelled) await this.saveFreshVectors(notesToFetch, fresh, modelId);
 
 		return this.mergeVectors(notes, cached, fresh, modelId);
 	}

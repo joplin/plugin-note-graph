@@ -25,6 +25,7 @@ describe('webview', () => {
 	let onSearchNotes: jest.Mock;
 	let onGetStatus: jest.Mock;
 	let onStatusAction: jest.Mock;
+	let mockExecute: jest.Mock;
 	let onMessageHandler: (message: {
 		type?: string;
 		version?: number;
@@ -36,6 +37,7 @@ describe('webview', () => {
 		grouped?: boolean;
 		query?: string;
 		action?: string;
+		nodeId?: string;
 	}) => Promise<unknown>;
 
 	beforeEach(async () => {
@@ -64,6 +66,9 @@ describe('webview', () => {
 		mockPostMessage = freshJoplin!.views.panels.postMessage;
 		mockPanelsShow = freshJoplin!.views.panels.show;
 		mockPanelsVisible = freshJoplin!.views.panels.visible;
+		mockExecute = (freshJoplin! as unknown as { commands: { execute: jest.Mock } }).commands
+			.execute;
+		mockExecute.mockReset();
 
 		mockPanelsCreate.mockResolvedValue('panel-handle');
 		mockPanelsVisible.mockResolvedValue(false);
@@ -95,6 +100,36 @@ describe('webview', () => {
 			onSearchNotes,
 			onGetStatus,
 			onStatusAction,
+		});
+	});
+
+	describe('node-clicked', () => {
+		const NOTE_ID = '0123456789abcdef0123456789abcdef';
+
+		it('opens the clicked note', async () => {
+			await onMessageHandler({ type: 'node-clicked', nodeId: NOTE_ID });
+
+			expect(mockExecute).toHaveBeenCalledWith('openNote', NOTE_ID);
+		});
+
+		it('falls back to openItem when openNote fails', async () => {
+			mockExecute.mockRejectedValueOnce(new Error('no such command'));
+
+			await onMessageHandler({ type: 'node-clicked', nodeId: NOTE_ID });
+
+			expect(mockExecute).toHaveBeenLastCalledWith('openItem', NOTE_ID);
+		});
+
+		it('ignores anything that is not a note ID, so the panel cannot open a link', async () => {
+			mockExecute.mockRejectedValue(new Error('no such note'));
+
+			const response = await onMessageHandler({
+				type: 'node-clicked',
+				nodeId: 'https://example.com',
+			});
+
+			expect(mockExecute).not.toHaveBeenCalled();
+			expect(response).toEqual({ done: false });
 		});
 	});
 

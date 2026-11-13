@@ -88,6 +88,7 @@ src/
         App.ts, components/       Panel HTML shell.
         webview.ts                  Panel lifecycle and plugin<->webview messaging.
         graph-view.js               Cytoscape client, compiled by webview.webpack.config.js. Never runs a layout.
+        graphUpdatePolicy.ts        How the panel applies an update (patch, compare or redraw); unit-tested.
         setup.js                    Close-button wiring, copied as-is (no imports to bundle).
         styles/panel.css            Panel styling.
     tests/mocks/                Joplin API mock for Jest.

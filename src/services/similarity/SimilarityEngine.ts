@@ -87,7 +87,8 @@ export class SimilarityEngine {
 			return [];
 		}
 
-		const neighbourhoods = this.findNeighbourhoods(rawPairs);
+		// A note can only keep pairs inside its neighbourhood, so it must hold at least top-K notes.
+		const neighbourhoods = this.findNeighbourhoods(rawPairs, Math.max(NEIGHBOURHOOD_SIZE, topK));
 		const aboveFloor = this.filterBelowFloor(rawPairs, SEMANTIC_FLOOR);
 		const mutual = aboveFloor.filter(
 			(p) => this.isDirectlyLinked(p) || this.areMutualNeighbours(p, neighbourhoods)
@@ -244,7 +245,7 @@ export class SimilarityEngine {
 		return pairs.filter((p) => p.score >= floor || this.isDirectlyLinked(p));
 	}
 
-	private findNeighbourhoods(pairs: SimilarityPair[]): Map<string, Neighbourhood> {
+	private findNeighbourhoods(pairs: SimilarityPair[], size: number): Map<string, Neighbourhood> {
 		const candidates = new Map<string, Array<{ id: string; score: number }>>();
 		const add = (noteId: string, other: string, score: number): void => {
 			const list = candidates.get(noteId);
@@ -258,7 +259,7 @@ export class SimilarityEngine {
 
 		const neighbourhoods = new Map<string, Neighbourhood>();
 		for (const [noteId, list] of candidates) {
-			const nearest = list.sort((a, b) => b.score - a.score).slice(0, NEIGHBOURHOOD_SIZE);
+			const nearest = list.sort((a, b) => b.score - a.score).slice(0, size);
 			neighbourhoods.set(noteId, {
 				ids: new Set(nearest.map((n) => n.id)),
 				typicalScore: nearest.reduce((sum, n) => sum + n.score, 0) / nearest.length,

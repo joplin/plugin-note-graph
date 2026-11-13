@@ -42,6 +42,8 @@ const PANEL_STATUS_ACTIONS: readonly PanelStatusAction[] = [
 ];
 
 const PANEL_ID = 'aiNoteGraphPanel';
+/** `openItem` also opens links, so the panel may only ever ask for a Joplin item ID. */
+const JOPLIN_ID_PATTERN = /^[0-9a-f]{32}$/i;
 const PANEL_HTML = renderPanelHtml();
 const PANEL_SCRIPTS = ['./ui/styles/panel.css', './ui/setup.js', './ui/graph-view.js'];
 
@@ -107,6 +109,7 @@ const createPanel = async (handlers: PanelHandlers): Promise<ViewHandle> => {
 				};
 			}
 			if (message?.type === 'node-clicked' && message?.nodeId) {
+				if (!JOPLIN_ID_PATTERN.test(message.nodeId)) return { done: false };
 				try {
 					await joplin.commands.execute('openNote', message.nodeId);
 				} catch {

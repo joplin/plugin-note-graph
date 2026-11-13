@@ -348,6 +348,22 @@ describe('GraphViewBuilder', () => {
 			expect(view.data.edges.map((e) => e.data.type)).toEqual(['link', 'semantic']);
 		});
 
+		it('leaves out a note from another notebook whose every connection was cut', () => {
+			const crowded = {
+				nodes: [note('a'), note('b'), note('c'), note('x', 'other')],
+				edges: [
+					edge('a', 'b', 'link'),
+					edge('b', 'c', 'link'),
+					edge('a', 'x', 'tag'),
+				],
+			};
+
+			const view = build(crowded, MINE, { kind: 'auto' }, null, limits);
+
+			expect(ids(view)).toEqual(['a', 'b', 'c']);
+			expect(view.summary).not.toContain('from other notebooks');
+		});
+
 		it('says how many connections were left out', () => {
 			const view = build(graph, MINE, { kind: 'auto' }, null, limits);
 

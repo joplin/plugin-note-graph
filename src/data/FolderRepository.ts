@@ -4,6 +4,9 @@ import { Logger, consoleLogger } from '../utils/Logger';
 
 const FOLDER_FIELDS = ['id', 'parent_id', 'title'];
 
+/** Pages are numbered in units of this size, so it must stay the same for the whole walk. */
+const PAGE_SIZE = 100;
+
 export interface Folder {
 	id: string;
 	parent_id: string;
@@ -29,7 +32,6 @@ export class FolderRepository {
 			}
 
 			try {
-				const limit = Math.min(remaining, 100);
 				const response = await retryWithBackoff(
 					`Notebooks page ${page} fetch`,
 					() =>
@@ -37,7 +39,7 @@ export class FolderRepository {
 							fields: FOLDER_FIELDS,
 							order_by: 'id',
 							order_dir: 'ASC',
-							limit,
+							limit: PAGE_SIZE,
 							page,
 						}),
 					{ ...this.pageRetry, logger: this.logger }

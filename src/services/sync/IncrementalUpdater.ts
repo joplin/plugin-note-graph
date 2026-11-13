@@ -165,7 +165,7 @@ export class IncrementalUpdater {
 			}
 
 			if (isBaseline) {
-				this.analysisController.markMissingVectorsStale(noteIds);
+				await this.analysisController.markOutdatedVectorsStale(noteIds);
 			} else {
 				this.analysisController.markVectorsStale(noteIds);
 			}

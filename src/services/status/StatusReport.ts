@@ -82,7 +82,9 @@ function notesItem({ tracked, noteCount }: StatusInputs): StatusItem {
 
 function aiItem({ tracked, noteCount, ai }: StatusInputs): StatusItem {
 	const title = 'Similar notes (AI)';
-	const retry = { id: 'retry-ai' as const, label: 'Run again' };
+	// Nothing to run on until the notes are loaded, and running on none would commit an empty graph.
+	const retry =
+		tracked.noteLoad === 'loaded' ? { id: 'retry-ai' as const, label: 'Run again' } : undefined;
 	if (!ai.enabled) {
 		return {
 			title,

@@ -7,15 +7,14 @@
 export class CommunityIdStabilizer {
 	private previous = new Map<string, number>();
 
-	/** Starts from numbers already in use, such as those on a graph loaded from the cache. */
+	/** The numbers in use on the graph being shown, such as one loaded from the cache or just committed. */
 	public seed(assignments: Map<string, number>): void {
 		this.previous = assignments;
 	}
 
+	/** Matches `assignments` to the seeded numbers. Builds that are never shown are not seeded, so they can't shift the numbers of the one that is. */
 	public stabilize(assignments: Map<string, number>): Map<string, number> {
-		const stable = this.previous.size === 0 ? assignments : this.remap(assignments);
-		this.previous = stable;
-		return stable;
+		return this.previous.size === 0 ? assignments : this.remap(assignments);
 	}
 
 	private remap(assignments: Map<string, number>): Map<string, number> {

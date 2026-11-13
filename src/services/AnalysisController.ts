@@ -2,7 +2,7 @@ import { Note } from '../data/Types';
 import { GraphBuilder } from './graph/GraphBuilder';
 import { GraphData, GraphNode, RenderedEdge } from './graph/types';
 import { clampSize } from './graph/CentralityScorer';
-import { VectorRepository } from '../data/Database/VectorRepository';
+import { CachedVector, VectorRepository } from '../data/Database/VectorRepository';
 import { BODY_EXCERPT_LENGTH } from '../data/NotePreprocessor';
 import { GraphCacheRepository, PersistedEnrichment } from '../data/Database/GraphCacheRepository';
 import { ProviderResolver } from './embeddings/ProviderResolver';
@@ -18,6 +18,9 @@ import {
 import { Logger, consoleLogger } from '../utils/Logger';
 
 const EMPTY_GRAPH: GraphData = { nodes: [], edges: [] };
+
+/** Joplin saves a note being typed every few seconds, and the cache holds the whole vault, so text edits are written rarely. */
+const TEXT_EDIT_CACHE_WRITE_DELAY_MS = 60_000;
 
 export interface SemanticBuildResult {
 	graphData: GraphData;
@@ -40,8 +43,11 @@ export class AnalysisController {
 	/** Bumped whenever a change replaces the graph, so a Pass B run started before it knows it is out of date. */
 	private graphVersion = 0;
 	private semanticRunsInFlight = 0;
+	/** Set by a cancel during embedding, so the sweep doesn't quietly finish what the user stopped. Cleared when the user starts embedding again. */
+	private embeddingCancelled = false;
 	private readonly staleVectorIds = new Set<string>();
 	private persistTimer: ReturnType<typeof setTimeout> | null = null;
+	private persistDueAt = 0;
 	private currentOrchestrator: EmbeddingOrchestrator | null = null;
 	private enrichmentInFlight: Promise<GraphData | null> | null = null;
 	private cachePersistenceEnabled = true;
@@ -89,8 +95,9 @@ export class AnalysisController {
 	public cancelCurrentRun(): void {
 		if (this.enrichmentInFlight) {
 			this.logger.info('LLM enrichment: cancelled by user.');
-		} else if (this.currentOrchestrator) {
+		} else if (this.semanticRunsInFlight > 0) {
 			this.logger.info('AI analysis: cancelled by user.');
+			this.embeddingCancelled = true;
 		}
 		this.currentOrchestrator?.cancel();
 		++this.runToken;
@@ -226,6 +233,7 @@ export class AnalysisController {
 		onProgress?: (progress: BatchProgress) => void
 	): Promise<SemanticBuildResult | null> {
 		const token = ++this.runToken;
+		this.embeddingCancelled = false;
 		const guardedProgress = onProgress ? this.guardStaleProgress(token, onProgress) : undefined;
 
 		this.semanticRunsInFlight++;
@@ -397,7 +405,11 @@ export class AnalysisController {
 
 		this.lastNotes = merged;
 		this.forgetVectors(removedIds);
-		if (!structural) return null;
+		if (!structural) {
+			// Otherwise the cache keeps the old edit times, and every restart fetches these notes again.
+			this.persistCache(TEXT_EDIT_CACHE_WRITE_DELAY_MS);
+			return null;
+		}
 
 		this.graphVersion++;
 		const rebuilt = this.builder.rebuildStructure(merged, this.lastGraphData ?? EMPTY_GRAPH);
@@ -414,17 +426,22 @@ export class AnalysisController {
 	}
 
 	/**
-	 * Marks only in-scope notes that have no vector at all. For a sweep's first pass:
-	 * Joplin may have embedded some notes since the full load read the vectors, and
-	 * nothing else would ever fetch those.
+	 * For a sweep's first pass, which can't tell what changed. Marks in-scope notes with
+	 * no vector, which Joplin may have embedded since the full load, and notes whose
+	 * stored vector is older than the note, which may have been edited while the plugin
+	 * wasn't watching.
 	 */
-	public markMissingVectorsStale(noteIds: string[]): void {
+	public async markOutdatedVectorsStale(noteIds: string[]): Promise<void> {
 		if (!this.lastNotes) return;
 
 		const embedded = new Set((this.lastEmbeddedNotes ?? []).map((en) => en.note.id));
-		const inScope = new Set(this.lastNotes.map((note) => note.id));
-		for (const id of noteIds) {
-			if (inScope.has(id) && !embedded.has(id)) this.staleVectorIds.add(id);
+		const noteById = new Map(this.lastNotes.map((note) => [note.id, note]));
+		const inScope = noteIds.filter((id) => noteById.has(id));
+		const stored = await this.readStoredVectors(inScope);
+		for (const id of inScope) {
+			const storedTime = stored.get(id)?.updatedTime;
+			const outdated = storedTime !== undefined && storedTime < (noteById.get(id) as Note).updated_time;
+			if (!embedded.has(id) || outdated) this.staleVectorIds.add(id);
 		}
 	}
 
@@ -437,6 +454,7 @@ export class AnalysisController {
 		if (!this.lastNotes || this.staleVectorIds.size === 0 || this.semanticRunsInFlight > 0) {
 			return null;
 		}
+		if (this.embeddingCancelled) return null;
 		if (!(await isAiAnalysisEnabled())) {
 			this.staleVectorIds.clear();
 			return null;
@@ -445,6 +463,10 @@ export class AnalysisController {
 		const noteIds = Array.from(this.staleVectorIds);
 		const provider = await ProviderResolver.resolveWithValidation();
 		const fresh = await provider.fetchVectorsByNoteIds(noteIds);
+		// Read before saving the new vectors, or every change would look like no change.
+		const restored = this.lastEmbeddedNotes
+			? null
+			: await this.restoreEmbeddedNotes(provider.modelName);
 		await this.saveRefreshedVectors(noteIds, fresh, provider.modelName);
 
 		// A run that started during the fetch may have read the old vectors, so the notes
@@ -452,11 +474,40 @@ export class AnalysisController {
 		if (this.semanticRunsInFlight > 0) return null;
 		for (const id of noteIds) this.staleVectorIds.delete(id);
 
+		if (!this.lastEmbeddedNotes) this.lastEmbeddedNotes = restored;
 		if (!this.lastEmbeddedNotes) {
 			const result = await this.embedAndBuildSemantic(this.lastNotes);
 			return result ? result.graphData : null;
 		}
 		return this.applyRefreshedVectors(fresh) ? this.recompute() : null;
+	}
+
+	/**
+	 * A graph loaded from the cache has no vectors in memory. The stored ones are what
+	 * its similar-note connections were built from, so a sweep can compare against them
+	 * instead of embedding the whole vault again on every start.
+	 * @returns null when nothing usable is stored.
+	 */
+	private async restoreEmbeddedNotes(modelId: string): Promise<EmbeddedNote[] | null> {
+		const notes = this.lastNotes ?? [];
+		const stored = await this.readStoredVectors(notes.map((note) => note.id));
+		const restored: EmbeddedNote[] = [];
+		for (const note of notes) {
+			const entry = stored.get(note.id);
+			if (entry && entry.modelId === modelId) restored.push({ note, embedding: entry.vector });
+		}
+		return restored.length > 0 ? restored : null;
+	}
+
+	/** Never throws: without stored vectors, callers fall back to fetching them. */
+	private async readStoredVectors(noteIds: string[]): Promise<Map<string, CachedVector>> {
+		if (noteIds.length === 0) return new Map();
+		try {
+			return await this.vectorStore.getMany(noteIds);
+		} catch (e) {
+			this.logger.error('Failed to read stored vectors:', e);
+			return new Map();
+		}
 	}
 
 	/** Removes stored data for notes gone from the vault. Only pass a complete, whole-vault list. */
@@ -538,6 +589,7 @@ export class AnalysisController {
 
 	private commitGraphData(graphData: GraphData): void {
 		this.lastGraphData = graphData;
+		this.builder.rememberCommunities(graphData);
 		this.persistCache();
 	}
 
@@ -599,16 +651,28 @@ export class AnalysisController {
 		return records;
 	}
 
-	private persistCache(): void {
-		if (this.cachePersistDelayMs === 0) {
+	/** Writes the latest graph after `delayMs`, or sooner if a write is already due earlier. */
+	private persistCache(delayMs: number = this.cachePersistDelayMs): void {
+		if (delayMs === 0) {
+			this.cancelPendingWrite();
 			this.writeCache();
 			return;
 		}
-		if (this.persistTimer) return;
+		const dueAt = Date.now() + delayMs;
+		if (this.persistTimer && this.persistDueAt <= dueAt) return;
+
+		this.cancelPendingWrite();
+		this.persistDueAt = dueAt;
 		this.persistTimer = setTimeout(() => {
 			this.persistTimer = null;
 			this.writeCache();
-		}, this.cachePersistDelayMs);
+		}, delayMs);
+	}
+
+	private cancelPendingWrite(): void {
+		if (!this.persistTimer) return;
+		clearTimeout(this.persistTimer);
+		this.persistTimer = null;
 	}
 
 	private writeCache(): void {

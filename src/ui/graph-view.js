@@ -1,5 +1,11 @@
 import cytoscape from 'cytoscape';
 import svg from 'cytoscape-svg';
+import {
+	computeClientPatch,
+	decideUpdate,
+	isOutdated,
+	isWholesaleChange,
+} from './graphUpdatePolicy';
 
 cytoscape.use(svg);
 
@@ -1427,10 +1433,18 @@ function upsertElement(data, position) {
 		existing.data(data);
 		if (parent) existing.data('parent', parent);
 	} else if (position) {
-		cy.add({ data: data, position: position });
+		cy.add({ data: withCommunityParent(data), position: position });
 	} else {
 		cy.add({ data: data });
 	}
+}
+
+/** A note added by a patch joins its community's box when grouping is on and the box is already drawn. */
+function withCommunityParent(data) {
+	if (!groupByCommunityEnabled) return data;
+	var parentId = communityParentId(data.community || 0);
+	if (!cy.getElementById(parentId).length) return data;
+	return Object.assign({}, data, { parent: parentId });
 }
 
 /** Applies a change in place: nodes already on screen stay exactly where they are. */
@@ -1471,112 +1485,58 @@ function applyGraphPatch(patch) {
 	resolvePendingFocus();
 }
 
-function definedKeys(obj) {
-	return Object.keys(obj).filter(function (key) {
-		return obj[key] !== undefined && key !== 'parent';
-	});
-}
-
-function dataEqual(existingEle, data) {
-	if (!existingEle || !existingEle.length) return false;
-	var existing = existingEle.data();
-	var keys = {};
-	definedKeys(existing).forEach(function (key) {
-		keys[key] = true;
-	});
-	definedKeys(data).forEach(function (key) {
-		keys[key] = true;
-	});
-	return Object.keys(keys).every(function (key) {
-		return existing[key] === data[key];
-	});
-}
-
-function computeClientPatch(graphData) {
-	var newNodeIds = {};
-	(graphData.nodes || []).forEach(function (n) {
-		newNodeIds[n.data.id] = true;
-	});
-	var newEdgeIds = {};
-	(graphData.edges || []).forEach(function (e) {
-		newEdgeIds[e.data.id] = true;
-	});
-
-	var upsertedNodes = (graphData.nodes || []).filter(function (n) {
-		return !dataEqual(cy.getElementById(n.data.id), n.data);
-	});
-	var upsertedEdges = (graphData.edges || []).filter(function (e) {
-		return !dataEqual(cy.getElementById(e.data.id), e.data);
-	});
-
-	var removedNodeIds = [];
-	cy.nodes().forEach(function (n) {
-		if (n.data('isCommunityParent')) return;
-		if (!newNodeIds[n.id()]) removedNodeIds.push(n.id());
-	});
-	var removedEdgeIds = [];
-	cy.edges().forEach(function (e) {
-		if (!newEdgeIds[e.id()]) removedEdgeIds.push(e.id());
-	});
-
+function panelState() {
 	return {
-		view: graphData.view,
-		upsertedNodes: upsertedNodes,
-		upsertedEdges: upsertedEdges,
-		removedNodeIds: removedNodeIds,
-		removedEdgeIds: removedEdgeIds,
+		hasRenderedOnce: hasRenderedOnce,
+		lastSeenVersion: lastSeenVersion,
+		renderInProgress: renderInProgress,
+		viewKey: currentView ? currentView.key : null,
+		layoutRevision: currentLayoutRevision,
 	};
 }
 
-/** A different view, or positions computed from scratch, can't be applied as a patch. */
-function needsFullRedraw(message) {
-	return (
-		renderInProgress ||
-		!currentView ||
-		!message.view ||
-		message.view.key !== currentView.key ||
-		message.layoutRevision !== currentLayoutRevision
-	);
-}
-
-var WHOLESALE_CHANGE_RATIO = 0.5;
-
-function isWholesaleChange(patch) {
-	var currentCount = cy.nodes().filter(function (n) {
-		return !n.data('isCommunityParent');
-	}).length;
-	var removedCount = (patch.removedNodeIds || []).length;
-
-	var newCount = 0;
-	(patch.upsertedNodes || []).forEach(function (item) {
-		var data = item.data || item;
-		var existing = cy.getElementById(data.id);
-		if (!existing || !existing.length) newCount++;
-	});
-
-	if (currentCount > 0 && removedCount >= currentCount * WHOLESALE_CHANGE_RATIO) return true;
-	var resultingCount = currentCount - removedCount + newCount;
-	return newCount >= resultingCount * WHOLESALE_CHANGE_RATIO;
+/** The notes and connections on screen, leaving out the community boxes. */
+function drawnGraph() {
+	return {
+		nodeIds: cy
+			.nodes()
+			.filter(function (n) {
+				return !n.data('isCommunityParent');
+			})
+			.map(function (n) {
+				return n.id();
+			}),
+		edgeIds: cy.edges().map(function (e) {
+			return e.id();
+		}),
+		dataOf: function (id) {
+			var ele = cy.getElementById(id);
+			return ele && ele.length ? ele.data() : null;
+		},
+	};
 }
 
 function handleGraphUpdate(type, message) {
 	var version = message.version || 0;
-	if (hasRenderedOnce && version <= lastSeenVersion) return;
+	var state = panelState();
+	if (isOutdated(version, state)) return;
 
 	if (message && message.focusNoteId) {
 		pendingFocusNoteId = message.focusNoteId;
 		openNoteId = message.focusNoteId;
 	}
 
-	if (type === 'graph-patch') {
-		if (!hasRenderedOnce || version !== lastSeenVersion + 1) return;
+	var action = decideUpdate(type, message, state);
+	if (action === 'skip') return;
+	if (action === 'apply-patch') {
 		applyGraphPatch(message);
-	} else if (!hasRenderedOnce || needsFullRedraw(message)) {
+	} else if (action === 'redraw') {
 		renderGraph(message);
 		hasRenderedOnce = true;
 	} else {
-		var patch = computeClientPatch(message);
-		if (isWholesaleChange(patch)) {
+		var drawn = drawnGraph();
+		var patch = computeClientPatch(message, drawn);
+		if (isWholesaleChange(patch, drawn)) {
 			renderGraph(message);
 		} else {
 			applyGraphPatch(patch);

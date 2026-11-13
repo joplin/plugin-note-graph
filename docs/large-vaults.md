@@ -64,9 +64,12 @@ The views are:
 
 When a view has more edges than the limit, links are kept first, then semantic
 edges by score, then tag edges, and finally ring edges (see [Graph
-model](graph-model.md)). The view says what it left out.
+model](graph-model.md)). A note from another notebook whose connections were all cut is
+left out too, since it is only there for them. The view says what it left out.
 
-Moving to another notebook only changes the view, so nothing is read again. `ScopeFollower`
+Moving to another notebook only changes the view, so nothing is read again. The
+notebook list itself is reused for 10 seconds, and read again sooner if a notebook the
+view needs isn't in it. `ScopeFollower`
 decides when that's needed. A connections view stays open when the notebook changes.
 
 The tag filter works the same way: the plugin finds every note in scope with that tag,
@@ -86,7 +89,8 @@ by search colours the matches among the notes on screen.
 
 Even a bounded view can hold the UI thread for too long if it's all added at once,
 so `graph-view.js` adds elements in slices of 150 with a pause between them. A patch
-that arrives mid-drawing waits until the drawing finishes. Above 800 nodes or 600
+that arrives mid-drawing waits until the drawing finishes. Whether an update is applied
+as a patch, compared with what's drawn, or redrawn is decided in `graphUpdatePolicy.ts`. Above 800 nodes or 600
 edges, the panel switches to a cheaper style: straight solid edges, no arrows, no
 text outlines, and labels only when zoomed in. Each kind of edge keeps its color, so they
 can still be told apart.

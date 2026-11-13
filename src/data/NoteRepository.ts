@@ -16,6 +16,9 @@ const NOTE_FIELDS = [
 
 const VERSION_FIELDS = ['id', 'updated_time', 'deleted_time', 'is_conflict'];
 
+/** Pages are numbered in units of this size, so it must stay the same for the whole walk. */
+const PAGE_SIZE = 100;
+
 interface NoteResponse extends Note {
 	deleted_time: number;
 	is_conflict?: number;
@@ -70,6 +73,10 @@ export class NoteRepository {
 				this.logger.info(`Note ${id} is in the trash.`);
 				return null;
 			}
+			if (note.is_conflict) {
+				this.logger.info(`Note ${id} is a conflict copy.`);
+				return null;
+			}
 			return note;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -95,7 +102,7 @@ export class NoteRepository {
 			if (remaining <= 0) return false;
 
 			try {
-				const response = await this.fetchPage(path, page, Math.min(remaining, 100), fields);
+				const response = await this.fetchPage(path, page, PAGE_SIZE, fields);
 				const active = (response.items ?? []).filter(
 					(n) => !n.deleted_time && !n.is_conflict
 				);

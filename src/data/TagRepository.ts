@@ -80,7 +80,7 @@ export class TagRepository {
 			}
 		}
 
-		if (page > TagRepository.MAX_PAGES) {
+		if (hasMore) {
 			this.logger.info(
 				`Tag fetch for note ${noteId} hit the ${TagRepository.MAX_PAGES}-page safety cap; returning ${titles.length} tags.`
 			);
