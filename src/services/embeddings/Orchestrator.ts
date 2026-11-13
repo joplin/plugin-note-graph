@@ -67,9 +67,10 @@ export class EmbeddingOrchestrator {
 	}
 
 	/**
-	 * Resolves a vector per note, reusing cached vectors for notes whose
-	 * `updated_time` and model haven't changed and only asking the provider
-	 * to (re-)fetch the rest.
+	 * Resolves a vector per note, reusing any cached vector from the current
+	 * model and only asking the provider for the rest. `updated_time` can't say
+	 * whether a cached vector is current, because Joplin re-embeds an edit minutes
+	 * later; `AnalysisController.refreshStaleVectors` keeps cached vectors fresh.
 	 */
 	private async resolveVectors(
 		notes: Note[],
@@ -78,9 +79,7 @@ export class EmbeddingOrchestrator {
 		const modelId = provider.modelName;
 		const cached = await this.getCachedVectors(notes);
 
-		const notesToFetch = notes.filter(
-			(n) => !this.isFreshCacheHit(cached.get(n.id), n, modelId)
-		);
+		const notesToFetch = notes.filter((n) => !this.isFreshCacheHit(cached.get(n.id), modelId));
 		const cachedCount = notes.length - notesToFetch.length;
 
 		const fresh =
@@ -108,7 +107,7 @@ export class EmbeddingOrchestrator {
 		const merged = new Map<string, number[]>();
 		for (const note of notes) {
 			const entry = cached.get(note.id);
-			if (entry && this.isFreshCacheHit(entry, note, modelId)) {
+			if (entry && this.isFreshCacheHit(entry, modelId)) {
 				merged.set(note.id, entry.vector);
 			}
 		}
@@ -116,9 +115,8 @@ export class EmbeddingOrchestrator {
 		return merged;
 	}
 
-	/** A cache entry is only reusable if the note is unchanged and the embedding model hasn't changed. */
-	private isFreshCacheHit(entry: CachedVector | undefined, note: Note, modelId: string): boolean {
-		return !!entry && entry.updatedTime === note.updated_time && entry.modelId === modelId;
+	private isFreshCacheHit(entry: CachedVector | undefined, modelId: string): boolean {
+		return !!entry && entry.modelId === modelId;
 	}
 
 	private async getCachedVectors(notes: Note[]): Promise<Map<string, CachedVector>> {

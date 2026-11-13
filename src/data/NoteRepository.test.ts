@@ -204,6 +204,46 @@ describe('NoteRepository', () => {
 		expect(mockGet).toHaveBeenCalledTimes(3);
 	});
 
+	describe('getNoteVersions', () => {
+		it('lists every note in the vault without asking for bodies', async () => {
+			mockGet
+				.mockResolvedValueOnce({ items: [{ id: '1', updated_time: 10 }], has_more: true })
+				.mockResolvedValueOnce({ items: [{ id: '2', updated_time: 20 }], has_more: false });
+
+			const { versions, complete } = await repo.getNoteVersions();
+
+			expect(complete).toBe(true);
+			expect(Array.from(versions)).toEqual([
+				['1', 10],
+				['2', 20],
+			]);
+			expect(mockGet.mock.calls[0][1].fields).not.toContain('body');
+		});
+
+		it('leaves out trashed and conflict notes', async () => {
+			mockGet.mockResolvedValueOnce({
+				items: [
+					{ id: '1', updated_time: 1 },
+					{ id: '2', updated_time: 1, deleted_time: 5 },
+					{ id: '3', updated_time: 1, is_conflict: 1 },
+				],
+				has_more: false,
+			});
+
+			const { versions } = await repo.getNoteVersions();
+
+			expect(Array.from(versions.keys())).toEqual(['1']);
+		});
+
+		it('reports when the list is incomplete', async () => {
+			mockGet.mockRejectedValue(new Error('network error'));
+
+			const { complete } = await repo.getNoteVersions();
+
+			expect(complete).toBe(false);
+		});
+	});
+
 	it('stops at maxNotes and returns truncated true', async () => {
 		mockGet.mockResolvedValueOnce({
 			items: Array.from({ length: 50 }, (_, i) => ({ id: `${i + 1}` })),

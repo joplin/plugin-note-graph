@@ -93,6 +93,12 @@ Joplin doesn't fill a plugin's panel until its window has been on screen, for ex
 if another window covers it while it starts. Bring Joplin to the front and the panel
 fills straight away.
 
+## Semantic edges don't change right after I edit a note
+
+This is expected. Joplin re-embeds an edit a few minutes later, and the plugin
+updates the edges once it has. See [Incremental
+updates](incremental-updates.md#embedding-sweeps).
+
 ## Reinstalling after a build
 
 Joplin does not always pick up a rebuilt `.jpl` automatically. After
