@@ -15,6 +15,7 @@ export interface ResolvedScope {
 	folderIds: Set<string> | null;
 	scopeKey: string;
 	label: string;
+	notebookCount?: number;
 	/** Every notebook's title by ID, not just those in scope, for describing notes from elsewhere. */
 	notebookTitles: Map<string, string>;
 	/** True when this scope has to be worked out again as the user moves between notebooks. */
@@ -125,6 +126,7 @@ export class NoteScopeResolver {
 			folderIds: this.expandSubtree(folders, [current.id]),
 			scopeKey: currentScopeKey(current.id),
 			label: current.title,
+			notebookCount: 1,
 			notebookTitles: this.titlesOf(folders),
 			followsSelection: true,
 		};
@@ -149,6 +151,7 @@ export class NoteScopeResolver {
 			folderIds,
 			scopeKey: `selected:${Array.from(folderIds).sort().join(',')}`,
 			label: roots.length === 1 ? roots[0].title : `${roots.length} notebooks`,
+			notebookCount: roots.length,
 			notebookTitles: this.titlesOf(folders),
 			followsSelection: false,
 		};

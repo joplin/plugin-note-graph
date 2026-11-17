@@ -17,18 +17,21 @@ function escapeHtml(value) {
 	return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function positionTooltip(clientX, clientY, offset) {
+var CARD_OFFSET_X = 18;
+var CARD_OFFSET_Y = 5;
+
+function positionTooltip(point) {
 	if (!tooltipEl) return;
 	var width = tooltipEl.offsetWidth;
 	var height = tooltipEl.offsetHeight;
 	var vw = window.innerWidth;
 	var vh = window.innerHeight;
 
-	var left = clientX + offset;
-	if (left + width > vw) left = clientX - width - offset;
+	var left = point.x + CARD_OFFSET_X;
+	if (left + width > vw) left = point.x - width - CARD_OFFSET_X;
 
-	var top = clientY + offset;
-	if (top + height > vh) top = clientY - height - offset;
+	var top = point.y + CARD_OFFSET_Y;
+	if (top + height > vh) top = point.y - height - CARD_OFFSET_Y;
 
 	tooltipEl.style.left = Math.max(4, Math.min(left, vw - width - 4)) + 'px';
 	tooltipEl.style.top = Math.max(4, Math.min(top, vh - height - 4)) + 'px';
@@ -47,10 +50,12 @@ var lastSeenVersion = 0;
 var categoryFilterEl;
 var tagFilterEl;
 var currentTagOptionsKey = null;
-var colorBy = 'community';
+var colorBy = 'none';
 var depthControlEl;
 var depthSliderEl;
 var depthValueEl;
+var depthLessEl;
+var depthMoreEl;
 var currentDepth = 2;
 var focusHidesNotes = false;
 var toastTimer = null;
@@ -74,7 +79,9 @@ var currentLayoutRevision = null;
 var lowDetail = false;
 var viewBarEl;
 var viewBackEl;
+var viewBackLabelEl;
 var viewTitleEl;
+var centerNoteLabel = '';
 var searchResultsEl;
 var searchRequestId = 0;
 var openTopResultWhenShown = false;
@@ -90,11 +97,22 @@ var MAX_FIT_ZOOM = 1.6;
 var BASE_LABEL_SIZE = 10;
 var MAX_LABEL_SIZE = 30;
 var labelSize = BASE_LABEL_SIZE;
+var fitZoom = 1;
+var lastFit = null;
+var MAX_STEADY_GROWTH = 1.8;
+var MAX_ARROW_SCALE = 1.6;
+var ARROW_SCALE_AT_FULL_ZOOM = 0.8;
 var SELECTED_LABEL_RENDERED_SIZE = 11;
 var MAX_SELECTED_LABEL_SIZE = 240;
 /** Below this much panel area per note, labels would run into each other, so they wait for zooming in. */
 var MIN_AREA_PER_LABEL = 6000;
-var LABEL_WRAP_WIDTH_IN_CHARS = 7;
+var AREA_PER_FULL_SIZE_LABEL = 17000;
+var STEADY_LABEL_PIXELS = 11;
+var MIN_STEADY_LABEL_PIXELS = 9;
+var LABEL_LINE_CHARS = 18;
+var LABEL_MAX_LINES = 3;
+var LABEL_WIDTH_IN_FONT_SIZES = 14;
+var wrappedLabels = new Map();
 var currentRenderId = 0;
 var renderInProgress = false;
 var patchesAwaitingRender = [];
@@ -153,14 +171,20 @@ function isAnyEdgeTypeOff() {
 	});
 }
 
+function focusTarget() {
+	var selected = cy.nodes(':selected');
+	return selected.length > 0 || !openNoteId ? selected : cy.getElementById(openNoteId);
+}
+
 function engageFocusMode() {
 	if (!cy || focusActive) return;
-	var sel = cy.nodes(':selected');
-	if (sel.length === 0) return;
+	var target = focusTarget();
+	if (target.empty()) return;
+	target.select();
 	focusActive = true;
-	if (focusBtnEl) focusBtnEl.classList.add('legend-panel__action-btn--active');
+	showFocusState();
 	applyVisibility();
-	cy.animate({ fit: { eles: focusNeighborhoodOf(sel), padding: 50 }, duration: 400 });
+	cy.animate({ fit: { eles: focusNeighborhoodOf(target), padding: 50 }, duration: 400 });
 }
 
 function highlightNodeBeforeLayout(noteId) {
@@ -189,23 +213,66 @@ function fitToNodePositions() {
 	var target = viewportForNodes(cy.nodes());
 	if (target) {
 		cy.viewport(target);
-		keepLabelsReadableAt(target.zoom);
+		lastFit = target;
+		keepSizesSteadyAt(target.zoom, cy.nodes().length);
 	}
 }
 
-/** A small panel draws a view at a low zoom, which would shrink its labels away, unless they'd only collide. */
-function keepLabelsReadableAt(zoom) {
-	var hasRoom = (cy.width() * cy.height()) / Math.max(1, cy.nodes().length) >= MIN_AREA_PER_LABEL;
-	var wanted =
-		lowDetail || !hasRoom
+function viewIsAsFitted() {
+	if (!lastFit) return false;
+	var pan = cy.pan();
+	return (
+		Math.abs(cy.zoom() - lastFit.zoom) < 0.0001 &&
+		Math.abs(pan.x - lastFit.pan.x) < 0.5 &&
+		Math.abs(pan.y - lastFit.pan.y) < 0.5
+	);
+}
+
+/**
+ * A fit can land on any zoom: far in for a handful of notes, far out for a full notebook.
+ * Dots, lines and names are sized against that zoom, so they look the same in either.
+ */
+function keepSizesSteadyAt(zoom, noteCount) {
+	var areaPerNote = (cy.width() * cy.height()) / Math.max(1, noteCount);
+	var wantedLabel =
+		lowDetail || areaPerNote < MIN_AREA_PER_LABEL
 			? BASE_LABEL_SIZE
 			: Math.min(
 					MAX_LABEL_SIZE,
-					Math.max(BASE_LABEL_SIZE, Math.round(BASE_LABEL_SIZE / zoom))
+					Math.round((steadyLabelPixels(areaPerNote) / zoom) * 10) / 10
 			  );
-	if (wanted === labelSize) return;
-	labelSize = wanted;
-	cy.nodes().updateStyle();
+	if (wantedLabel === labelSize && Math.abs(zoom - fitZoom) < 0.01 * fitZoom) return;
+	labelSize = wantedLabel;
+	fitZoom = zoom;
+	(lowDetail ? cy.nodes() : cy.elements()).updateStyle();
+}
+
+function steadyLabelPixels(areaPerNote) {
+	var share = Math.sqrt(areaPerNote / AREA_PER_FULL_SIZE_LABEL);
+	return Math.max(
+		MIN_STEADY_LABEL_PIXELS,
+		Math.min(STEADY_LABEL_PIXELS, STEADY_LABEL_PIXELS * share)
+	);
+}
+
+function steady(pixels) {
+	return Math.min(pixels * MAX_STEADY_GROWTH, pixels / fitZoom);
+}
+
+function steadyLength(pixels) {
+	return function () {
+		return steady(pixels);
+	};
+}
+
+function steadyDashes(dash, gap) {
+	return function () {
+		return [steady(dash), steady(gap)];
+	};
+}
+
+function arrowScale() {
+	return Math.min(MAX_ARROW_SCALE, ARROW_SCALE_AT_FULL_ZOOM / fitZoom);
 }
 
 function labelFontSize() {
@@ -213,7 +280,38 @@ function labelFontSize() {
 }
 
 function labelMaxWidth() {
-	return labelSize * LABEL_WRAP_WIDTH_IN_CHARS;
+	return labelSize * LABEL_WIDTH_IN_FONT_SIZES;
+}
+
+function shortenLine(line) {
+	return line.length > LABEL_LINE_CHARS ? line.slice(0, LABEL_LINE_CHARS - 1) + '\u2026' : line;
+}
+
+function wrapLabel(label) {
+	var lines = [];
+	var line = '';
+	label.split(/\s+/).forEach(function (word) {
+		var longer = line ? line + ' ' + word : word;
+		if (!line || longer.length <= LABEL_LINE_CHARS) {
+			line = longer;
+		} else {
+			lines.push(line);
+			line = word;
+		}
+	});
+	if (line) lines.push(line);
+	if (lines.length > LABEL_MAX_LINES) {
+		lines = lines.slice(0, LABEL_MAX_LINES);
+		lines[LABEL_MAX_LINES - 1] =
+			lines[LABEL_MAX_LINES - 1].slice(0, LABEL_LINE_CHARS - 1) + '\u2026';
+	}
+	return lines.map(shortenLine).join('\n');
+}
+
+function nodeLabel(ele) {
+	var label = ele.data('label') || '';
+	if (!wrappedLabels.has(label)) wrappedLabels.set(label, wrapLabel(label));
+	return wrappedLabels.get(label);
 }
 
 /** The open note's name stays the same size on screen at any zoom, so its place in the graph is never lost. */
@@ -230,14 +328,21 @@ function selectedLabelOutline() {
 }
 
 function viewportForNodes(nodes) {
-	if (nodes.length === 0) return null;
+	return viewportForPositions(
+		nodes.map(function (n) {
+			return n.position();
+		})
+	);
+}
+
+function viewportForPositions(positions) {
+	if (positions.length === 0) return null;
 
 	var minX = Infinity;
 	var minY = Infinity;
 	var maxX = -Infinity;
 	var maxY = -Infinity;
-	nodes.forEach(function (n) {
-		var p = n.position();
+	positions.forEach(function (p) {
 		if (p.x < minX) minX = p.x;
 		if (p.x > maxX) maxX = p.x;
 		if (p.y < minY) minY = p.y;
@@ -265,7 +370,7 @@ function viewportForNodes(nodes) {
 function disengageFocusMode() {
 	if (!cy || !focusActive) return;
 	focusActive = false;
-	if (focusBtnEl) focusBtnEl.classList.remove('legend-panel__action-btn--active');
+	showFocusState();
 	applyVisibility();
 	fitToNodePositions();
 	updateFocusAvailability();
@@ -290,10 +395,22 @@ function isOnScreen(node) {
 	return p.x >= 0 && p.y >= 0 && p.x <= cy.width() && p.y <= cy.height();
 }
 
-/** Focus needs a selected note to focus on. */
+function isConnectionsView() {
+	return !!currentView && currentView.kind === 'neighborhood';
+}
+
+function showFocusState() {
+	if (!focusBtnEl) return;
+	focusBtnEl.classList.toggle(
+		'legend-panel__action-btn--active',
+		focusActive || isConnectionsView()
+	);
+}
+
+/** Focus needs a note to focus on. */
 function updateFocusAvailability() {
 	if (!focusBtnEl || !cy) return;
-	focusBtnEl.disabled = !focusActive && cy.nodes(':selected').length === 0;
+	focusBtnEl.disabled = !focusActive && !isConnectionsView() && focusTarget().empty();
 }
 
 function resolvePendingFocus() {
@@ -556,11 +673,43 @@ function updateViewBar(view) {
 	var isConnections = view.kind === 'neighborhood';
 	var notice = focusHidesNotes ? FOCUS_NOTICE : '';
 	var text = [view.summary, notice].filter(Boolean).join(' ');
-	viewTitleEl.textContent = text;
+	viewTitleEl.innerHTML = isConnections ? connectionsTitleHtml(text) : escapeHtml(text);
+	viewTitleEl.hidden = !text;
 	viewBackEl.hidden = !view.canGoBack;
-	viewBackEl.textContent = '\u2190 ' + view.scopeLabel;
+	if (viewBackLabelEl) viewBackLabelEl.textContent = view.scopeLabel;
 	viewBarEl.hidden = !text && !view.canGoBack && !isConnections;
 	updateDepthControl(view, isConnections);
+}
+
+var CONNECTIONS_ICON =
+	'<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+var CONNECTIONS_PREFIX = 'Connections of ';
+
+function connectionsTitleHtml(text) {
+	var opening = CONNECTIONS_PREFIX + centerNoteLabel;
+	if (!centerNoteLabel || text.indexOf(opening) !== 0) return CONNECTIONS_ICON + escapeHtml(text);
+	var rest = text.slice(opening.length);
+	return (
+		CONNECTIONS_ICON +
+		'<span>' +
+		CONNECTIONS_PREFIX +
+		'<b>' +
+		escapeHtml(centerNoteLabel) +
+		'</b>' +
+		escapeHtml(rest === '.' ? '' : rest) +
+		'</span>'
+	);
+}
+
+function findCenterNoteLabel(message) {
+	var id = message.view.centerNoteId;
+	if (!id) return '';
+	var incoming = (message.nodes || []).filter(function (node) {
+		return node.data && node.data.id === id;
+	})[0];
+	if (incoming) return incoming.data.label || '';
+	var drawn = cy ? cy.getElementById(id) : null;
+	return drawn && drawn.length ? drawn.data('label') || '' : centerNoteLabel;
 }
 
 /** Focus can hide most of a notebook, which looks like notes went missing unless the panel says why. */
@@ -576,7 +725,20 @@ function updateDepthControl(view, isConnections) {
 	if (!isConnections || !view.depth) return;
 	currentDepth = view.depth;
 	depthSliderEl.value = String(view.depth);
-	if (depthValueEl) depthValueEl.textContent = String(view.depth);
+	showDepth();
+}
+
+function showDepth() {
+	var depth = Number(depthSliderEl.value);
+	if (depthValueEl) depthValueEl.textContent = String(depth);
+	if (depthLessEl) depthLessEl.disabled = depth <= Number(depthSliderEl.min);
+	if (depthMoreEl) depthMoreEl.disabled = depth >= Number(depthSliderEl.max);
+}
+
+function stepDepth(change) {
+	depthSliderEl.value = String(Number(depthSliderEl.value) + change);
+	depthSliderEl.dispatchEvent(new Event('input'));
+	depthSliderEl.dispatchEvent(new Event('change'));
 }
 
 /** Only rebuilds the list when it really changed, because that would close it while the user is choosing. */
@@ -616,6 +778,7 @@ function updateScopeMenu(view) {
 
 function applyViewDetails(message) {
 	if (message.view) {
+		centerNoteLabel = findCenterNoteLabel(message);
 		currentView = message.view;
 		currentTotals = message.view.totals;
 		updateStats(
@@ -628,6 +791,8 @@ function applyViewDetails(message) {
 		updateTagFilter(currentView);
 		updateScopeMenu(currentView);
 		updateGroupToggleAvailability();
+		showFocusState();
+		updateFocusAvailability();
 	}
 }
 
@@ -649,20 +814,27 @@ function showStatus(text) {
 }
 
 /** Over a graph, a status is a passing notice, so it mustn't sit on top of the notes. */
-function showPluginStatus(text) {
+function showPluginStatus(text, icon) {
 	if (!cy || cy.nodes().length === 0) {
 		showStatus(text);
 		return;
 	}
 	var toast = document.getElementById('graph-toast');
 	if (!toast) return;
-	toast.textContent = text;
+	toast.innerHTML =
+		(TOAST_ICONS[icon] || TOAST_ICONS.notice) + '<span>' + escapeHtml(text) + '</span>';
 	toast.hidden = false;
 	if (toastTimer) clearTimeout(toastTimer);
 	toastTimer = setTimeout(function () {
 		toast.hidden = true;
 	}, TOAST_DURATION_MS);
 }
+
+var TOAST_ICONS = {
+	notice: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 11v5.5M12 7.5v.01"/></svg>',
+	cancelled:
+		'<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M9 9l6 6M15 9l-6 6"/></svg>',
+};
 
 function hideStatus() {
 	if (!statusEl) return;
@@ -687,7 +859,7 @@ function applyGraphNotice(notice) {
 
 function showPipelineProgress(label, current, total) {
 	if (!pipelineProgressEl || !pipelineProgressFillEl || !pipelineProgressLabelEl) return;
-	pipelineProgressEl.style.display = 'inline-flex';
+	if (pipelineProgressEl.style.display === 'none') setPipelineProgressShown(true);
 	var pct = total > 0 ? Math.round((current / total) * 100) : 0;
 	pipelineProgressFillEl.style.width = pct + '%';
 	pipelineProgressLabelEl.textContent = label;
@@ -697,9 +869,18 @@ function showPipelineProgress(label, current, total) {
 }
 
 function hidePipelineProgress() {
-	if (pipelineProgressEl) {
-		pipelineProgressEl.style.display = 'none';
-	}
+	if (!pipelineProgressEl || pipelineProgressEl.style.display === 'none') return;
+	setPipelineProgressShown(false);
+}
+
+function setPipelineProgressShown(shown) {
+	pipelineProgressEl.style.display = shown ? 'inline-flex' : 'none';
+	pipelineProgressEl.closest('.stats-bar').classList.toggle('stats-bar--busy', shown);
+	announceActivity();
+}
+
+function announceActivity() {
+	document.dispatchEvent(new CustomEvent('note-graph-activity'));
 }
 
 /** Colors for community groups, ordered largest cluster first. First 7 are the Okabe-Ito colorblind-safe palette, 3 more added to reach 10. */
@@ -763,6 +944,7 @@ function matchesSearchColor(ele) {
 }
 
 function nodeColor(ele) {
+	if (colorBy === 'none') return graphColors.note;
 	if (colorBy === 'notebook') return notebookColor(ele);
 	if (colorBy === 'search') {
 		if (matchesSearchColor(ele)) return SEARCH_MATCH_COLOR;
@@ -776,15 +958,25 @@ function refreshNodeColors() {
 	if (cy) cy.nodes().updateStyle();
 }
 
-/** Maps the 1-10 centrality score to a pixel diameter. Mirrors GraphLayoutEngine, which spaces nodes for these sizes. */
-function nodeDiameter(ele) {
-	var size = ele.data('size') || 1;
+/** The room GraphLayoutEngine leaves a note, from its 1-10 centrality score. A note is never drawn larger, or it would run into its neighbours. */
+function layoutDiameter(size) {
 	return 18 + (size - 1) * 3;
 }
 
-/** On a view drawn small, the selected note grows, or it can't be picked out from the rest. */
+var SMALLEST_NODE_PIXELS = 7.5;
+var NODE_PIXELS_PER_SIZE_STEP = 0.65;
+var SELECTED_NODE_PIXELS = 18;
+
+function nodeDiameter(ele) {
+	var size = ele.data('size') || 1;
+	var pixels = SMALLEST_NODE_PIXELS + NODE_PIXELS_PER_SIZE_STEP * (size - 1);
+	return Math.min(layoutDiameter(size), pixels / fitZoom);
+}
+
+/** The selected note is the largest dot. On a view drawn small it grows further, or it can't be picked out from the rest. */
 function selectedNodeDiameter(ele) {
-	return nodeDiameter(ele) * (lowDetail ? 2.5 : 1.2);
+	if (lowDetail) return nodeDiameter(ele) * 2.5;
+	return Math.max(nodeDiameter(ele), steady(SELECTED_NODE_PIXELS));
 }
 
 /** Detect whether the current Joplin theme is dark by computing luminance of --joplin-background-color. */
@@ -810,70 +1002,124 @@ function refreshThemeIfChanged() {
 	var current = themeBackground();
 	if (current === lastThemeBackground) return;
 	lastThemeBackground = current;
-	if (cy) cy.style().fromJson(buildStylesheet()).update();
 	applyThemeToChrome(isDarkTheme());
+	restyleGraph();
 }
 
 function applyThemeToChrome(dark) {
 	document.documentElement.classList.toggle('theme-dark', dark);
 }
 
-function panelBackground(dark) {
-	var bg = getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim();
-	return bg || (dark ? '#1e1e1e' : '#ffffff');
+function restyleGraph() {
+	if (cy) cy.style().fromJson(buildStylesheet()).update();
 }
 
-function accentColor(dark) {
-	var accent = getComputedStyle(document.body).getPropertyValue('--joplin-color4').trim();
-	return accent || (dark ? '#789fe9' : '#2d6bdc');
+function themeColor(name) {
+	return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-/** Build the Cytoscape stylesheet with theme-aware colours. Tag edges are green dotted, semantic are purple dashed, explicit are dark grey solid. */
+var graphColors = {};
+
+function readGraphColors() {
+	graphColors = {
+		canvas: themeColor('--ng-canvas'),
+		note: themeColor('--ng-note'),
+		text: themeColor('--ng-text'),
+		mutedText: themeColor('--ng-text-3'),
+		link: themeColor('--ng-link'),
+		linkStrong: themeColor('--ng-link-strong'),
+		similar: themeColor('--ng-similar'),
+		tag: themeColor('--ng-tag'),
+	};
+}
+
+var PANEL_FONT = 'Inter Variable';
+var STYLES_POLL_MS = 100;
+
+function panelFontLoaded() {
+	return Array.from(document.fonts || []).some(function (face) {
+		return face.family.replace(/"/g, '') === PANEL_FONT && face.status === 'loaded';
+	});
+}
+
+function labelFontFamily() {
+	var family = getComputedStyle(
+		document.querySelector('.panel-root') || document.body
+	).fontFamily;
+	return panelFontLoaded() ? family : family.replace(/^"?Inter Variable"?,\s*/, '');
+}
+
+function restyleGraphOnceStylesArrive() {
+	if (document.fonts) document.fonts.addEventListener('loadingdone', restyleGraph);
+	if (themeColor('--ng-note')) return;
+	var timer = setInterval(function () {
+		if (!themeColor('--ng-note')) return;
+		clearInterval(timer);
+		restyleGraph();
+	}, STYLES_POLL_MS);
+}
+
+var EDGE_BOW = { link: 0.1, semantic: -0.14, tag: 0.24 };
+var MAX_EDGE_BOW = 70;
+
+function edgeBow(edge) {
+	var from = edge.source().position();
+	var to = edge.target().position();
+	var length = Math.sqrt(Math.pow(to.x - from.x, 2) + Math.pow(to.y - from.y, 2));
+	var share = EDGE_BOW[edge.data('type')] || EDGE_BOW.link;
+	return Math.max(-MAX_EDGE_BOW, Math.min(MAX_EDGE_BOW, length * share));
+}
+
+/** Build the Cytoscape stylesheet with theme-aware colours. Links are grey and solid, similar notes purple and dashed, shared tags amber and dotted. */
 function buildStylesheet() {
-	var dark = isDarkTheme();
-	var background = panelBackground(dark);
-	var accent = accentColor(dark);
-	var linkColor = dark ? '#bbbbbb' : '#555';
-	var tagColor = '#4caf7d';
-	var semanticColor = dark ? '#a48ad9' : '#9b6bd5';
+	readGraphColors();
+	var colors = graphColors;
 
 	return [
 		{
 			selector: 'node[!isCommunityParent]',
 			style: {
 				'background-color': nodeColor,
-				label: 'data(label)',
-				color: dark ? '#d5d8dd' : '#3a3f47',
+				label: lowDetail ? 'data(label)' : nodeLabel,
+				color: colors.text,
 				'font-size': labelFontSize,
-				'font-family': getComputedStyle(document.body).fontFamily,
+				'font-family': labelFontFamily(),
+				'font-weight': 500,
 				'text-valign': 'bottom',
 				'text-halign': 'center',
-				'text-margin-y': 4,
+				'text-margin-y': lowDetail ? 4 : steadyLength(4),
 				'text-wrap': lowDetail ? 'none' : 'wrap',
 				'text-max-width': labelMaxWidth,
-				'text-outline-width': lowDetail ? 0 : 2,
-				'text-outline-color': background,
+				'line-height': 1.18,
+				'text-outline-width': lowDetail ? 0 : steadyLength(1.3),
+				'text-outline-color': colors.canvas,
 				'min-zoomed-font-size': lowDetail ? 11 : 7,
 				width: nodeDiameter,
 				height: nodeDiameter,
-				'border-width': lowDetail ? 0 : 1.5,
-				'border-color': background,
+				'border-width': lowDetail ? 0 : steadyLength(1.6),
+				'border-color': colors.canvas,
+			},
+		},
+		{
+			selector: 'node[?outsideScope]',
+			style: {
+				'background-color': colors.canvas,
+				'border-width': lowDetail ? 1.5 : steadyLength(1.5),
+				'border-style': 'solid',
+				'border-color': nodeColor,
+				color: colors.mutedText,
+				'font-weight': 400,
 			},
 		},
 		{
 			selector: 'node[!isCommunityParent]:selected',
 			style: {
 				'outline-style': 'solid',
-				'outline-color': accent,
-				'outline-width': 2.5,
-				'outline-offset': 2,
-				'outline-opacity': 1,
-				'underlay-color': accent,
-				'underlay-opacity': 0.22,
-				'underlay-padding': 9,
-				'underlay-shape': 'ellipse',
-				color: dark ? '#ffffff' : '#000000',
-				'font-weight': 600,
+				'outline-color': nodeColor,
+				'outline-width': steadyLength(1.7),
+				'outline-offset': steadyLength(3.4),
+				'outline-opacity': 0.4,
+				color: colors.text,
 				'font-size': selectedLabelSize,
 				'text-max-width': selectedLabelMaxWidth,
 				'text-outline-width': selectedLabelOutline,
@@ -886,93 +1132,120 @@ function buildStylesheet() {
 		{
 			selector: 'node[?isCommunityParent]',
 			style: {
-				'background-color': dark ? '#ffffff' : '#000000',
-				'background-opacity': dark ? 0.05 : 0.04,
+				'background-color': colors.text,
+				'background-opacity': 0.04,
 				'border-width': 1,
 				'border-style': 'dashed',
-				'border-color': dark ? '#ffffff' : '#000000',
-				'border-opacity': dark ? 0.28 : 0.2,
+				'border-color': colors.text,
+				'border-opacity': 0.22,
 				shape: 'round-rectangle',
 				label: 'data(label)',
-				color: dark ? '#ccc' : '#555',
+				color: colors.mutedText,
 				'font-size': '10px',
 				'font-weight': 600,
 				'text-valign': 'top',
 				'text-halign': 'center',
 				'text-margin-y': -6,
 				'text-outline-width': 2,
-				'text-outline-color': background,
+				'text-outline-color': colors.canvas,
 				padding: '18px',
-			},
-		},
-		{
-			selector: 'node[?outsideScope]',
-			style: {
-				'background-opacity': 0.4,
-				'border-width': 1.5,
-				'border-style': 'dashed',
-				'border-color': dark ? '#aeb4bd' : '#7b828c',
 			},
 		},
 		{
 			selector: 'edge',
 			style: {
-				width: 1.2,
-				'line-color': linkColor,
-				'curve-style': lowDetail ? 'haystack' : 'bezier',
+				width: lowDetail ? 1.2 : steadyLength(1.5),
+				'line-color': colors.link,
+				'curve-style': lowDetail ? 'haystack' : 'unbundled-bezier',
+				'control-point-distances': lowDetail ? 0 : edgeBow,
+				'control-point-weights': 0.5,
 				'target-arrow-shape': lowDetail ? 'none' : 'triangle',
-				'target-arrow-color': linkColor,
-				'arrow-scale': 0.8,
+				'target-arrow-color': colors.link,
+				'arrow-scale': lowDetail ? 0.8 : arrowScale,
 			},
 		},
 		{
 			selector: 'edge[type="tag"]',
 			style: {
-				width: 1,
-				'line-color': tagColor,
-				'line-style': lowDetail ? 'solid' : 'dotted',
+				width: lowDetail ? 1 : steadyLength(1.3),
+				'line-color': colors.tag,
+				'line-style': lowDetail ? 'solid' : 'dashed',
+				'line-dash-pattern': lowDetail ? [6, 3] : steadyDashes(0.1, 4.6),
+				'line-cap': 'round',
 				'target-arrow-shape': 'none',
 			},
 		},
 		{
 			selector: 'edge[type="semantic"]',
 			style: {
-				width: 2,
-				'line-color': semanticColor,
+				width: lowDetail ? 1.2 : steadyLength(1.25),
+				'line-color': colors.similar,
 				'line-style': lowDetail ? 'solid' : 'dashed',
-				'target-arrow-color': semanticColor,
+				'line-dash-pattern': lowDetail ? [6, 3] : steadyDashes(5, 3.5),
+				'target-arrow-shape': 'none',
+			},
+		},
+		{
+			selector: 'edge.edge-faded',
+			style: {
+				opacity: 0.22,
 			},
 		},
 		{
 			selector: 'edge.edge-connected, edge.edge-hover',
 			style: {
-				'overlay-color': function (ele) {
-					var t = ele.data('type');
-					if (t === 'tag') return tagColor;
-					if (t === 'semantic') return semanticColor;
-					return linkColor;
-				},
-				'overlay-opacity': 0.6,
-				'overlay-padding': 2,
+				width: steadyLength(2.2),
 				'z-index': 10,
+			},
+		},
+		{
+			selector: 'edge[type="link"].edge-connected, edge[type="link"].edge-hover',
+			style: {
+				'line-color': colors.linkStrong,
+				'target-arrow-color': colors.linkStrong,
+			},
+		},
+		{
+			selector: 'edge[type="tag"].edge-connected, edge[type="tag"].edge-hover',
+			style: {
+				width: steadyLength(2.7),
+				'line-dash-pattern': steadyDashes(0.1, 5.4),
+			},
+		},
+		{
+			selector: 'edge[type="semantic"].edge-connected, edge[type="semantic"].edge-hover',
+			style: {
+				width: steadyLength(1.9),
+				'line-dash-pattern': steadyDashes(6, 4),
 			},
 		},
 		{
 			selector: 'node.edge-hover-node, node.node-hover',
 			style: {
 				'outline-style': 'solid',
-				'outline-color': accent,
-				'outline-width': 2,
-				'outline-offset': 1.5,
-				'outline-opacity': 1,
-				'underlay-color': accent,
-				'underlay-opacity': 0.15,
-				'underlay-padding': 7,
-				'underlay-shape': 'ellipse',
+				'outline-color': nodeColor,
+				'outline-width': steadyLength(1.7),
+				'outline-offset': steadyLength(3.4),
+				'outline-opacity': 0.4,
 				'z-index': 10,
 			},
 		},
 	];
+}
+
+function emphasizeEdges(edges, className) {
+	cy.batch(function () {
+		edges.addClass(className);
+		if (!lowDetail) cy.edges().not(edges).addClass('edge-faded');
+	});
+}
+
+function clearEdgeEmphasis() {
+	cy.batch(function () {
+		cy.edges('.edge-connected, .edge-hover, .edge-faded').removeClass(
+			'edge-connected edge-hover edge-faded'
+		);
+	});
 }
 
 function openConnections(noteId) {
@@ -1012,14 +1285,23 @@ function onNodeDblClick(evt) {
 var TAG_NAME_SEPARATOR = '\n';
 var MAX_TOOLTIP_TAGS = 4;
 
-/** The left border carries the color of what is described, so the kind is clear at a glance. */
-function showTooltip(html, evt, color) {
+/** A note's card sizes to what it says; an edge's card keeps one width, so its sentence wraps the same way every time. */
+function showTooltip(html, point, kind) {
 	if (!tooltipEl) return;
-	tooltipEl.className = 'graph-tooltip';
-	tooltipEl.style.borderLeftColor = color;
+	tooltipEl.className = 'graph-tooltip graph-tooltip--' + kind;
 	tooltipEl.innerHTML = html;
 	tooltipEl.classList.add('is-visible');
-	positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 14);
+	positionTooltip(point);
+}
+
+function pointerOf(evt) {
+	return { x: evt.originalEvent.clientX, y: evt.originalEvent.clientY };
+}
+
+function panelPointOf(node) {
+	var box = cy.container().getBoundingClientRect();
+	var position = node.renderedPosition();
+	return { x: box.left + position.x, y: box.top + position.y };
 }
 
 /** Cytoscape treats everything inside its container as the graph, so a press on these controls would also tap the note behind them, and it cancels the press, which stops a slider from dragging. */
@@ -1048,34 +1330,61 @@ function hideTooltip() {
 	if (tooltipEl) tooltipEl.classList.remove('is-visible');
 }
 
-function tooltipKind(label) {
-	return '<div class="graph-tooltip__kind">' + escapeHtml(label) + '</div>';
+var NOTEBOOK_ICON =
+	'<svg viewBox="0 0 12 16" width="8" height="10.5" aria-hidden="true"><rect x="0.75" y="0.75" width="10.5" height="14.5" rx="1.75" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3.75 4.5h4.5"/></svg>';
+var TAG_ICON =
+	'<svg viewBox="0 0 24 24" width="10" height="10" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" d="M3 4.5A1.5 1.5 0 0 1 4.5 3h7.1a2 2 0 0 1 1.4.6l8 8a2 2 0 0 1 0 2.8l-6.6 6.6a2 2 0 0 1-2.8 0l-8-8A2 2 0 0 1 3 11.6z"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/></svg>';
+
+function edgeSwatch(type) {
+	var kind = type === 'tag' || type === 'semantic' ? type : 'link';
+	return '<i class="edge-swatch edge-swatch--' + kind + '"></i>';
+}
+
+function noteDot(node) {
+	return (
+		'<i class="note-dot' +
+		(node.data('outsideScope') ? ' note-dot--outside' : '') +
+		'" style="--ng-dot-color:' +
+		nodeColor(node) +
+		'"></i>'
+	);
+}
+
+function tooltipKind(type, label, usesAi) {
+	return (
+		'<div class="graph-tooltip__kind">' +
+		edgeSwatch(type) +
+		'<span>' +
+		escapeHtml(label) +
+		'</span>' +
+		(usesAi ? '<span class="ai-badge">AI</span>' : '') +
+		'</div>'
+	);
 }
 
 function tooltipTitle(text) {
 	return '<div class="graph-tooltip__title">' + escapeHtml(text) + '</div>';
 }
 
-/** Facts sit in aligned label and value columns, so the card can be read at a glance. Empty facts are left out. */
-function tooltipRows(rows) {
-	var shown = rows.filter(function (row) {
-		return row[1];
-	});
+function tooltipText(text, strong) {
+	return (
+		'<div class="graph-tooltip__text' +
+		(strong ? ' graph-tooltip__text--strong' : '') +
+		'">' +
+		escapeHtml(text) +
+		'</div>'
+	);
+}
+
+function tooltipNotebook(names) {
+	var shown = names.filter(Boolean);
 	if (shown.length === 0) return '';
 	return (
-		'<div class="graph-tooltip__rows">' +
-		shown
-			.map(function (row) {
-				return (
-					'<div class="graph-tooltip__label">' +
-					escapeHtml(row[0]) +
-					'</div><div class="graph-tooltip__value">' +
-					row[1] +
-					'</div>'
-				);
-			})
-			.join('') +
-		'</div>'
+		'<div class="graph-tooltip__notebook">' +
+		NOTEBOOK_ICON +
+		'<span>' +
+		escapeHtml(shown.join(' \u00b7 ')) +
+		'</span></div>'
 	);
 }
 
@@ -1086,7 +1395,13 @@ function tooltipHint(text) {
 function tooltipChips(names) {
 	if (names.length === 0) return '';
 	var shown = names.slice(0, MAX_TOOLTIP_TAGS).map(function (name) {
-		return '<span class="graph-tooltip__chip">' + escapeHtml(name) + '</span>';
+		return (
+			'<span class="graph-tooltip__chip">' +
+			TAG_ICON +
+			'<span>' +
+			escapeHtml(name) +
+			'</span></span>'
+		);
 	});
 	if (names.length > MAX_TOOLTIP_TAGS) {
 		shown.push(
@@ -1098,18 +1413,35 @@ function tooltipChips(names) {
 	return '<div class="graph-tooltip__chips">' + shown.join('') + '</div>';
 }
 
+function tooltipCount(type, count, noun) {
+	return (
+		'<span class="graph-tooltip__count">' +
+		edgeSwatch(type) +
+		'<b>' +
+		count +
+		'</b> ' +
+		noun +
+		'</span>'
+	);
+}
+
 /** Counts what's on screen, so the numbers match what the user can see. */
-function describeConnections(node) {
+function tooltipConnections(node) {
 	var counts = { link: 0, semantic: 0, tag: 0 };
 	node.connectedEdges().forEach(function (edge) {
 		var type = edge.data('type');
 		if (counts[type] !== undefined) counts[type]++;
 	});
 	var parts = [];
-	if (counts.link) parts.push(countLabel(counts.link, 'link'));
-	if (counts.semantic) parts.push(counts.semantic + ' similar');
-	if (counts.tag) parts.push(counts.tag + ' by tag');
-	return parts.length ? parts.join(' \u00b7 ') : 'Not connected in this view';
+	if (counts.link)
+		parts.push(tooltipCount('link', counts.link, counts.link === 1 ? 'link' : 'links'));
+	if (counts.semantic) parts.push(tooltipCount('semantic', counts.semantic, 'similar'));
+	if (counts.tag) parts.push(tooltipCount('tag', counts.tag, 'by tag'));
+	return (
+		'<div class="graph-tooltip__counts">' +
+		(parts.length ? parts.join('') : 'Not connected in this view') +
+		'</div>'
+	);
 }
 
 function noteTooltipHtml(node) {
@@ -1121,38 +1453,36 @@ function noteTooltipHtml(node) {
 	var tagNames = node.data('tagNames') ? node.data('tagNames').split(TAG_NAME_SEPARATOR) : [];
 	var category = CATEGORIES_SHOWN ? node.data('category') : null;
 	return (
-		tooltipKind(outside ? 'Note in another notebook' : 'Note') +
+		'<div class="graph-tooltip__head">' +
+		noteDot(node) +
 		tooltipTitle(node.data('label') || '(untitled)') +
-		tooltipRows([
-			['Notebook', notebookTitle ? escapeHtml(notebookTitle) : ''],
-			['Category', category ? escapeHtml(category) : ''],
-			['Tags', tooltipChips(tagNames)],
-			['Connected', escapeHtml(describeConnections(node))],
-		]) +
+		'</div>' +
+		tooltipNotebook([notebookTitle, category]) +
+		tooltipChips(tagNames) +
+		tooltipConnections(node) +
 		tooltipHint(
 			outside ? 'Click to see its connections' : 'Click to open \u00b7 Right-click for more'
 		)
 	);
 }
 
-function edgeTypeColor(type) {
-	var name = type === 'tag' ? '--ng-tag' : type === 'semantic' ? '--ng-semantic' : '--ng-explicit';
-	return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-/** Each note on its own line, with the dot it has in the graph, so it can be found there. */
+/** Each note on its own line, with the dot it has in the graph. */
 function edgeNotes(edge) {
-	return [edge.source(), edge.target()]
-		.map(function (node) {
-			return (
-				'<div class="graph-tooltip__note"><span class="graph-tooltip__note-dot" style="background:' +
-				nodeColor(node) +
-				'"></span><span class="graph-tooltip__note-name">' +
-				escapeHtml(node.data('label') || '(untitled)') +
-				'</span></div>'
-			);
-		})
-		.join('');
+	return (
+		'<div class="graph-tooltip__notes">' +
+		[edge.source(), edge.target()]
+			.map(function (node) {
+				return (
+					'<div class="graph-tooltip__note">' +
+					noteDot(node) +
+					'<span class="graph-tooltip__note-name">' +
+					escapeHtml(node.data('label') || '(untitled)') +
+					'</span></div>'
+				);
+			})
+			.join('') +
+		'</div>'
+	);
 }
 
 function edgeTooltipHtml(edge) {
@@ -1161,27 +1491,26 @@ function edgeTooltipHtml(edge) {
 		var names = (edge.data('tagName') || '').split(', ').filter(Boolean);
 		var several = names.length > 1;
 		return (
-			tooltipKind('Tag connection') +
-			tooltipTitle(
-				several ? 'Both notes share ' + names.length + ' tags' : 'Both notes share a tag'
+			tooltipKind(type, 'Tag connection') +
+			tooltipText(
+				several ? 'Both notes share ' + names.length + ' tags' : 'Both notes share a tag',
+				true
 			) +
-			tooltipRows([
-				[several ? 'Tags' : 'Tag', tooltipChips(names)],
-				['Notes', edgeNotes(edge)],
-			])
+			tooltipChips(names) +
+			edgeNotes(edge)
 		);
 	}
 	if (type === 'semantic') {
 		return (
-			tooltipKind('Similar notes') +
-			tooltipTitle(edge.data('relationshipLabel') || 'These notes are about similar things') +
-			tooltipRows([['Notes', edgeNotes(edge)]])
+			tooltipKind(type, 'Similar notes', true) +
+			tooltipText(edge.data('relationshipLabel') || 'These notes are about similar things') +
+			edgeNotes(edge)
 		);
 	}
 	return (
-		tooltipKind('Link') +
-		tooltipTitle('One note links to the other') +
-		tooltipRows([['Notes', edgeNotes(edge)]])
+		tooltipKind(type, 'Link') +
+		tooltipText('One note links to the other', true) +
+		edgeNotes(edge)
 	);
 }
 
@@ -1313,7 +1642,7 @@ function renderGraph(message) {
 	elementsAreHidden = false;
 	nodeFilterStylesApplied = false;
 	focusActive = false;
-	if (focusBtnEl) focusBtnEl.classList.remove('legend-panel__action-btn--active');
+	showFocusState();
 	lastAllNotesVeryShort = !!(message && message.allNotesVeryShort);
 	applyViewDetails(message || {});
 	currentLayoutRevision = message ? message.layoutRevision : null;
@@ -1329,10 +1658,12 @@ function renderGraph(message) {
 
 	var edges = message.edges || [];
 	applyDetailLevel(message.nodes.length, edges.length);
+	var nodes = withCommunityParents(message.nodes);
+	sizeForComingFit(message.nodes, nodes.length);
 	var renderId = ++currentRenderId;
 	renderInProgress = true;
 
-	addInStages(withCommunityParents(message.nodes), renderId, function () {
+	addInStages(nodes, renderId, function () {
 		if (pendingFocusNoteId && highlightNodeBeforeLayout(pendingFocusNoteId)) {
 			pendingFocusNoteId = null;
 		} else if (openNoteId) {
@@ -1352,6 +1683,15 @@ function renderGraph(message) {
 			}, 0);
 		});
 	});
+}
+
+function sizeForComingFit(incomingNodes, noteCount) {
+	var target = viewportForPositions(
+		incomingNodes.map(function (node) {
+			return node.position;
+		})
+	);
+	if (target) keepSizesSteadyAt(target.zoom, noteCount);
 }
 
 /** Moving notes into a community box one at a time is very slow, so when grouping is on, each note starts inside its box. */
@@ -1546,7 +1886,7 @@ function handleGraphUpdate(type, message) {
 	lastSeenVersion = version;
 }
 
-/** Write counts into the stats bar elements (stat-notes, stat-explicit, stat-semantic, stat-tags). */
+/** Write counts into the footer (stat-notes) and the connection toggles (stat-explicit, stat-semantic, stat-tags). */
 function updateStats(notes, explicit, semantic, tags) {
 	var elNotes = document.getElementById('stat-notes');
 	var elExplicit = document.getElementById('stat-explicit');
@@ -1559,6 +1899,28 @@ function updateStats(notes, explicit, semantic, tags) {
 	if (elSemantic) elSemantic.textContent = semantic.toLocaleString();
 	if (elTags) elTags.textContent = tags.toLocaleString();
 	showSimilarOnlyWhenPresent(semantic > 0);
+	updateNoteLegend();
+}
+
+function notesLegendLabel() {
+	if (isConnectionsView()) return 'notes shown';
+	if (!currentView || currentView.kind !== 'notebook') return 'notes';
+	return currentView.scopeNotebookCount > 1
+		? 'notes in ' + currentView.scopeLabel
+		: 'notes in this notebook';
+}
+
+function updateNoteLegend() {
+	var label = document.getElementById('stat-notes-label');
+	var outsideEl = document.getElementById('stat-outside');
+	var bar = document.getElementById('stats-bar');
+	var outside = cy ? cy.nodes('[?outsideScope]').length : 0;
+	if (label) label.textContent = notesLegendLabel();
+	if (outsideEl) {
+		outsideEl.textContent = outside.toLocaleString();
+		outsideEl.parentNode.hidden = outside === 0;
+	}
+	if (bar) bar.classList.toggle('stats-bar--plain-dots', colorBy !== 'none');
 }
 
 /** Without AI analysis there are no similar notes, so a control for them would do nothing. */
@@ -1573,7 +1935,7 @@ function createExportMenu(btn) {
 	var menu = document.createElement('div');
 	menu.className = 'export-menu';
 	menu.innerHTML =
-		'<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="svg"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>SVG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
+		'<button class="export-menu__item" data-format="png"><svg viewBox="0 0 24 24" width="11" height="11"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 16l4.58-5.34a1 1 0 0 1 1.54-.08L14 15l3.35-4.47a1 1 0 0 1 1.62-.06L21 14"/><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>PNG</button><button class="export-menu__item" data-format="svg"><svg viewBox="0 0 24 24" width="11" height="11"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>SVG</button><button class="export-menu__item" data-format="json"><svg viewBox="0 0 24 24" width="11" height="11"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 18l2 2 4-4"/><path fill="none" stroke="currentColor" stroke-width="2" d="M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7"/></svg>JSON</button>';
 	document.body.appendChild(menu);
 
 	btn.addEventListener('click', function (e) {
@@ -1593,9 +1955,7 @@ function createExportMenu(btn) {
 		if (!item) return;
 		var format = item.getAttribute('data-format');
 		menu.style.display = 'none';
-		var bg =
-			getComputedStyle(document.body).getPropertyValue('--joplin-background-color').trim() ||
-			'#1e1e1e';
+		var bg = graphColors.canvas;
 		if (format === 'png') {
 			downloadFile(cy.png({ full: true, bg: bg }), 'note-graph.png');
 		} else if (format === 'svg') {
@@ -1741,24 +2101,26 @@ function init() {
 			});
 		}
 
+		restyleGraphOnceStylesArrive();
+
 		cy.on('mouseover', 'edge', function (evt) {
-			showTooltip(edgeTooltipHtml(evt.target), evt, edgeTypeColor(evt.target.data('type')));
+			showTooltip(edgeTooltipHtml(evt.target), pointerOf(evt), 'edge');
 		});
 		cy.on('mousemove', 'edge', function (evt) {
-			positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 14);
+			positionTooltip(pointerOf(evt));
 		});
 		cy.on('mouseout', 'edge', hideTooltip);
 
 		cy.on('mouseover', 'edge', function (evt) {
 			var edge = evt.target;
-			edge.addClass('edge-hover');
+			emphasizeEdges(edge, 'edge-hover');
 			edge.source().addClass('edge-hover-node');
 			edge.target().addClass('edge-hover-node');
 		});
 
 		cy.on('mouseout', 'edge', function (evt) {
 			var edge = evt.target;
-			edge.removeClass('edge-hover');
+			clearEdgeEmphasis();
 			edge.source().removeClass('edge-hover-node');
 			edge.target().removeClass('edge-hover-node');
 		});
@@ -1766,18 +2128,14 @@ function init() {
 		cy.on('mouseover', 'node[!isCommunityParent]', function (evt) {
 			var node = evt.target;
 			node.addClass('node-hover');
-			node.connectedEdges().addClass('edge-connected');
+			emphasizeEdges(node.connectedEdges(), 'edge-connected');
 			container.style.cursor = 'pointer';
-			showTooltip(noteTooltipHtml(node), evt, nodeColor(node));
-		});
-
-		cy.on('mousemove', 'node[!isCommunityParent]', function (evt) {
-			positionTooltip(evt.originalEvent.clientX, evt.originalEvent.clientY, 14);
+			showTooltip(noteTooltipHtml(node), panelPointOf(node), 'note');
 		});
 
 		cy.on('mouseout', 'node[!isCommunityParent]', function (evt) {
 			evt.target.removeClass('node-hover');
-			evt.target.connectedEdges().removeClass('edge-connected');
+			clearEdgeEmphasis();
 			container.style.cursor = '';
 			hideTooltip();
 		});
@@ -1799,8 +2157,10 @@ function init() {
 			if (resizeTimer) clearTimeout(resizeTimer);
 			resizeTimer = setTimeout(function () {
 				resizeTimer = null;
+				var canvasChangedUnderAFit = viewIsAsFitted();
 				cy.resize();
 				if (
+					canvasChangedUnderAFit ||
 					window.innerWidth !== lastWindowWidth ||
 					window.innerHeight !== lastWindowHeight
 				) {
@@ -1929,6 +2289,7 @@ function init() {
 			colorByEl.addEventListener('change', function () {
 				colorBy = this.value;
 				refreshNodeColors();
+				updateNoteLegend();
 				applyNodeFilters();
 				if (colorBy === 'search' && !currentSearchQuery) {
 					showPluginStatus('Type in the search box to color the notes that match.');
@@ -1940,10 +2301,12 @@ function init() {
 		depthControlEl = document.getElementById('graph-depth-control');
 		depthSliderEl = document.getElementById('graph-depth-slider');
 		depthValueEl = document.getElementById('graph-depth-value');
+		depthLessEl = document.getElementById('graph-depth-less');
+		depthMoreEl = document.getElementById('graph-depth-more');
 		if (depthSliderEl) {
-			depthSliderEl.addEventListener('input', function () {
-				if (depthValueEl) depthValueEl.textContent = this.value;
-			});
+			depthSliderEl.addEventListener('input', showDepth);
+			if (depthLessEl) depthLessEl.addEventListener('click', stepDepth.bind(null, -1));
+			if (depthMoreEl) depthMoreEl.addEventListener('click', stepDepth.bind(null, 1));
 			// Waits for the slider to be let go, because each step lays out a new graph.
 			depthSliderEl.addEventListener('change', function () {
 				currentDepth = Number(this.value);
@@ -2003,9 +2366,9 @@ function init() {
 				layoutLabelEl.textContent = LAYOUT_DISPLAY_NAMES[layoutName] || layoutName;
 			if (layoutMenuEl) {
 				layoutMenuEl.querySelectorAll('[data-layout]').forEach(function (item) {
-					item.classList.toggle(
-						'graph-pill-menu-item--active',
-						item.getAttribute('data-layout') === layoutName
+					item.setAttribute(
+						'aria-selected',
+						String(item.getAttribute('data-layout') === layoutName)
 					);
 				});
 			}
@@ -2055,6 +2418,8 @@ function init() {
 			focusBtnEl.addEventListener('click', function () {
 				if (focusActive) {
 					disengageFocusMode();
+				} else if (isConnectionsView()) {
+					openView({ kind: 'auto' });
 				} else {
 					engageFocusMode();
 				}
@@ -2073,6 +2438,7 @@ function init() {
 		var contextMenuNodeId = null;
 
 		function openContextMenu(node, x, y) {
+			hideTooltip();
 			contextMenuNodeId = node.id();
 			contextMenuEl.style.left = x + 'px';
 			contextMenuEl.style.top = y + 'px';
@@ -2112,7 +2478,7 @@ function init() {
 				node.select();
 				if (focusActive) {
 					focusActive = false;
-					if (focusBtnEl) focusBtnEl.classList.remove('legend-panel__action-btn--active');
+					showFocusState();
 				}
 				engageFocusMode();
 			} else if (item.getAttribute('data-action') === 'connections') {
@@ -2124,6 +2490,7 @@ function init() {
 
 		viewBarEl = document.getElementById('graph-view-bar');
 		viewBackEl = document.getElementById('graph-view-back');
+		viewBackLabelEl = document.getElementById('graph-view-back-label');
 		viewTitleEl = document.getElementById('graph-view-title');
 		if (viewBackEl) {
 			viewBackEl.addEventListener('click', function () {
@@ -2148,7 +2515,7 @@ function init() {
 				}
 				if (message && message.type === 'status' && message.text) {
 					hidePipelineProgress();
-					showPluginStatus(message.text);
+					showPluginStatus(message.text, message.icon);
 				}
 				if (message && message.type === 'progress') {
 					var label = message.stage === 'enrichment-progress' ? 'Enriching notes' : 'Building graph';
@@ -2163,6 +2530,7 @@ function init() {
 					} else {
 						pendingFocusNoteId = null;
 					}
+					updateFocusAvailability();
 				}
 			});
 		}

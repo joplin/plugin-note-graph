@@ -379,6 +379,16 @@ describe('webview', () => {
 		expect(response).toMatchObject({ progress: null });
 	});
 
+	it('tells the panel which icon goes with a status message', async () => {
+		await webview.postStatus('Analysis cancelled.', 'cancelled');
+
+		expect(mockPostMessage).toHaveBeenLastCalledWith(expect.anything(), {
+			type: 'status',
+			text: 'Analysis cancelled.',
+			icon: 'cancelled',
+		});
+	});
+
 	it('keeps postGraphData and postGraphPatch on one shared, contiguous version counter', async () => {
 		await webview.postGraphData({ nodes: [], edges: [] });
 		await webview.postGraphPatch(emptyDiff, { nodes: [], edges: [] });

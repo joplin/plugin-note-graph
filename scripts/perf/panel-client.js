@@ -306,8 +306,10 @@
 							originalEvent: { clientX: box.left + p.x, clientY: box.top + p.y },
 						});
 						var shown = tooltip.classList.contains('is-visible');
-						var kind = (tooltip.querySelector('.graph-tooltip__kind') || {})
-							.textContent;
+						var kind = (
+							tooltip.querySelector('.graph-tooltip__kind, .graph-tooltip__title') ||
+							{}
+						).textContent;
 						ele.emit({ type: 'mouseout' });
 						return shown ? kind : null;
 					};
@@ -321,7 +323,7 @@
 				});
 			})
 			.then(function () {
-				return step("What's happening panel", function () {
+				return step('Graph status panel', function () {
 					var titles = function () {
 						return Array.prototype.map.call(
 							document.querySelectorAll('#graph-info-items .info-item__title'),
@@ -338,12 +340,12 @@
 							expectEqual(
 								'It lists notes, AI and explanations',
 								titles().slice(0, 3).join(' | '),
-								'Notes | Similar notes (AI) | Connection explanations (AI)'
+								'Notes | Similar notes | Connection explanations'
 							);
 							expectTrue(
 								'It says how many notes are loaded',
-								/notes loaded/.test(
-									document.querySelector('#graph-info-items .info-item__text')
+								/[\d,]+ loaded/.test(
+									document.querySelector('#graph-info-items .info-item__metric')
 										.textContent
 								)
 							);
@@ -683,7 +685,7 @@
 		var outside = function () {
 			return graph.nodes('[?outsideScope]')[0];
 		};
-		var communityColor = inside().style('background-color');
+		var originalColor = inside().style('background-color');
 
 		return step('Colour by notebook', function () {
 			chooseSelectOption('graph-color-by', 'notebook');
@@ -715,12 +717,17 @@
 				});
 			})
 			.then(function () {
-				return step('Colour by connections', function () {
+				return step('Colour by groups, then one colour', function () {
 					chooseSelectOption('graph-color-by', 'community');
+					expectTrue(
+						'Groups get their own colours',
+						inside().style('background-color') !== originalColor
+					);
+					chooseSelectOption('graph-color-by', 'none');
 					expectEqual(
 						'The original colours come back',
 						inside().style('background-color'),
-						communityColor
+						originalColor
 					);
 					return wait(50);
 				});

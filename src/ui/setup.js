@@ -100,7 +100,7 @@
 		const renderNotebookRow = (folder, depth) => {
 			const row = document.createElement('label');
 			row.className = 'panel-header__scope-checkbox-row';
-			row.style.paddingLeft = 9 + depth * 14 + 'px';
+			row.style.paddingLeft = 8 + depth * 12 + 'px';
 			row.title = 'Includes any notebooks inside it';
 			const checkbox = document.createElement('input');
 			checkbox.type = 'checkbox';
@@ -223,7 +223,7 @@
 	};
 
 	const CHECK_SVG =
-		'<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+		'<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.5l5 5L19.5 7"/></svg>';
 	const FILTER_FROM_OPTIONS = 10;
 
 	/**
@@ -231,33 +231,16 @@
 	 * the source of truth, so code that sets its value or options keeps working.
 	 */
 	const enhanceSelect = (select) => {
-		const wrapper = document.createElement('div');
-		wrapper.className = 'graph-dropdown';
-		select.parentNode.insertBefore(wrapper, select);
-		wrapper.appendChild(select);
-		select.classList.add('graph-dropdown__native');
+		const wrapper = select.closest('.graph-dropdown');
+		const button = wrapper.querySelector('.graph-dropdown__button');
+		const valueEl = wrapper.querySelector('.graph-dropdown__value');
+		const menu = wrapper.querySelector('.graph-dropdown__menu');
 		select.tabIndex = -1;
 		select.setAttribute('aria-hidden', 'true');
 
-		const button = document.createElement('button');
-		button.type = 'button';
-		button.className =
-			select.className.replace('graph-dropdown__native', '') + ' graph-dropdown__button';
-		button.title = select.title;
-		button.setAttribute('aria-haspopup', 'listbox');
-		button.setAttribute('aria-expanded', 'false');
-		button.setAttribute('aria-label', select.getAttribute('aria-label') || '');
-		wrapper.appendChild(button);
-
-		const menu = document.createElement('div');
-		menu.className = 'graph-dropdown__menu';
-		menu.setAttribute('role', 'listbox');
-		menu.hidden = true;
-		wrapper.appendChild(menu);
-
 		const sync = () => {
 			const selected = select.options[select.selectedIndex] || select.options[0];
-			button.textContent = selected ? selected.textContent : '';
+			valueEl.textContent = selected ? selected.textContent : '';
 			wrapper.hidden = select.hidden;
 		};
 
@@ -284,9 +267,6 @@
 					item.setAttribute('role', 'option');
 					const isSelected = option.value === select.value;
 					item.setAttribute('aria-selected', String(isSelected));
-					item.innerHTML = `<span class="graph-dropdown__check">${
-						isSelected ? CHECK_SVG : ''
-					}</span>`;
 					const label = document.createElement('span');
 					label.className = 'graph-dropdown__label';
 					label.textContent = option.textContent;
@@ -297,6 +277,10 @@
 						count.textContent = option.dataset.count;
 						item.appendChild(count);
 					}
+					const check = document.createElement('span');
+					check.className = 'graph-dropdown__check';
+					check.innerHTML = CHECK_SVG;
+					item.appendChild(check);
 					item.addEventListener('click', () => choose(option.value));
 					list.appendChild(item);
 				});
@@ -396,18 +380,40 @@
 	const formatTime = (time) =>
 		new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+	const STATUS_ICONS = {
+		ok: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7.5 12.5l3 3 6-6.5"/></svg>',
+		attention:
+			'<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 7v6M12 16.5v.01"/></svg>',
+		off: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M8 12h8"/></svg>',
+	};
+
+	const statusIcon = (item) => {
+		if (item.level === 'working') return '<span class="spinner"></span>';
+		if (item.continuesInBackground) return '<span class="spinner spinner--paused"></span>';
+		return STATUS_ICONS[item.level] || STATUS_ICONS.off;
+	};
+
+	const element = (tag, className, text) => {
+		const el = document.createElement(tag);
+		el.className = className;
+		if (text !== undefined) el.textContent = text;
+		return el;
+	};
+
 	const bindInfoPanel = () => {
 		const btn = document.getElementById('graph-info-btn');
 		const panel = document.getElementById('graph-info-panel');
-		const badge = document.getElementById('graph-info-badge');
+		const labelEl = document.getElementById('graph-info-label');
 		const itemsEl = document.getElementById('graph-info-items');
 		const problemsEl = document.getElementById('graph-info-problems');
+		const problemsItemEl = document.getElementById('graph-info-problems-item');
+		const problemsIconEl = document.getElementById('graph-info-problems-icon');
 		const clearBtn = document.getElementById('graph-info-clear');
 		const updatedEl = document.getElementById('graph-info-updated');
 		if (
 			!btn ||
 			!panel ||
-			!badge ||
+			!labelEl ||
 			!itemsEl ||
 			!problemsEl ||
 			typeof webviewApi === 'undefined'
@@ -422,78 +428,96 @@
 		const newestProblemTime = () =>
 			report && report.problems.length > 0 ? report.problems[0].time : 0;
 
-		const updateBadge = () => {
+		const updatePill = () => {
+			if (!report) return;
 			const needsAttention =
-				!!report &&
-				(report.level === 'attention' || newestProblemTime() > lastSeenProblemTime);
-			badge.hidden = !needsAttention;
-			btn.setAttribute(
-				'aria-label',
-				needsAttention ? "What's happening (needs attention)" : "What's happening"
+				report.level === 'attention' || newestProblemTime() > lastSeenProblemTime;
+			const label = needsAttention ? 'Needs attention' : report.summary;
+			btn.classList.toggle('status-pill--attention', needsAttention);
+			btn.classList.toggle(
+				'status-pill--working',
+				!needsAttention && report.level === 'working'
 			);
+			labelEl.textContent = label;
+			btn.setAttribute('aria-label', 'Graph status: ' + label);
+		};
+
+		const renderMetric = (metric) => {
+			const el = element('span', 'info-item__metric');
+			el.append(element('b', '', metric.value), ' ' + metric.label);
+			return el;
+		};
+
+		const renderBar = (fraction) => {
+			const bar = element('div', 'info-item__bar');
+			const fill = element('span', 'info-item__bar-fill');
+			fill.style.width = Math.max(0, Math.min(1, fraction)) * 100 + '%';
+			bar.append(fill);
+			return bar;
 		};
 
 		const renderItem = (item) => {
-			const li = document.createElement('li');
-			li.className = 'info-item info-item--' + item.level;
-			const dot = document.createElement('span');
-			dot.className = 'info-item__dot';
-			const body = document.createElement('div');
-			body.className = 'info-item__body';
-			const title = document.createElement('div');
-			title.className = 'info-item__title';
-			title.textContent = item.title;
-			const text = document.createElement('div');
-			text.className = 'info-item__text';
-			text.textContent = item.text;
-			body.append(title, text);
+			const li = element('li', 'info-item info-item--' + item.level);
+			const icon = element('span', 'info-item__icon');
+			icon.innerHTML = statusIcon(item);
+			const body = element('div', 'info-item__body');
+			const head = element('div', 'info-item__head');
+			head.append(element('span', 'info-item__title', item.title));
+			if (item.usesAi) head.append(element('span', 'ai-badge', 'AI'));
+			if (item.metric) head.append(renderMetric(item.metric));
+			body.append(head);
+			if (item.metric && typeof item.metric.fraction === 'number') {
+				body.append(renderBar(item.metric.fraction));
+			}
+			body.append(element('div', 'info-item__text', item.text));
 			if (item.action) {
-				const action = document.createElement('button');
+				const action = element('button', 'info-item__action', item.action.label);
 				action.type = 'button';
-				action.className = 'info-item__action';
-				action.textContent = item.action.label;
 				action.addEventListener('click', () => runAction(item.action.id));
 				body.append(action);
 			}
-			li.append(dot, body);
+			li.append(icon, body);
 			return li;
 		};
 
 		const renderProblem = (problem) => {
-			const li = document.createElement('li');
-			li.className = 'info-problem info-problem--' + problem.level;
-			const time = document.createElement('span');
-			time.className = 'info-problem__time';
-			time.textContent = formatTime(problem.time);
-			const text = document.createElement('span');
-			text.className = 'info-problem__text';
-			text.textContent = problem.text;
-			li.append(time, text);
+			const li = element('li', 'info-problem info-problem--' + problem.level);
+			li.append(
+				element('span', 'info-problem__time', formatTime(problem.time)),
+				element('span', 'info-problem__text', problem.text)
+			);
 			if (problem.count > 1) {
-				const repeats = document.createElement('span');
-				repeats.className = 'info-problem__count';
-				repeats.textContent = '×' + problem.count;
+				const repeats = element('span', 'info-problem__count', '×' + problem.count);
 				repeats.title = 'Happened ' + problem.count + ' times in a row';
 				li.append(repeats);
 			}
 			return li;
 		};
 
+		const renderProblems = () => {
+			const hasProblems = report.problems.length > 0;
+			if (hasProblems) {
+				problemsEl.replaceChildren(...report.problems.map(renderProblem));
+			} else {
+				problemsEl.replaceChildren(
+					element('li', 'info-problem info-problem--none', 'Nothing has gone wrong.')
+				);
+			}
+			if (problemsItemEl && problemsIconEl) {
+				problemsItemEl.classList.toggle('info-item--ok', !hasProblems);
+				problemsItemEl.classList.toggle('info-item--attention', hasProblems);
+				problemsIconEl.innerHTML = hasProblems ? STATUS_ICONS.attention : STATUS_ICONS.ok;
+			}
+			if (clearBtn) clearBtn.hidden = !hasProblems;
+		};
+
 		const render = () => {
 			if (!report) return;
 			itemsEl.replaceChildren(...report.items.map(renderItem));
-			if (report.problems.length > 0) {
-				problemsEl.replaceChildren(...report.problems.map(renderProblem));
-			} else {
-				const empty = document.createElement('li');
-				empty.className = 'info-problem info-problem--none';
-				empty.textContent = 'Nothing has gone wrong.';
-				problemsEl.replaceChildren(empty);
-			}
-			if (clearBtn) clearBtn.hidden = report.problems.length === 0;
+			renderProblems();
 			if (updatedEl) {
 				updatedEl.textContent = report.lastGraphShownAt
-					? 'Graph updated ' + formatTime(report.lastGraphShownAt)
+					? 'Updated ' + formatTime(report.lastGraphShownAt)
 					: '';
 			}
 		};
@@ -510,7 +534,7 @@
 						render();
 						lastSeenProblemTime = newestProblemTime();
 					}
-					updateBadge();
+					updatePill();
 				})
 				.catch(() => undefined);
 
@@ -561,6 +585,8 @@
 			close();
 			btn.focus();
 		});
+
+		document.addEventListener('note-graph-activity', () => void refresh());
 
 		void refresh();
 		schedule();
