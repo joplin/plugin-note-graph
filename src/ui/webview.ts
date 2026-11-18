@@ -1,11 +1,12 @@
 import joplin from 'api';
-import { ViewHandle } from 'api/types';
+import { ButtonSpec, DialogResult, ViewHandle } from 'api/types';
 import { renderPanelHtml } from './App';
 import { GraphData } from '../services/graph/types';
 import { GraphDiff } from '../services/graph/GraphDiffer';
 import { GraphViewRequest, NoteSearchResult } from '../services/graph/GraphViewBuilder';
 import { LayoutName } from '../services/graph/GraphLayoutEngine';
 import { StatusAction, StatusReport } from '../services/status/StatusReport';
+import { Logger } from '../utils/Logger';
 
 export interface ScopeState {
 	mode: 'all' | 'current' | 'selected';
@@ -32,6 +33,13 @@ export interface PanelHandlers {
 	onStatusAction: (action: PanelStatusAction) => Promise<void>;
 }
 
+/** How a viewer chose to see the graph. The plugin keeps them, so the panel and popup always agree. */
+export interface ViewChoices {
+	colorBy: string;
+	hiddenEdgeTypes: string[];
+	minSimilarity: number;
+}
+
 export type PanelStatusAction = StatusAction | 'clear-problems';
 
 const PANEL_STATUS_ACTIONS: readonly PanelStatusAction[] = [
@@ -42,10 +50,15 @@ const PANEL_STATUS_ACTIONS: readonly PanelStatusAction[] = [
 ];
 
 const PANEL_ID = 'aiNoteGraphPanel';
+const POPUP_ID = 'aiNoteGraphPopup';
+/** The graph's own ✕ and Escape close the popup, so it needs none of Joplin's dialog buttons. */
+const POPUP_BUTTONS: ButtonSpec[] = [];
 /** `openItem` also opens links, so the panel may only ever ask for a Joplin item ID. */
 const JOPLIN_ID_PATTERN = /^[0-9a-f]{32}$/i;
 const PANEL_HTML = renderPanelHtml();
 const PANEL_SCRIPTS = ['./ui/styles/panel.css', './ui/setup.js', './ui/graph-view.js'];
+/** The popup's empty button bar sits in Joplin's own window, outside the graph page, so the style hiding it loads there. */
+const POPUP_CHROME_CSS = 'ui/styles/popup-chrome.css';
 
 interface ProgressState {
 	stage: 'progress' | 'enrichment-progress';
@@ -53,16 +66,22 @@ interface ProgressState {
 	total: number;
 }
 
+let logger: Logger;
 let panelHandle: ViewHandle;
+/** Undefined if the popup couldn't be created; the panel works without it. */
+let popupHandle: ViewHandle | undefined;
+/** The pending `dialogs.open` call, which resolves when the popup closes; null while it is closed. */
+let popupSession: Promise<DialogResult> | null = null;
 let currentGraphData: GraphData | null = null;
 let currentVersion = 0;
 let currentProgress: ProgressState | null = null;
-let queuedFocusNoteId: string | null = null;
+/** Each view gets the open note once, with its next graph, so one view can't take it from the other. */
+const queuedFocusNoteIds = new Map<ViewHandle, string | null>();
 let currentNotice: string | undefined;
+let viewChoices: ViewChoices | undefined;
 
-const createPanel = async (handlers: PanelHandlers): Promise<ViewHandle> => {
-	const handle = await joplin.views.panels.create(PANEL_ID);
-	await joplin.views.panels.setHtml(handle, PANEL_HTML);
+/** Dialogs have no message API of their own; Joplin routes `panels` messaging by handle, so it serves both views. */
+const listenToGraphView = async (handle: ViewHandle, handlers: PanelHandlers): Promise<void> => {
 	await joplin.views.panels.onMessage(
 		handle,
 		async (message: {
@@ -78,8 +97,10 @@ const createPanel = async (handlers: PanelHandlers): Promise<ViewHandle> => {
 			query?: string;
 			tag?: string | null;
 			action?: string;
+			choices?: ViewChoices;
 		}) => {
-			if (message?.type === 'close-note-graph') {
+			const escapesPopup = message?.type === 'escape-pressed' && handle === popupHandle;
+			if (message?.type === 'close-note-graph' || escapesPopup) {
 				await joplin.views.panels.hide(handle);
 				return { done: true };
 			}
@@ -92,21 +113,37 @@ const createPanel = async (handlers: PanelHandlers): Promise<ViewHandle> => {
 					if (await joplin.views.panels.visible(handle)) {
 						handlers.onNoData();
 					}
-					return { type: 'no-data', progress: currentProgress, notice: currentNotice };
+					return {
+						type: 'no-data',
+						progress: currentProgress,
+						notice: currentNotice,
+						choices: viewChoices,
+					};
 				}
 				if (message.version === currentVersion) {
-					return { type: 'no-change', progress: currentProgress, notice: currentNotice };
+					return {
+						type: 'no-change',
+						progress: currentProgress,
+						notice: currentNotice,
+						choices: viewChoices,
+					};
 				}
-				const focusNoteId = queuedFocusNoteId;
-				queuedFocusNoteId = null;
+				const focusNoteId = queuedFocusNoteIds.get(handle) ?? null;
+				queuedFocusNoteIds.delete(handle);
 				return {
 					type: 'graph-data',
 					...currentGraphData,
 					version: currentVersion,
 					progress: currentProgress,
 					notice: currentNotice,
+					choices: viewChoices,
 					focusNoteId,
 				};
+			}
+			if (message?.type === 'set-view-choices' && message.choices) {
+				viewChoices = message.choices;
+				await postToGraphViews({ type: 'view-choices', choices: viewChoices });
+				return { done: true };
 			}
 			if (message?.type === 'node-clicked' && message?.nodeId) {
 				if (!JOPLIN_ID_PATTERN.test(message.nodeId)) return { done: false };
@@ -157,11 +194,28 @@ const createPanel = async (handlers: PanelHandlers): Promise<ViewHandle> => {
 			}
 		}
 	);
+};
 
+const createPanel = async (handlers: PanelHandlers): Promise<ViewHandle> => {
+	const handle = await joplin.views.panels.create(PANEL_ID);
+	await joplin.views.panels.setHtml(handle, PANEL_HTML);
+	await listenToGraphView(handle, handlers);
 	for (const scriptPath of PANEL_SCRIPTS) {
 		await joplin.views.panels.addScript(handle, scriptPath);
 	}
+	return handle;
+};
 
+const createPopup = async (handlers: PanelHandlers): Promise<ViewHandle> => {
+	const handle = await joplin.views.dialogs.create(POPUP_ID);
+	await joplin.views.dialogs.setHtml(handle, PANEL_HTML);
+	await joplin.views.dialogs.setButtons(handle, POPUP_BUTTONS);
+	await joplin.views.dialogs.setFitToContent(handle, false);
+	await joplin.window.loadChromeCssFile(`${await joplin.plugins.installationDir()}/${POPUP_CHROME_CSS}`);
+	await listenToGraphView(handle, handlers);
+	for (const scriptPath of PANEL_SCRIPTS) {
+		await joplin.views.dialogs.addScript(handle, scriptPath);
+	}
 	return handle;
 };
 
@@ -173,14 +227,32 @@ const getPanel = (): ViewHandle => {
 	return panelHandle;
 };
 
+/** Every update goes to the panel, and to the popup while it is open. */
+const postToGraphViews = async (message: object): Promise<void> => {
+	await joplin.views.panels.postMessage(getPanel(), message);
+	if (popupHandle && isNoteGraphPopupOpen()) {
+		await joplin.views.panels.postMessage(popupHandle, message);
+	}
+};
+
 /**
- * Initializes the note graph panel. Safe to call multiple times (no-op after first).
+ * Creates the note graph panel and popup. Safe to call multiple times (no-op after first).
+ * A popup that fails to set up is logged and left out, so the panel still works.
  */
-export const initializeAiNoteGraphPanel = async (handlers: PanelHandlers): Promise<void> => {
+export const initializeNoteGraphViews = async (
+	viewLogger: Logger,
+	handlers: PanelHandlers
+): Promise<void> => {
 	if (panelHandle) {
 		return;
 	}
+	logger = viewLogger;
 	panelHandle = await createPanel(handlers);
+	try {
+		popupHandle = await createPopup(handlers);
+	} catch (error) {
+		logger.error('Failed to set up the note graph popup; the side panel still works:', error);
+	}
 };
 
 /**
@@ -191,15 +263,36 @@ export const showAiNoteGraphPanel = async (): Promise<void> => {
 	await joplin.views.panels.show(handle);
 };
 
-export const postFocusNote = async (noteId: string | null): Promise<void> => {
-	queuedFocusNoteId = noteId;
-	if (!panelHandle) return;
-	await joplin.views.panels.postMessage(panelHandle, { type: 'focus-note', noteId });
+/**
+ * Opens the graph popup over Joplin, side panel included. Returns once it is open, not when it
+ * closes; its ✕ and Escape close it.
+ */
+export const openNoteGraphPopup = async (): Promise<void> => {
+	if (!popupHandle) throw new Error('The note graph popup is not available');
+	const session = joplin.views.dialogs.open(popupHandle);
+	popupSession = session;
+	const endSession = () => {
+		if (popupSession === session) popupSession = null;
+	};
+	session.then(endSession, (error) => {
+		endSession();
+		logger.error('The note graph popup failed:', error);
+	});
 };
 
-export const isNoteGraphPanelVisible = async (): Promise<boolean> => {
+const isNoteGraphPopupOpen = (): boolean => popupSession !== null;
+
+export const postFocusNote = async (noteId: string | null): Promise<void> => {
+	if (!panelHandle) return;
+	for (const handle of [panelHandle, popupHandle]) {
+		if (handle) queuedFocusNoteIds.set(handle, noteId);
+	}
+	await postToGraphViews({ type: 'focus-note', noteId });
+};
+
+export const isNoteGraphVisible = async (): Promise<boolean> => {
 	if (!panelHandle) return false;
-	return joplin.views.panels.visible(panelHandle);
+	return isNoteGraphPopupOpen() || joplin.views.panels.visible(panelHandle);
 };
 
 /**
@@ -214,8 +307,7 @@ export const postGraphData = async (graphData: GraphData): Promise<void> => {
 	currentProgress = null;
 
 	if (hadData) {
-		const handle = getPanel();
-		await joplin.views.panels.postMessage(handle, {
+		await postToGraphViews({
 			type: 'graph-data',
 			...graphData,
 			version: currentVersion,
@@ -231,8 +323,7 @@ export const postGraphPatch = async (diff: GraphDiff, fullGraphData: GraphData):
 	currentProgress = null;
 
 	if (hadData) {
-		const handle = getPanel();
-		await joplin.views.panels.postMessage(handle, {
+		await postToGraphViews({
 			type: 'graph-patch',
 			...viewDetails,
 			...diff,
@@ -246,25 +337,24 @@ export const setGraphNotice = (text: string | null): void => {
 	currentNotice = text ?? undefined;
 };
 
+export type StatusIcon = 'notice' | 'cancelled';
+
 /** Pushes a one-line status message to the panel (e.g. a fallback notice). */
-export const postStatus = async (text: string): Promise<void> => {
+export const postStatus = async (text: string, icon: StatusIcon = 'notice'): Promise<void> => {
 	currentProgress = null;
-	const handle = getPanel();
-	await joplin.views.panels.postMessage(handle, { type: 'status', text });
+	await postToGraphViews({ type: 'status', text, icon });
 };
 
 /** Sets the embedding progress and pushes it to the panel immediately. */
 export const postProgress = async (current: number, total: number): Promise<void> => {
 	currentProgress = { stage: 'progress', current, total };
-	const handle = getPanel();
-	await joplin.views.panels.postMessage(handle, { type: 'progress', stage: 'progress', current, total });
+	await postToGraphViews({ type: 'progress', stage: 'progress', current, total });
 };
 
 /** Sets the LLM enrichment progress and pushes it to the panel immediately. */
 export const postEnrichmentProgress = async (current: number, total: number): Promise<void> => {
 	currentProgress = current >= total ? null : { stage: 'enrichment-progress', current, total };
-	const handle = getPanel();
-	await joplin.views.panels.postMessage(handle, {
+	await postToGraphViews({
 		type: 'progress',
 		stage: 'enrichment-progress',
 		current,

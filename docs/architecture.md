@@ -24,7 +24,8 @@ webview message bridge:
   [Cytoscape.js](https://js.cytoscape.org/) inside an iframe. It has no access
   to the Joplin API directly; it only receives messages from the plugin script.
   It shares Joplin's UI thread, so all heavy work, including layout, happens in
-  the plugin script. See [Large vaults](large-vaults.md).
+  the plugin script. See [Large vaults](large-vaults.md). The same page also
+  runs in a popup, described [below](#the-popup).
 
 ## Module map
 
@@ -38,7 +39,7 @@ webview message bridge:
 | `src/services/llm` | Pass B: batches semantic edges to Joplin AI's chat model and parses category/relationship labels back onto the graph. |
 | `src/services/sync` | Listens to Joplin workspace events and turns them into incremental graph updates. |
 | `src/services/settings` | Registers and reads the plugin's settings. |
-| `src/services/status` | What the panel's "What's happening" view shows: the state of each step, in plain words, and the latest problems logged. |
+| `src/services/status` | What the panel's "Graph status" view shows: the state of each step, in plain words, and the latest problems logged. |
 | `src/services/AnalysisController.ts` | Orchestrates the above into a single graph-building pipeline. |
 | `src/services/NoteLoader.ts` | Loads every note in the vault, and reports whether the load was complete. |
 | `src/utils` | Shared helpers: retry with backoff, and the `Logger` interface. |
@@ -67,6 +68,55 @@ callers share one in-flight load rather than triggering it twice.
 
 If semantic analysis is off or fails, the structural graph stays and a
 one-line status message explains why; Pass B then has nothing to enrich.
+
+## The popup
+
+The graph can also open in a popup, for windows with no room for a side
+panel. The **Note Graph Popup** command, behind the graph icon in the note
+toolbar, opens it over Joplin, leaving the side panel as it was, and loads the
+graph the same way as **Show Note Graph**. If the popup can't be set up when
+the plugin starts, that's logged and the side panel works without it.
+
+The popup is a Joplin dialog (`joplin.views.dialogs`) that loads the same HTML
+and scripts as the panel. Whatever decides what the graph shows is kept by the
+plugin, so the two always agree:
+
+- **The view, layout and tag filter.** `GraphPresenter` owns them. Every graph it
+  sends names its layout and grouping as well, so a view that didn't pick the
+  layout still shows the right one.
+- **Coloring, the Links / Similar / Tags toggles and the minimum similarity.**
+  The page sends a change as `set-view-choices`; `webview.ts` keeps it, passes
+  it on to every view as `view-choices`, and includes it in every `request-data`
+  reply, so a popup opening fresh starts with the same choices. A view never
+  sends back choices it was given. Coloring by search isn't shared, because it
+  follows the view's own search box.
+
+Zoom and pan, the search text, focus mode and open menus stay with each view.
+
+A few things are different about dialogs:
+
+- **Messaging.** Dialogs have no message API of their own. Joplin finds a view
+  by its handle, whatever kind it is, so `joplin.views.panels.onMessage`,
+  `postMessage` and `hide` work on the dialog too. `webview.ts` sends every
+  update to the panel and, while it's open, to the popup.
+- **It's modal.** While it's open, the rest of Joplin can't be clicked, so the
+  command only ever opens it. Clicking a note in the graph opens it behind the
+  popup, which stays open until it's closed.
+- **Closing.** It has no Joplin buttons, so Joplin doesn't close it on Escape
+  itself. Instead `setup.js` posts `escape-pressed` for any Escape a menu or the
+  search box hasn't already used, and the plugin closes the popup on it. The
+  side panel ignores that message. Joplin still draws an empty button bar under
+  the popup, and `styles/popup-chrome.css`, loaded into Joplin's window with
+  `joplin.window.loadChromeCssFile`, hides it for this popup only.
+- **A fresh page each time.** Joplin rebuilds the popup's page every time it
+  opens, so the graph is drawn again from the plugin's data, and zoom and pan
+  start over.
+
+A side panel hidden with its ✕ still receives graphs, but its canvas has no
+size while hidden, so any fit made then is wrong. `graph-view.js` fits the
+graph again when the canvas becomes visible. Until Cytoscape has measured the
+new size, it also doesn't move the view to the open note, because that move
+would be worked out against a canvas of no size and would undo the refit.
 
 ## AnalysisController: the single orchestrator
 

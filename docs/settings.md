@@ -7,6 +7,12 @@ every plugin start (Joplin doesn't persist section/setting *definitions*
 across restarts), but the values a user sets are persisted by Joplin as
 normal.
 
+The section's description tells users how to open the graph in a popup (the
+graph icon in the note toolbar, or **Note Graph Popup** in the Command
+Palette) and how to close it. The popup has no menu item, so it has no
+keyboard shortcut: Joplin only lets users assign shortcuts to plugin commands
+that appear in a menu.
+
 | Setting | Key | Type | Default | Effect |
 |---|---|---|---|---|
 | Enable AI-based semantic analysis | `noteGraph.aiAnalysisEnabled` | Boolean | `false` | Turns semantic edges on or off. Requires Joplin AI to be enabled with a ready embedding index (Configuration screen's AI page). |

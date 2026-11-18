@@ -47,8 +47,8 @@ const item = (report: { items: StatusItem[] }, title: string): StatusItem => {
 };
 
 const NOTES = 'Notes';
-const AI = 'Similar notes (AI)';
-const LABELS = 'Connection explanations (AI)';
+const AI = 'Similar notes';
+const LABELS = 'Connection explanations';
 
 describe('buildStatusReport', () => {
 	it('is all fine when everything has loaded', () => {
@@ -57,8 +57,21 @@ describe('buildStatusReport', () => {
 		);
 
 		expect(report.level).toBe('ok');
-		expect(item(report, NOTES).text).toBe('10,537 notes loaded.');
-		expect(item(report, AI).text).toBe('10,537 of 10,537 notes have AI data.');
+		expect(report.summary).toBe('Up to date');
+		expect(item(report, NOTES).metric).toEqual({ value: '10,537', label: 'loaded' });
+		expect(item(report, AI)).toMatchObject({
+			usesAi: true,
+			metric: { value: '10,537', label: 'of 10,537', fraction: 1 },
+			text: 'Notes that have AI data.',
+		});
+	});
+
+	it('says where the notes came from when they opened from the saved graph', () => {
+		const report = buildStatusReport(inputs({ tracker: (t) => t.notesLoaded(true, true) }));
+
+		expect(item(report, NOTES).text).toBe(
+			'Opened from the saved graph, then checked for changes.'
+		);
 	});
 
 	it('shows note loading progress', () => {
@@ -75,6 +88,7 @@ describe('buildStatusReport', () => {
 			level: 'working',
 			text: 'Reading tags: 300 of 10537 notes...',
 		});
+		expect(report.summary).toBe('Loading notes');
 		expect(report.items.map((i) => i.title)).not.toContain('Keeping up to date');
 	});
 
@@ -82,6 +96,7 @@ describe('buildStatusReport', () => {
 		const report = buildStatusReport(inputs({ tracker: (t) => t.notesLoaded(false, false) }));
 
 		expect(report.level).toBe('attention');
+		expect(report.summary).toBe('Needs attention');
 		expect(item(report, NOTES).action).toEqual({ id: 'reload-notes', label: 'Load again' });
 	});
 
@@ -127,8 +142,10 @@ describe('buildStatusReport', () => {
 
 		expect(item(report, AI)).toMatchObject({
 			level: 'working',
-			text: '95 of 10,537 notes have AI data. Joplin is still indexing the rest, and they are added on their own.',
+			metric: { value: '95', label: 'of 10,537' },
+			text: 'Notes that have AI data. Joplin is still indexing the rest, and they are added on their own.',
 		});
+		expect(report.summary).toBe('Building graph');
 	});
 
 	it('shows embedding progress while a run is going', () => {
@@ -142,7 +159,10 @@ describe('buildStatusReport', () => {
 			})
 		);
 
-		expect(item(report, AI).text).toBe('Reading AI data: 2,000 of 10,537 notes.');
+		expect(item(report, AI)).toMatchObject({
+			metric: { value: '2,000', label: 'of 10,537' },
+			text: 'Reading AI data for your notes.',
+		});
 	});
 
 	it('offers to run AI again after it was cancelled', () => {
@@ -220,7 +240,10 @@ describe('buildStatusReport', () => {
 
 		expect(item(report, LABELS)).toMatchObject({
 			level: 'ok',
-			text: '200 of 900 similar-note connections are explained. The rest are explained in the background, up to 200 at a time, to limit AI requests.',
+			usesAi: true,
+			metric: { value: '200', label: 'of 900' },
+			continuesInBackground: true,
+			text: 'The rest are explained in the background, up to 200 at a time, to limit AI requests.',
 			action: { id: 'retry-labels', label: 'Explain 200 more' },
 		});
 	});
@@ -240,9 +263,11 @@ describe('buildStatusReport', () => {
 		);
 
 		expect(item(running, LABELS).text).toBe('Explaining connections: batch 3 of 50.');
-		expect(item(finished, LABELS).text).toBe(
-			'900 of 900 similar-note connections are explained.'
-		);
+		expect(running.summary).toBe('Enriching notes');
+		expect(item(finished, LABELS)).toMatchObject({
+			metric: { value: '900', label: 'of 900', fraction: 1 },
+			text: 'Similar-note connections that are explained.',
+		});
 	});
 
 	it('reports a cancelled labelling run on its own line, not on AI', () => {

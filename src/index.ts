@@ -1,9 +1,10 @@
 import joplin from 'api';
-import { MenuItemLocation } from 'api/types';
+import { MenuItemLocation, ToolbarButtonLocation } from 'api/types';
 import {
 	PanelStatusAction,
-	initializeAiNoteGraphPanel,
+	initializeNoteGraphViews,
 	showAiNoteGraphPanel,
+	openNoteGraphPopup,
 	postGraphData,
 	postGraphPatch,
 	postStatus,
@@ -11,7 +12,7 @@ import {
 	postEnrichmentProgress,
 	postFocusNote,
 	setGraphNotice,
-	isNoteGraphPanelVisible,
+	isNoteGraphVisible,
 	ScopeState,
 	NotebookOption,
 } from './ui/webview';
@@ -68,6 +69,8 @@ import { CommunityIdStabilizer } from './services/graph/CommunityIdStabilizer';
 
 const SHOW_NOTE_GRAPH_COMMAND = 'showNoteGraph';
 const SHOW_NOTE_GRAPH_MENU_ITEM = 'showNoteGraphMenuItem';
+const SHOW_NOTE_GRAPH_POPUP_COMMAND = 'showNoteGraphPopup';
+const SHOW_NOTE_GRAPH_POPUP_BUTTON = 'showNoteGraphPopupButton';
 
 /** Joplin picks up re-embedded edits on a three-minute tick. */
 const EMBEDDING_SWEEP_INTERVAL_MS = 3 * 60 * 1000;
@@ -414,24 +417,34 @@ const focusOnOpenNote = async (): Promise<void> => {
 	}
 };
 
+const showNoteGraphIn = async (showView: () => Promise<void>): Promise<void> => {
+	try {
+		await showView();
+		await focusOnOpenNote();
+		if (analysisController.hasNotes()) await showCurrentView();
+		await ensureGraphLoaded();
+	} catch (error) {
+		logger.error('Failed to load note graph:', error);
+	}
+};
+
 const noteGraphCommand = {
 	name: SHOW_NOTE_GRAPH_COMMAND,
 	label: 'Show Note Graph',
-	execute: async () => {
-		try {
-			await showAiNoteGraphPanel();
-			await focusOnOpenNote();
-			if (analysisController.hasNotes()) await showCurrentView();
-			await ensureGraphLoaded();
-		} catch (error) {
-			logger.error('Failed to load note graph:', error);
-		}
-	},
+	execute: () => showNoteGraphIn(showAiNoteGraphPanel),
+};
+
+/** Only opens: while the popup is open it covers Joplin, so the command can't run again until it closes. */
+const noteGraphPopupCommand = {
+	name: SHOW_NOTE_GRAPH_POPUP_COMMAND,
+	label: 'Note Graph Popup',
+	iconName: 'fas fa-project-diagram',
+	execute: () => showNoteGraphIn(openNoteGraphPopup),
 };
 
 const focusPanelOnNoteSelectionChange = async (noteIds: string[]): Promise<void> => {
 	try {
-		if (!(await isNoteGraphPanelVisible())) return;
+		if (!(await isNoteGraphVisible())) return;
 		await postFocusNote(noteIds[0] ?? null);
 	} catch (error) {
 		logger.error('Failed to sync note graph focus to the note selection change:', error);
@@ -441,7 +454,7 @@ const focusPanelOnNoteSelectionChange = async (noteIds: string[]): Promise<void>
 const followSelection = async (): Promise<void> => {
 	try {
 		if (!analysisController.hasNotes()) return;
-		if (!(await isNoteGraphPanelVisible())) return;
+		if (!(await isNoteGraphVisible())) return;
 		await scopeFollower.onSelectionChanged();
 	} catch (error) {
 		logger.error('Failed to follow the selected notebook:', error);
@@ -607,7 +620,7 @@ const cancelAnalysis = (): void => {
 	statusTracker.cancelled(labelsRunning ? 'labels' : 'ai');
 	if (labelsRunning) backgroundLabeler.stop();
 	analysisController.cancelCurrentRun();
-	postStatus('Analysis cancelled.').catch(logPanelPostFailure);
+	postStatus('Analysis cancelled.', 'cancelled').catch(logPanelPostFailure);
 };
 
 const recomputeGraph = async (): Promise<void> => {
@@ -620,6 +633,7 @@ const recomputeGraph = async (): Promise<void> => {
 
 const registerCommands = async (): Promise<void> => {
 	await joplin.commands.register(noteGraphCommand);
+	await joplin.commands.register(noteGraphPopupCommand);
 };
 
 const onRequestFolders = async (): Promise<NotebookOption[]> => {
@@ -662,7 +676,7 @@ const onSetTagFilter = async (tag: string | null): Promise<void> => {
 };
 
 const sweepEmbeddingsWhileVisible = async (): Promise<void> => {
-	if (await isNoteGraphPanelVisible()) await incrementalUpdater.handleEmbeddingTick();
+	if (await isNoteGraphVisible()) await incrementalUpdater.handleEmbeddingTick();
 };
 
 const registerMenuItems = async (): Promise<void> => {
@@ -673,14 +687,23 @@ const registerMenuItems = async (): Promise<void> => {
 	);
 };
 
+const registerToolbarButtons = async (): Promise<void> => {
+	await joplin.views.toolbarButtons.create(
+		SHOW_NOTE_GRAPH_POPUP_BUTTON,
+		SHOW_NOTE_GRAPH_POPUP_COMMAND,
+		ToolbarButtonLocation.NoteToolbar
+	);
+};
+
 joplin.plugins.register({
 	onStart: async function () {
 		logger.info('Note Graph plugin started.');
 		await registerGraphSettings();
 		await joplin.settings.onChange(handleSettingsChange);
-		await initializeAiNoteGraphPanel({
+		await initializeNoteGraphViews(logger, {
 			onNoData: () => {
 				if (Date.now() - lastLoadFailureTime < LOAD_RETRY_COOLDOWN_MS) return;
+				if (!inFlightLoad) void focusOnOpenNote();
 				void ensureGraphLoaded();
 			},
 			onCancel: cancelAnalysis,
@@ -696,6 +719,7 @@ joplin.plugins.register({
 		});
 		await registerCommands();
 		await registerMenuItems();
+		await registerToolbarButtons();
 		await workspaceListener.register();
 		setInterval(() => {
 			sweepEmbeddingsWhileVisible().catch((e) => {

@@ -14,6 +14,15 @@ describe('webview', () => {
 	let mockPostMessage: jest.Mock;
 	let mockPanelsShow: jest.Mock;
 	let mockPanelsVisible: jest.Mock;
+	let mockPanelsHide: jest.Mock;
+	let mockDialogs: Record<
+		'create' | 'setHtml' | 'setButtons' | 'setFitToContent' | 'addScript' | 'open',
+		jest.Mock
+	>;
+	let mockLoadChromeCssFile: jest.Mock;
+	let closePopup: () => void;
+	let mockLogger: { info: jest.Mock; warn: jest.Mock; error: jest.Mock };
+	let handlers: Parameters<typeof import('./webview').initializeNoteGraphViews>[1];
 	let onNoData: jest.Mock;
 	let onCancel: jest.Mock;
 	let onRequestFolders: jest.Mock;
@@ -38,7 +47,9 @@ describe('webview', () => {
 		query?: string;
 		action?: string;
 		nodeId?: string;
+		choices?: { colorBy: string; hiddenEdgeTypes: string[]; minSimilarity: number };
 	}) => Promise<unknown>;
+	let messageHandlers: Record<string, typeof onMessageHandler>;
 
 	beforeEach(async () => {
 		jest.resetModules();
@@ -50,9 +61,13 @@ describe('webview', () => {
 					onMessage: jest.Mock;
 					postMessage: jest.Mock;
 					show: jest.Mock;
+					hide: jest.Mock;
 					visible: jest.Mock;
 				};
+				dialogs: typeof mockDialogs;
 			};
+			plugins: { installationDir: jest.Mock };
+			window: { loadChromeCssFile: jest.Mock };
 		};
 		jest.isolateModules(() => {
 			// eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -66,16 +81,25 @@ describe('webview', () => {
 		mockPostMessage = freshJoplin!.views.panels.postMessage;
 		mockPanelsShow = freshJoplin!.views.panels.show;
 		mockPanelsVisible = freshJoplin!.views.panels.visible;
+		mockPanelsHide = freshJoplin!.views.panels.hide;
+		mockDialogs = freshJoplin!.views.dialogs;
+		mockLoadChromeCssFile = freshJoplin!.window.loadChromeCssFile;
+		freshJoplin!.plugins.installationDir.mockResolvedValue('/plugin-dir');
 		mockExecute = (freshJoplin! as unknown as { commands: { execute: jest.Mock } }).commands
 			.execute;
 		mockExecute.mockReset();
 
 		mockPanelsCreate.mockResolvedValue('panel-handle');
 		mockPanelsVisible.mockResolvedValue(false);
-		mockOnMessage.mockImplementation((_handle: unknown, handler: typeof onMessageHandler) => {
-			onMessageHandler = handler;
+		messageHandlers = {};
+		mockOnMessage.mockImplementation((handle: string, handler: typeof onMessageHandler) => {
+			messageHandlers[handle] = handler;
 			return Promise.resolve();
 		});
+		mockDialogs.create.mockResolvedValue('popup-handle');
+		mockDialogs.open.mockImplementation(
+			() => new Promise((resolve) => (closePopup = () => resolve({ id: 'cancel' })))
+		);
 
 		onNoData = jest.fn();
 		onCancel = jest.fn();
@@ -88,7 +112,7 @@ describe('webview', () => {
 		onSearchNotes = jest.fn().mockReturnValue([]);
 		onGetStatus = jest.fn().mockResolvedValue({ level: 'ok', items: [], problems: [] });
 		onStatusAction = jest.fn().mockResolvedValue(undefined);
-		await webview.initializeAiNoteGraphPanel({
+		handlers = {
 			onNoData,
 			onCancel,
 			onRequestFolders,
@@ -100,7 +124,10 @@ describe('webview', () => {
 			onSearchNotes,
 			onGetStatus,
 			onStatusAction,
-		});
+		};
+		mockLogger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+		await webview.initializeNoteGraphViews(mockLogger, handlers);
+		onMessageHandler = messageHandlers['panel-handle'];
 	});
 
 	describe('node-clicked', () => {
@@ -379,6 +406,16 @@ describe('webview', () => {
 		expect(response).toMatchObject({ progress: null });
 	});
 
+	it('tells the panel which icon goes with a status message', async () => {
+		await webview.postStatus('Analysis cancelled.', 'cancelled');
+
+		expect(mockPostMessage).toHaveBeenLastCalledWith(expect.anything(), {
+			type: 'status',
+			text: 'Analysis cancelled.',
+			icon: 'cancelled',
+		});
+	});
+
 	it('keeps postGraphData and postGraphPatch on one shared, contiguous version counter', async () => {
 		await webview.postGraphData({ nodes: [], edges: [] });
 		await webview.postGraphPatch(emptyDiff, { nodes: [], edges: [] });
@@ -435,13 +472,186 @@ describe('webview', () => {
 		});
 	});
 
-	describe('isNoteGraphPanelVisible', () => {
+	describe('isNoteGraphVisible', () => {
 		it('reflects the panel visibility check', async () => {
 			mockPanelsVisible.mockResolvedValue(true);
-			expect(await webview.isNoteGraphPanelVisible()).toBe(true);
+			expect(await webview.isNoteGraphVisible()).toBe(true);
 
 			mockPanelsVisible.mockResolvedValue(false);
-			expect(await webview.isNoteGraphPanelVisible()).toBe(false);
+			expect(await webview.isNoteGraphVisible()).toBe(false);
+		});
+
+		it('is true while the popup is open, even with the panel hidden', async () => {
+			mockPanelsVisible.mockResolvedValue(false);
+			await webview.openNoteGraphPopup();
+
+			expect(await webview.isNoteGraphVisible()).toBe(true);
+		});
+	});
+
+	describe('view choices', () => {
+		const choices = { colorBy: 'community', hiddenEdgeTypes: ['tag'], minSimilarity: 40 };
+
+		it('keeps the choices one view made and passes them to every open view', async () => {
+			await webview.openNoteGraphPopup();
+
+			await messageHandlers['popup-handle']({ type: 'set-view-choices', choices });
+
+			const shared = { type: 'view-choices', choices };
+			expect(mockPostMessage).toHaveBeenCalledWith('panel-handle', shared);
+			expect(mockPostMessage).toHaveBeenCalledWith('popup-handle', shared);
+		});
+
+		it('hands them to a view that asks for data, whatever the reply', async () => {
+			await onMessageHandler({ type: 'set-view-choices', choices });
+			expect(await onMessageHandler({ type: 'request-data', version: 0 })).toEqual(
+				expect.objectContaining({ type: 'no-data', choices })
+			);
+
+			await webview.postGraphData({ nodes: [], edges: [] });
+			expect(await onMessageHandler({ type: 'request-data', version: 0 })).toEqual(
+				expect.objectContaining({ type: 'graph-data', choices })
+			);
+			expect(await onMessageHandler({ type: 'request-data', version: 1 })).toEqual(
+				expect.objectContaining({ type: 'no-change', choices })
+			);
+		});
+	});
+
+	describe('focus on the open note', () => {
+		it('reaches each view with its next graph, so the panel cannot take the one meant for the popup', async () => {
+			await webview.postGraphData({ nodes: [], edges: [] });
+			await webview.postFocusNote('note-1');
+
+			const panelReply = await onMessageHandler({ type: 'request-data', version: 0 });
+			const popupReply = await messageHandlers['popup-handle']({
+				type: 'request-data',
+				version: 0,
+			});
+
+			expect(panelReply).toEqual(expect.objectContaining({ focusNoteId: 'note-1' }));
+			expect(popupReply).toEqual(expect.objectContaining({ focusNoteId: 'note-1' }));
+		});
+	});
+
+	describe('popup', () => {
+		const flushPromises = () => new Promise((resolve) => setImmediate(resolve));
+
+		it('is a large dialog without Joplin buttons, since the graph has its own ✕', () => {
+			expect(mockDialogs.setButtons).toHaveBeenCalledWith('popup-handle', []);
+			expect(mockDialogs.setFitToContent).toHaveBeenCalledWith('popup-handle', false);
+		});
+
+		it("loads the style that hides the empty button bar from the plugin's install folder", () => {
+			expect(mockLoadChromeCssFile).toHaveBeenCalledWith(
+				'/plugin-dir/ui/styles/popup-chrome.css'
+			);
+		});
+
+		it('closes on Escape', async () => {
+			await messageHandlers['popup-handle']({ type: 'escape-pressed' });
+
+			expect(mockPanelsHide).toHaveBeenCalledWith('popup-handle');
+		});
+
+		it('leaves the side panel open on Escape', async () => {
+			await messageHandlers['panel-handle']({ type: 'escape-pressed' });
+
+			expect(mockPanelsHide).not.toHaveBeenCalled();
+		});
+
+		it('loads the same graph page as the panel', () => {
+			expect(mockDialogs.setHtml).toHaveBeenCalledWith('popup-handle', expect.any(String));
+			expect(mockDialogs.addScript.mock.calls).toEqual([
+				['popup-handle', './ui/styles/panel.css'],
+				['popup-handle', './ui/setup.js'],
+				['popup-handle', './ui/graph-view.js'],
+			]);
+			expect(messageHandlers['popup-handle']).toBeDefined();
+		});
+
+		it('opens over Joplin and leaves the side panel as it was', async () => {
+			await webview.openNoteGraphPopup();
+
+			expect(mockDialogs.open).toHaveBeenCalledWith('popup-handle');
+			expect(mockPanelsHide).not.toHaveBeenCalled();
+			expect(await webview.isNoteGraphVisible()).toBe(true);
+		});
+
+		it('counts as closed once Joplin closes the dialog', async () => {
+			await webview.openNoteGraphPopup();
+
+			closePopup();
+			await flushPromises();
+
+			expect(await webview.isNoteGraphVisible()).toBe(false);
+		});
+
+		it('stays open when an earlier session finishes closing after a reopen', async () => {
+			await webview.openNoteGraphPopup();
+			const closeFirst = closePopup;
+			await webview.openNoteGraphPopup();
+
+			closeFirst();
+			await flushPromises();
+
+			expect(await webview.isNoteGraphVisible()).toBe(true);
+		});
+
+		it('logs a popup that fails to open, and counts it as closed', async () => {
+			mockDialogs.open.mockRejectedValueOnce(new Error('ipc gone'));
+
+			await webview.openNoteGraphPopup();
+			await flushPromises();
+
+			expect(mockLogger.error).toHaveBeenCalledWith(
+				'The note graph popup failed:',
+				expect.any(Error)
+			);
+			expect(await webview.isNoteGraphVisible()).toBe(false);
+		});
+
+		it('logs a popup that cannot be set up, and the panel still works', async () => {
+			let fresh!: typeof import('./webview');
+			let freshViews!: {
+				panels: { create: jest.Mock; show: jest.Mock };
+				dialogs: { create: jest.Mock };
+			};
+			jest.isolateModules(() => {
+				// eslint-disable-next-line @typescript-eslint/no-var-requires
+				freshViews = require('api').default.views;
+				// eslint-disable-next-line @typescript-eslint/no-var-requires
+				fresh = require('./webview');
+			});
+			freshViews.panels.create.mockResolvedValue('panel-handle');
+			freshViews.dialogs.create.mockRejectedValue(new Error('no dialogs here'));
+
+			await fresh.initializeNoteGraphViews(mockLogger, handlers);
+
+			expect(mockLogger.error).toHaveBeenCalledWith(
+				expect.stringContaining('popup'),
+				expect.any(Error)
+			);
+			await fresh.showAiNoteGraphPanel();
+			expect(freshViews.panels.show).toHaveBeenCalledWith('panel-handle');
+			await expect(fresh.openNoteGraphPopup()).rejects.toThrow('not available');
+		});
+
+		it('closes with its ✕, like the panel', async () => {
+			await messageHandlers['popup-handle']({ type: 'close-note-graph' });
+
+			expect(mockPanelsHide).toHaveBeenCalledWith('popup-handle');
+		});
+
+		it('receives updates only while open', async () => {
+			await webview.postStatus('Before');
+			await webview.openNoteGraphPopup();
+			await webview.postStatus('During');
+
+			const popupMessages = mockPostMessage.mock.calls
+				.filter(([handle]) => handle === 'popup-handle')
+				.map(([, message]) => message.text);
+			expect(popupMessages).toEqual(['During']);
 		});
 	});
 

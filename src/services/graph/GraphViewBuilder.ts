@@ -38,6 +38,7 @@ export interface GraphView {
 	isPartial: boolean;
 	canGoBack: boolean;
 	scopeLabel: string;
+	scopeNotebookCount?: number;
 	notebookTitles: Record<string, string>;
 	/** Empty when this view can't be filtered by tag. */
 	tagOptions: TagOption[];
@@ -209,7 +210,7 @@ export class GraphViewBuilder {
 			...this.commonDetails(graph, nodes, context),
 			kind: scope.folderIds ? 'notebook' : 'full',
 			key: this.mainViewKey(context),
-			summary: this.summarizeMainView(context, shown.length, members.length, outside.length, {
+			summary: this.summarizeMainView(context, shown.length, members.length, {
 				shown: limitedEdges.length,
 				available: edges.length,
 			}),
@@ -333,26 +334,19 @@ export class GraphViewBuilder {
 		{ scope, tag }: ViewContext,
 		shown: number,
 		available: number,
-		outside: number,
 		edges: { shown: number; available: number }
 	): string {
 		const name = tag ? `Tag "${tag}"` : '';
-		const elsewhere =
-			outside > 0
-				? `plus ${outside} connected ${
-						outside === 1 ? 'note' : 'notes'
-				  } from other notebooks`
-				: '';
 		const notes =
 			shown < available
 				? `showing the ${shown} most connected of ${noteCountLabel(available)}`
-				: name || elsewhere
+				: name
 				? noteCountLabel(available)
 				: '';
 
 		const parts = [
 			this.unavailableNotice(scope),
-			[name, [notes, elsewhere].filter(Boolean).join(', ')].filter(Boolean).join(': '),
+			[name, notes].filter(Boolean).join(': '),
 			shown < available ? 'Search to reach the rest.' : '',
 			this.describeEdgeLimit(edges),
 		];
@@ -480,12 +474,16 @@ export class GraphViewBuilder {
 		graph: GraphData,
 		nodes: NodeEntry[],
 		{ scope }: ViewContext
-	): Pick<GraphView, 'totals' | 'isLarge' | 'isPartial' | 'scopeLabel' | 'notebookTitles'> {
+	): Pick<
+		GraphView,
+		'totals' | 'isLarge' | 'isPartial' | 'scopeLabel' | 'scopeNotebookCount' | 'notebookTitles'
+	> {
 		return {
 			totals: this.computeTotals(graph, scope),
 			isLarge: this.isLarge(graph),
 			isPartial: nodes.length < graph.nodes.length,
 			scopeLabel: scope.label,
+			scopeNotebookCount: scope.notebookCount,
 			notebookTitles: this.notebookTitlesOf(nodes, scope),
 		};
 	}
