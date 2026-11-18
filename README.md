@@ -34,6 +34,8 @@ labels and one-line explanations for those connections.
 - **A panel built for exploring, not just looking.** Search, a depth slider, a tag
   filter, focus mode (isolate a note's neighborhood), per-edge-type toggles, zoom, and
   PNG/SVG/JSON export. It follows Joplin's theme and adapts down to a narrow panel.
+- **Side panel or popup.** Keep the graph beside your notes, or open it in a large
+  popup from the note toolbar when you only need it for a moment.
 
 ## Requirements
 
@@ -67,7 +69,10 @@ installing an update.
 
 ## Usage
 
-Open it from the **Tools** menu: **Show Note Graph**. The graph builds from
+Open it from the **Tools** menu: **Show Note Graph**. If your window has no
+room for a side panel, open the graph in a popup instead: press the graph icon
+in the note toolbar, or run **Note Graph Popup** from the Command Palette.
+Close the popup with its ✕ or Escape. The graph builds from
 your current notes, tags and links; if AI analysis is enabled in the
 plugin's settings, semantic edges are added once your notes are embedded.
 If LLM enrichment is also enabled, relationship labels appear on hover once
@@ -78,16 +83,18 @@ notes. Click a node to open that note, or right-click it for more. Double-click 
 zoom in on it.
 
 - **Top of the panel:** choose which notebooks to show, and search every note. Press
-  Enter to open the top result, or Escape to clear the search.
+  Enter to open the top result, or Escape to clear the search. The status button on
+  the right says what the plugin is doing; press it for details.
 - **Toolbar:** turn links, similar notes and tags on or off, show only one tag, choose
-  how notes are colored, focus on the selected note, or export the view.
-- **On the graph:** choose how notes are arranged, zoom, and fit the graph to the panel.
+  how notes are colored and arranged, focus on the selected note, or export the view.
+- **On the graph:** zoom, and fit the graph to the panel.
 - **A note's connections:** open them from a search result or the right-click menu, and
   use the depth slider to widen or narrow them.
 
 ## Configuration
 
-Available in the Configuration screen's **Note Graph** section:
+Available in the Configuration screen's **Note Graph** section, which also
+explains how to open the popup:
 
 | Setting | Default | Effect |
 |---|---|---|

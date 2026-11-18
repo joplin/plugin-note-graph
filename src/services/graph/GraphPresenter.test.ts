@@ -455,6 +455,18 @@ describe('GraphPresenter', () => {
 				expect.anything()
 			);
 		});
+
+		it('names the layout in every view it sends, so the panel and popup show the same choice', async () => {
+			const first = await presenter.setGraph(smallGraph());
+			expect(first?.payload).toEqual(
+				expect.objectContaining({ layout: 'fcose', grouped: false })
+			);
+
+			const relaid = await presenter.setLayout('hierarchical', false);
+			expect(relaid?.payload).toEqual(
+				expect.objectContaining({ layout: 'hierarchical', grouped: false })
+			);
+		});
 	});
 
 	describe('overlapping updates', () => {

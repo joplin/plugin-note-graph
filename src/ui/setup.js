@@ -7,6 +7,14 @@
 		});
 	};
 
+	/** Menus and search stop the Escape they use, so only a spare Escape reaches here; the plugin closes the popup on it. */
+	const bindEscape = () => {
+		if (typeof webviewApi === 'undefined') return;
+		document.addEventListener('keydown', (e) => {
+			if (e.key === 'Escape') void webviewApi.postMessage({ type: 'escape-pressed' });
+		});
+	};
+
 	const bindScopePicker = () => {
 		const btn = document.getElementById('graph-scope-btn');
 		const menu = document.getElementById('graph-scope-menu');
@@ -197,11 +205,16 @@
 			filterInput.addEventListener('input', renderNotebookList);
 		}
 
-		document.addEventListener('keydown', (e) => {
-			if (e.key !== 'Escape' || menu.hidden) return;
-			closeMenu();
-			btn.focus();
-		});
+		document.addEventListener(
+			'keydown',
+			(e) => {
+				if (e.key !== 'Escape' || menu.hidden) return;
+				e.stopPropagation();
+				closeMenu();
+				btn.focus();
+			},
+			true
+		);
 
 		if (applyBtn) {
 			applyBtn.addEventListener('click', () => {
@@ -215,7 +228,9 @@
 				if (!response) return;
 				const mode = response.mode || 'current';
 				selectedIds = new Set(response.selectedNotebookIds || []);
-				updateLabel(mode, Array.from(selectedIds));
+				// Once a graph has named the notebooks it shows, that name stays; this reply may arrive after it.
+				if (label.dataset.fromView) markActiveItem(mode);
+				else updateLabel(mode, Array.from(selectedIds));
 			})
 			.catch((e) => {
 				console.error('Note Graph: failed to load scope state:', e);
@@ -580,11 +595,16 @@
 			if (isOpen() && !panel.contains(e.target) && !btn.contains(e.target)) close();
 		});
 
-		document.addEventListener('keydown', (e) => {
-			if (e.key !== 'Escape' || !isOpen()) return;
-			close();
-			btn.focus();
-		});
+		document.addEventListener(
+			'keydown',
+			(e) => {
+				if (e.key !== 'Escape' || !isOpen()) return;
+				e.stopPropagation();
+				close();
+				btn.focus();
+			},
+			true
+		);
 
 		document.addEventListener('note-graph-activity', () => void refresh());
 
@@ -594,6 +614,7 @@
 
 	const init = () => {
 		bindClose();
+		bindEscape();
 		bindScopePicker();
 		enhanceSelects();
 		bindInfoPanel();
