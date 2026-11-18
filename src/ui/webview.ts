@@ -246,11 +246,13 @@ export const setGraphNotice = (text: string | null): void => {
 	currentNotice = text ?? undefined;
 };
 
+export type StatusIcon = 'notice' | 'cancelled';
+
 /** Pushes a one-line status message to the panel (e.g. a fallback notice). */
-export const postStatus = async (text: string): Promise<void> => {
+export const postStatus = async (text: string, icon: StatusIcon = 'notice'): Promise<void> => {
 	currentProgress = null;
 	const handle = getPanel();
-	await joplin.views.panels.postMessage(handle, { type: 'status', text });
+	await joplin.views.panels.postMessage(handle, { type: 'status', text, icon });
 };
 
 /** Sets the embedding progress and pushes it to the panel immediately. */

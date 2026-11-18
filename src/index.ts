@@ -607,7 +607,7 @@ const cancelAnalysis = (): void => {
 	statusTracker.cancelled(labelsRunning ? 'labels' : 'ai');
 	if (labelsRunning) backgroundLabeler.stop();
 	analysisController.cancelCurrentRun();
-	postStatus('Analysis cancelled.').catch(logPanelPostFailure);
+	postStatus('Analysis cancelled.', 'cancelled').catch(logPanelPostFailure);
 };
 
 const recomputeGraph = async (): Promise<void> => {
@@ -681,6 +681,7 @@ joplin.plugins.register({
 		await initializeAiNoteGraphPanel({
 			onNoData: () => {
 				if (Date.now() - lastLoadFailureTime < LOAD_RETRY_COOLDOWN_MS) return;
+				if (!inFlightLoad) void focusOnOpenNote();
 				void ensureGraphLoaded();
 			},
 			onCancel: cancelAnalysis,

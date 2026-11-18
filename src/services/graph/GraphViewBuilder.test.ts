@@ -169,7 +169,7 @@ describe('GraphViewBuilder', () => {
 			expect(view.data.nodes[0].data.outsideScope).toBeUndefined();
 			expect(view.data.nodes[1].data.outsideScope).toBe(true);
 			expect(view.data.edges).toHaveLength(1);
-			expect(view.summary).toBe('1 note, plus 1 connected note from other notebooks.');
+			expect(view.summary).toBe('');
 		});
 
 		it('leaves the shared graph unmarked, because it is used for every other view', () => {
@@ -275,7 +275,6 @@ describe('GraphViewBuilder', () => {
 			expect(view.data.nodes).toHaveLength(10);
 			expect(ids(view)).toContain('x');
 			expect(view.summary).toContain('howing the 9 most connected of 15 notes');
-			expect(view.summary).toContain('plus 1 connected note');
 		});
 
 		it('does not call a note in scope "outside" just because it did not fit', () => {

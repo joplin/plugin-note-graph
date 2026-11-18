@@ -289,6 +289,8 @@ describe('NoteScopeResolver', () => {
 
 			expect(one.label).toBe('Work');
 			expect(two.label).toBe('2 notebooks');
+			expect(one.notebookCount).toBe(1);
+			expect(two.notebookCount).toBe(2);
 			expect(one.followsSelection).toBe(false);
 		});
 

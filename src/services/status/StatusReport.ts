@@ -5,15 +5,25 @@ import { TrackedStatus } from './StatusTracker';
 export type StatusLevel = 'ok' | 'working' | 'attention' | 'off';
 export type StatusAction = 'reload-notes' | 'retry-ai' | 'retry-labels';
 
+export interface StatusMetric {
+	value: string;
+	label: string;
+	fraction?: number;
+}
+
 export interface StatusItem {
 	title: string;
 	level: StatusLevel;
 	text: string;
+	usesAi?: boolean;
+	metric?: StatusMetric;
+	continuesInBackground?: boolean;
 	action?: { id: StatusAction; label: string };
 }
 
 export interface StatusReport {
 	level: StatusLevel;
+	summary: string;
 	items: StatusItem[];
 	problems: LoggedProblem[];
 	lastGraphShownAt: number | null;
@@ -44,6 +54,14 @@ export interface StatusInputs {
 
 const count = (n: number): string => n.toLocaleString('en-US');
 
+function partOf(done: number, total: number): StatusMetric {
+	return {
+		value: count(done),
+		label: `of ${count(total)}`,
+		fraction: total > 0 ? Math.min(1, done / total) : 0,
+	};
+}
+
 function notesItem({ tracked, noteCount }: StatusInputs): StatusItem {
 	const title = 'Notes';
 	const reload = { id: 'reload-notes' as const, label: 'Load again' };
@@ -64,47 +82,52 @@ function notesItem({ tracked, noteCount }: StatusInputs): StatusItem {
 				action: reload,
 			};
 	}
+	const metric = { value: count(noteCount), label: 'loaded' };
 	if (!tracked.notesComplete) {
 		return {
 			title,
 			level: 'attention',
-			text: `${count(
-				noteCount
-			)} notes loaded, but some notes or tags could not be read, so some connections are missing.`,
+			metric,
+			text: 'Some notes or tags could not be read, so some connections are missing.',
 			action: reload,
 		};
 	}
-	const source = tracked.loadedFromCache
-		? ' Opened from the saved graph, then checked for changes.'
-		: '';
-	return { title, level: 'ok', text: `${count(noteCount)} notes loaded.${source}` };
+	return {
+		title,
+		level: 'ok',
+		metric,
+		text: tracked.loadedFromCache
+			? 'Opened from the saved graph, then checked for changes.'
+			: 'Read from your notebooks.',
+	};
 }
 
-function aiItem({ tracked, noteCount, ai }: StatusInputs): StatusItem {
-	const title = 'Similar notes (AI)';
+function aiItem(inputs: StatusInputs): StatusItem {
+	return { ...aiState(inputs), title: 'Similar notes', usesAi: true };
+}
+
+function aiState({ tracked, noteCount, ai }: StatusInputs): Omit<StatusItem, 'title'> {
 	// Nothing to run on until the notes are loaded, and running on none would commit an empty graph.
 	const retry =
 		tracked.noteLoad === 'loaded' ? { id: 'retry-ai' as const, label: 'Run again' } : undefined;
 	if (!ai.enabled) {
 		return {
-			title,
 			level: 'off',
 			text: 'Off. Turn on "Enable AI-based semantic analysis" in Settings → Note Graph to connect notes about similar things.',
 		};
 	}
 	if (ai.running) {
 		const progress = tracked.aiProgress;
-		return {
-			title,
-			level: 'working',
-			text: progress
-				? `Reading AI data: ${count(progress.current)} of ${count(progress.total)} notes.`
-				: 'Starting AI analysis...',
-		};
+		return progress
+			? {
+					level: 'working',
+					metric: partOf(progress.current, progress.total),
+					text: 'Reading AI data for your notes.',
+			  }
+			: { level: 'working', text: 'Starting AI analysis...' };
 	}
 	if (tracked.aiCancelled) {
 		return {
-			title,
 			level: 'attention',
 			text: 'Stopped because it was cancelled.',
 			action: retry,
@@ -112,7 +135,6 @@ function aiItem({ tracked, noteCount, ai }: StatusInputs): StatusItem {
 	}
 	if (ai.unavailableReason) {
 		return {
-			title,
 			level: 'attention',
 			text: "Joplin AI isn't available. It needs Joplin 3.7 or later, with AI turned on in Settings → AI.",
 		};
@@ -120,7 +142,6 @@ function aiItem({ tracked, noteCount, ai }: StatusInputs): StatusItem {
 	const state = ai.index?.state;
 	if (state === 'disabled' || state === 'unavailable') {
 		return {
-			title,
 			level: 'attention',
 			text: "Joplin AI's note index is off. Turn it on in Settings → AI, then run this again.",
 			action: retry,
@@ -128,7 +149,6 @@ function aiItem({ tracked, noteCount, ai }: StatusInputs): StatusItem {
 	}
 	if (state === 'preparing') {
 		return {
-			title,
 			level: 'working',
 			text: 'Joplin AI is getting ready. Similar-note connections are added on their own once it is, within a few minutes.',
 		};
@@ -136,37 +156,38 @@ function aiItem({ tracked, noteCount, ai }: StatusInputs): StatusItem {
 	if (ai.embeddedNotes === 0) {
 		return tracked.aiFallbackReason
 			? {
-					title,
 					level: 'attention',
 					text: `Not used yet: ${tracked.aiFallbackReason}`,
 					action: retry,
 			  }
-			: { title, level: 'working', text: 'Waiting for AI data.' };
+			: { level: 'working', text: 'Waiting for AI data.' };
 	}
 
-	const embedded = `${count(ai.embeddedNotes)} of ${count(noteCount)} notes have AI data.`;
+	const metric = partOf(ai.embeddedNotes, noteCount);
+	const embedded = 'Notes that have AI data.';
 	if (state === 'indexing') {
 		return {
-			title,
 			level: 'working',
+			metric,
 			text: `${embedded} Joplin is still indexing the rest, and they are added on their own.`,
 		};
 	}
-	return { title, level: 'ok', text: embedded };
+	return { level: 'ok', metric, text: embedded };
 }
 
-function labelsItem({ tracked, ai, labels }: StatusInputs): StatusItem {
-	const title = 'Connection explanations (AI)';
+function labelsItem(inputs: StatusInputs): StatusItem {
+	return { ...labelsState(inputs), title: 'Connection explanations', usesAi: true };
+}
+
+function labelsState({ tracked, ai, labels }: StatusInputs): Omit<StatusItem, 'title'> {
 	if (!labels.enabled) {
 		return {
-			title,
 			level: 'off',
 			text: 'Off. Turn on "Enable LLM analysis" in Settings → Note Graph to explain why similar notes are connected.',
 		};
 	}
 	if (!ai.enabled) {
 		return {
-			title,
 			level: 'off',
 			text: 'Needs "Enable AI-based semantic analysis" to be on as well.',
 		};
@@ -174,7 +195,6 @@ function labelsItem({ tracked, ai, labels }: StatusInputs): StatusItem {
 	if (labels.running) {
 		const progress = tracked.labelProgress;
 		return {
-			title,
 			level: 'working',
 			text: progress
 				? `Explaining connections: batch ${count(progress.current)} of ${count(
@@ -184,30 +204,29 @@ function labelsItem({ tracked, ai, labels }: StatusInputs): StatusItem {
 		};
 	}
 	if (labels.semanticEdges === 0) {
-		return { title, level: 'ok', text: 'Waiting for similar-note connections to explain.' };
+		return { level: 'ok', text: 'Waiting for similar-note connections to explain.' };
 	}
 	if (tracked.labelsCancelled) {
 		return {
-			title,
 			level: 'attention',
 			text: 'Stopped because it was cancelled.',
 			action: { id: 'retry-labels', label: 'Run again' },
 		};
 	}
 
-	const explained = `${count(labels.labeledEdges)} of ${count(
-		labels.semanticEdges
-	)} similar-note connections are explained.`;
+	const metric = partOf(labels.labeledEdges, labels.semanticEdges);
+	const explained = 'Similar-note connections that are explained.';
 	const unlabeled = labels.semanticEdges - labels.labeledEdges;
-	if (unlabeled <= 0) return { title, level: 'ok', text: explained };
+	if (unlabeled <= 0) return { level: 'ok', metric, text: explained };
 
 	const limitReached = labels.budgetUsed >= labels.budgetLimit;
 	const more = Math.min(labels.budgetLimit, unlabeled);
 	return {
-		title,
 		level: 'ok',
+		metric,
+		continuesInBackground: limitReached,
 		text: limitReached
-			? `${explained} The rest are explained in the background, up to ${count(
+			? `The rest are explained in the background, up to ${count(
 					labels.budgetLimit
 			  )} at a time, to limit AI requests.`
 			: explained,
@@ -230,16 +249,24 @@ function overallLevel(items: StatusItem[]): StatusLevel {
 	return 'ok';
 }
 
+function summarize(level: StatusLevel, notes: StatusItem, ai: StatusItem): string {
+	if (level === 'attention') return 'Needs attention';
+	if (level !== 'working') return 'Up to date';
+	if (notes.level === 'working') return 'Loading notes';
+	return ai.level === 'working' ? 'Building graph' : 'Enriching notes';
+}
+
 /** Describes, in plain words, what the plugin is doing and anything the user can do about it. */
 export function buildStatusReport(inputs: StatusInputs): StatusReport {
-	const items = [
-		notesItem(inputs),
-		aiItem(inputs),
-		labelsItem(inputs),
-		updatesItem(inputs),
-	].filter((item): item is StatusItem => item !== null);
+	const notes = notesItem(inputs);
+	const ai = aiItem(inputs);
+	const items = [notes, ai, labelsItem(inputs), updatesItem(inputs)].filter(
+		(item): item is StatusItem => item !== null
+	);
+	const level = overallLevel(items);
 	return {
-		level: overallLevel(items),
+		level,
+		summary: summarize(level, notes, ai),
 		items,
 		problems: inputs.problems,
 		lastGraphShownAt: inputs.tracked.lastGraphShownAt,
