@@ -86,11 +86,12 @@ src/
         settings/                   Plugin settings registration and access.
     ui/
         App.ts, components/       Panel HTML shell.
-        webview.ts                  Panel lifecycle and plugin<->webview messaging.
+        webview.ts                  Panel and popup lifecycle, and plugin<->webview messaging.
         graph-view.js               Cytoscape client, compiled by webview.webpack.config.js. Never runs a layout.
         graphUpdatePolicy.ts        How the panel applies an update (patch, compare or redraw); unit-tested.
-        setup.js                    Close-button wiring, copied as-is (no imports to bundle).
+        setup.js                    Close-button and Escape wiring, copied as-is (no imports to bundle).
         styles/panel.css            Panel styling.
+        styles/popup-chrome.css     Hides the popup's empty button bar; loaded into Joplin's window.
     tests/mocks/                Joplin API mock for Jest.
     types/                      Declarations for dependencies that ship none.
     utils/                      Shared helpers.

@@ -26,6 +26,9 @@ export interface GraphViewPayload extends GraphData {
 	view: Omit<GraphView, 'data'>;
 	/** Changes whenever positions were computed from scratch, so the panel knows to redraw rather than patch. */
 	layoutRevision: number;
+	/** The layout these positions came from, so every view shows the same choice. */
+	layout: LayoutName;
+	grouped: boolean;
 }
 
 export interface PresentedView {
@@ -253,6 +256,8 @@ export class GraphPresenter {
 			allNotesVeryShort: data.allNotesVeryShort,
 			view: viewDetails,
 			layoutRevision: this.layoutRevision,
+			layout: this.layout,
+			grouped: this.grouped,
 		};
 	}
 

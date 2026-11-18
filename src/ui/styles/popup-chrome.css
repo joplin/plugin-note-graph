@@ -1,0 +1,5 @@
+/* Loaded into Joplin's window, so it is scoped to the note graph popup and leaves other dialogs alone. */
+.user-webview-dialog:has(#plugin-view-com\.yugalkaushik\.plugin-note-graph-aiNoteGraphPopup)
+	.user-dialog-button-bar {
+	display: none;
+}

@@ -86,6 +86,9 @@ var searchResultsEl;
 var searchRequestId = 0;
 var openTopResultWhenShown = false;
 var updateGroupToggleAvailability = function () {};
+var showLayoutChoice = function () {};
+/** The plugin's copy of the view choices, as this page last had it. */
+var sharedChoices = null;
 
 /** Above these, dropping curves, dashes and arrows keeps panning and zooming smooth. */
 var LOW_DETAIL_NODES = 800;
@@ -384,10 +387,20 @@ function highlightOpenNote(noteId) {
 	if (focusActive) return true;
 	cy.elements().unselect();
 	node.select();
-	if (!isOnScreen(node)) {
+	if (canvasHasSize() && !isOnScreen(node)) {
 		cy.animate({ center: { eles: node }, duration: 300 });
 	}
 	return true;
+}
+
+/** Cytoscape's size is zero while the view is hidden, and stays zero until the resize after it is shown, which refits. */
+function canvasHasSize() {
+	return cy.width() > 0 && cy.height() > 0;
+}
+
+function containerHasSize() {
+	var container = cy.container();
+	return container.clientWidth > 0 && container.clientHeight > 0;
 }
 
 function isOnScreen(node) {
@@ -771,7 +784,10 @@ function addTagOption(value, text, count) {
 
 function updateScopeMenu(view) {
 	var label = document.getElementById('graph-scope-label');
-	if (label) label.textContent = view.scopeLabel;
+	if (label) {
+		label.textContent = view.scopeLabel;
+		label.dataset.fromView = 'true';
+	}
 	var allNotebooks = document.querySelector('[data-scope-mode="all"]');
 	if (allNotebooks) allNotebooks.hidden = view.isLarge;
 }
@@ -956,6 +972,60 @@ function nodeColor(ele) {
 /** Rebuilding the whole stylesheet holds the UI thread for too long, and only the colors depend on this choice. */
 function refreshNodeColors() {
 	if (cy) cy.nodes().updateStyle();
+}
+
+/** Coloring by search follows this view's own search box, so the other view keeps the last shared coloring. */
+function choicesOnScreen() {
+	var sharedColorBy = sharedChoices ? sharedChoices.colorBy : 'none';
+	return {
+		colorBy: colorBy === 'search' ? sharedColorBy : colorBy,
+		hiddenEdgeTypes: Object.keys(edgeTypeOff)
+			.filter(function (type) {
+				return edgeTypeOff[type];
+			})
+			.sort(),
+		minSimilarity: Math.round(currentMinConfidence * 100),
+	};
+}
+
+function sameChoices(a, b) {
+	return !!a && !!b && JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** The plugin keeps the view choices and passes a change on to every view, so the panel and popup agree. */
+function shareChoices() {
+	var choices = choicesOnScreen();
+	if (sameChoices(choices, sharedChoices)) return;
+	sharedChoices = choices;
+	postToPlugin({ type: 'set-view-choices', choices: choices });
+}
+
+/** Coloring goes last: its select reports the change, and by then the rest already matches, so nothing is sent back. A view coloring by search keeps its own coloring. */
+function applySharedChoices(choices) {
+	if (!choices || sameChoices(choices, sharedChoices)) return;
+	sharedChoices = choices;
+	document.querySelectorAll('.legend-panel__pill[data-edge]').forEach(function (pill) {
+		showEdgeType(pill, choices.hiddenEdgeTypes.indexOf(pill.getAttribute('data-edge')) === -1);
+	});
+	showMinSimilarity(choices.minSimilarity);
+	applyVisibility();
+	var colorByEl = document.getElementById('graph-color-by');
+	if (colorByEl && colorBy !== 'search' && colorByEl.value !== choices.colorBy) {
+		colorByEl.value = choices.colorBy;
+		colorByEl.dispatchEvent(new Event('change'));
+	}
+}
+
+function showEdgeType(pill, shown) {
+	pill.classList.toggle('legend-panel__pill--off', !shown);
+	pill.setAttribute('aria-pressed', String(shown));
+	edgeTypeOff[pill.getAttribute('data-edge')] = !shown;
+}
+
+function showMinSimilarity(percent) {
+	currentMinConfidence = percent / 100;
+	if (densitySliderEl) densitySliderEl.value = String(percent);
+	if (densityValueEl) densityValueEl.textContent = percent + '%';
 }
 
 /** The room GraphLayoutEngine leaves a note, from its 1-10 centrality score. A note is never drawn larger, or it would run into its neighbours. */
@@ -1868,6 +1938,7 @@ function handleGraphUpdate(type, message) {
 
 	var action = decideUpdate(type, message, state);
 	if (action === 'skip') return;
+	if (message.layout) showLayoutChoice(message.layout, !!message.grouped);
 	if (action === 'apply-patch') {
 		applyGraphPatch(message);
 	} else if (action === 'redraw') {
@@ -1931,6 +2002,19 @@ function showSimilarOnlyWhenPresent(present) {
 	if (stat) stat.parentNode.hidden = !present;
 }
 
+/** Escape closes an open menu and goes no further, so in the popup it doesn't close the popup too. */
+function closeOnEscape(isOpen, close) {
+	document.addEventListener(
+		'keydown',
+		function (e) {
+			if (e.key !== 'Escape' || !isOpen()) return;
+			e.stopPropagation();
+			close();
+		},
+		true
+	);
+}
+
 function createExportMenu(btn) {
 	var menu = document.createElement('div');
 	menu.className = 'export-menu';
@@ -1973,6 +2057,14 @@ function createExportMenu(btn) {
 	document.addEventListener('click', function () {
 		menu.style.display = 'none';
 	});
+	closeOnEscape(
+		function () {
+			return menu.style.display === 'block';
+		},
+		function () {
+			menu.style.display = 'none';
+		}
+	);
 
 	return menu;
 }
@@ -1995,6 +2087,7 @@ function requestData() {
 		.postMessage({ type: 'request-data', version: lastSeenVersion })
 		.then(function (response) {
 			applyGraphNotice(response && response.notice);
+			applySharedChoices(response && response.choices);
 			if (response && response.type === 'graph-data') {
 				handleGraphUpdate('graph-data', response);
 			}
@@ -2153,13 +2246,20 @@ function init() {
 		var resizeTimer = null;
 		var lastWindowWidth = window.innerWidth;
 		var lastWindowHeight = window.innerHeight;
+		var lastCanvasHadSize = containerHasSize();
 		var observer = new ResizeObserver(function () {
 			if (resizeTimer) clearTimeout(resizeTimer);
 			resizeTimer = setTimeout(function () {
 				resizeTimer = null;
 				var canvasChangedUnderAFit = viewIsAsFitted();
+				// A hidden view still gets graphs, fitted to no space at all, so it refits once it can be seen.
+				var hasSize = containerHasSize();
+				var canvasWasHidden = hasSize && !lastCanvasHadSize;
+				lastCanvasHadSize = hasSize;
+				if (canvasWasHidden) hideTooltip();
 				cy.resize();
 				if (
+					canvasWasHidden ||
 					canvasChangedUnderAFit ||
 					window.innerWidth !== lastWindowWidth ||
 					window.innerHeight !== lastWindowHeight
@@ -2202,11 +2302,9 @@ function init() {
 		var edgeToggles = document.querySelectorAll('.legend-panel__pill[data-edge]');
 		for (var t = 0; t < edgeToggles.length; t++) {
 			edgeToggles[t].addEventListener('click', function () {
-				var edgeType = this.getAttribute('data-edge');
-				var off = this.classList.toggle('legend-panel__pill--off');
-				this.setAttribute('aria-pressed', String(!off));
-				edgeTypeOff[edgeType] = off;
+				showEdgeType(this, this.classList.contains('legend-panel__pill--off'));
 				applyVisibility();
+				shareChoices();
 			});
 		}
 
@@ -2215,10 +2313,11 @@ function init() {
 		densityControlEl = document.getElementById('graph-density-control');
 		if (densitySliderEl) {
 			densitySliderEl.addEventListener('input', function () {
-				currentMinConfidence = Number(this.value) / 100;
-				if (densityValueEl) densityValueEl.textContent = this.value + '%';
+				showMinSimilarity(Number(this.value));
 				applyVisibility();
 			});
+			// Shared once the slider is let go, so dragging doesn't message the plugin at every step.
+			densitySliderEl.addEventListener('change', shareChoices);
 		}
 
 		var SEARCH_DEBOUNCE_MS = 400;
@@ -2264,7 +2363,8 @@ function init() {
 					// Typed faster than the search runs, so search now and open what it finds.
 					openTopResultWhenShown = true;
 					runSearch(this.value);
-				} else if (e.key === 'Escape') {
+				} else if (e.key === 'Escape' && (this.value || !searchResultsEl.hidden)) {
+					e.stopPropagation();
 					this.value = '';
 					this.dispatchEvent(new Event('input'));
 					hideSearchResults();
@@ -2291,6 +2391,7 @@ function init() {
 				refreshNodeColors();
 				updateNoteLegend();
 				applyNodeFilters();
+				shareChoices();
 				if (colorBy === 'search' && !currentSearchQuery) {
 					showPluginStatus('Type in the search box to color the notes that match.');
 					if (searchInput) searchInput.focus();
@@ -2360,7 +2461,8 @@ function init() {
 			layoutBtnEl.setAttribute('aria-expanded', 'false');
 		}
 
-		function setLayout(layoutName) {
+		/** Only shows the choice; the plugin's layout is the one that counts, and every view it sends names it. */
+		function showLayout(layoutName, grouped) {
 			currentLayoutName = layoutName;
 			if (layoutLabelEl)
 				layoutLabelEl.textContent = LAYOUT_DISPLAY_NAMES[layoutName] || layoutName;
@@ -2372,7 +2474,13 @@ function init() {
 					);
 				});
 			}
+			setGroupingEnabled(grouped);
 			updateGroupToggleAvailability();
+		}
+		showLayoutChoice = showLayout;
+
+		function setLayout(layoutName) {
+			showLayout(layoutName, groupByCommunityEnabled);
 			requestLayout();
 		}
 
@@ -2393,6 +2501,9 @@ function init() {
 					closeLayoutMenu();
 				}
 			});
+			closeOnEscape(function () {
+				return !layoutMenuEl.hidden;
+			}, closeLayoutMenu);
 
 			layoutMenuEl.querySelectorAll('[data-layout]').forEach(function (item) {
 				item.addEventListener('click', function () {
@@ -2464,6 +2575,9 @@ function init() {
 				closeContextMenu();
 			}
 		});
+		closeOnEscape(function () {
+			return !contextMenuEl.hidden;
+		}, closeContextMenu);
 
 		contextMenuEl.addEventListener('click', function (e) {
 			var item = e.target.closest('.graph-context-menu__item');
@@ -2512,6 +2626,9 @@ function init() {
 				if (message && message.type === 'graph-patch') {
 					hidePipelineProgress();
 					handleGraphUpdate('graph-patch', message);
+				}
+				if (message && message.type === 'view-choices') {
+					applySharedChoices(message.choices);
 				}
 				if (message && message.type === 'status' && message.text) {
 					hidePipelineProgress();

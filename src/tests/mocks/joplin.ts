@@ -33,6 +33,15 @@ const joplinViewsPanels = {
 	visible: jest.fn(),
 };
 
+const joplinViewsDialogs = {
+	create: jest.fn(),
+	setHtml: jest.fn(),
+	setButtons: jest.fn(),
+	setFitToContent: jest.fn(),
+	addScript: jest.fn(),
+	open: jest.fn(),
+};
+
 const joplinCommands = {
 	execute: jest.fn(),
 };
@@ -46,8 +55,15 @@ const joplin = {
 	workspace: joplinWorkspace,
 	views: {
 		panels: joplinViewsPanels,
+		dialogs: joplinViewsDialogs,
 	},
 	commands: joplinCommands,
+	plugins: {
+		installationDir: jest.fn(),
+	},
+	window: {
+		loadChromeCssFile: jest.fn(),
+	},
 };
 
 export default joplin;

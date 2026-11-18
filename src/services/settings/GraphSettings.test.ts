@@ -18,7 +18,10 @@ describe('GraphSettings', () => {
 
 			expect(joplin.settings.registerSection).toHaveBeenCalledWith(
 				'noteGraph',
-				expect.objectContaining({ label: expect.any(String) })
+				expect.objectContaining({
+					label: expect.any(String),
+					description: expect.stringContaining('Note Graph Popup'),
+				})
 			);
 			expect(joplin.settings.registerSettings).toHaveBeenCalledWith(
 				expect.objectContaining({

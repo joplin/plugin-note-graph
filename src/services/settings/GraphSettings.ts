@@ -33,6 +33,8 @@ export const NOTE_GRAPH_SETTING_KEYS = [
 export async function registerGraphSettings(): Promise<void> {
 	await joplin.settings.registerSection(SECTION_NAME, {
 		label: 'Note Graph',
+		description:
+			'Open the graph in a popup with the graph icon in the note toolbar, or by running "Note Graph Popup" from the Command Palette. Close it with its ✕ or Escape. The side panel opens from Tools → Show Note Graph.',
 	});
 
 	await joplin.settings.registerSettings({
